@@ -1,36 +1,18 @@
 import { IStorage } from "./interfaces";
-import * as sqliteWorkspace from "./sqlite-workspace";
-import * as sqliteCommit from "./sqlite-commit";
+import { GitStorage } from "./git-workspace";
 
 export type { IStorage, Workspace, Commit, CreateWorkspaceInput, CreateCommitInput } from "./interfaces";
+export { GitStorage } from "./git-workspace";
 
-class SqliteStorage implements IStorage {
-  createWorkspace = sqliteWorkspace.createWorkspace;
-  getWorkspace = sqliteWorkspace.getWorkspace;
-  listWorkspaces = sqliteWorkspace.listWorkspaces;
-  deleteWorkspace = sqliteWorkspace.deleteWorkspace;
-  updateLatestCommit = sqliteWorkspace.updateLatestCommit;
-  createCommit = sqliteCommit.createCommit;
-  listCommits = sqliteCommit.listCommits;
-}
+let instance: GitStorage | null = null;
 
-let instance: IStorage | null = null;
-
-export function createStorage(): IStorage {
+export function createStorage(): GitStorage {
   if (instance) return instance;
-
-  const type = process.env.STORAGE_TYPE || "sqlite";
-
-  switch (type) {
-    case "sqlite":
-      instance = new SqliteStorage();
-      return instance;
-    default:
-      throw new Error(`Unknown storage type: ${type}`);
-  }
+  instance = new GitStorage();
+  return instance;
 }
 
-export function getStorage(): IStorage {
+export function getStorage(): GitStorage {
   if (!instance) {
     return createStorage();
   }

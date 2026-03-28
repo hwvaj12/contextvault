@@ -34,13 +34,13 @@ export interface CreateCommitInput {
 
 export interface IStorage {
   // Workspace operations
-  createWorkspace(data: CreateWorkspaceInput): Workspace;
-  getWorkspace(id: string): Workspace | null;
-  listWorkspaces(): Workspace[];
-  deleteWorkspace(id: string): void;
-  updateLatestCommit(id: string, commitId: string, updatedAt: string): void;
+  createWorkspace(data: CreateWorkspaceInput): Promise<Workspace>;
+  getWorkspace(id: string): Promise<Workspace | null>;
+  listWorkspaces(): Promise<Workspace[]>;
+  deleteWorkspace(id: string): Promise<void>;
+  updateLatestCommit(id: string, commitId: string, updatedAt: string): Promise<void>;
 
   // Commit operations
-  createCommit(data: CreateCommitInput): Commit;
-  listCommits(workspaceId: string, limit?: number): Commit[];
+  createCommit(data: CreateCommitInput): Promise<Commit>;
+  listCommits(workspaceId: string, limit?: number): Promise<Commit[]>;
 }

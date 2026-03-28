@@ -48,7 +48,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const body = CreateWorkspaceSchema.parse(request.body);
       const id = `ws_${ulid()}`;
-      const workspace = createWorkspace(id, body.customerId, body.name);
+      const workspace = await createWorkspace(id, body.customerId, body.name);
       reply.code(201).send(workspace);
     }
   );
@@ -80,7 +80,8 @@ export async function workspaceRoutes(app: FastifyInstance) {
       },
     },
     async (_request, reply) => {
-      reply.send(listWorkspaces());
+      const workspaces = await listWorkspaces();
+      reply.send(workspaces);
     }
   );
 
@@ -100,7 +101,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const workspace = getWorkspace(id);
+      const workspace = await getWorkspace(id);
 
       if (!workspace) {
         return reply.code(404).send({ error: "Workspace not found" });
@@ -126,7 +127,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      softDeleteWorkspace(id);
+      await softDeleteWorkspace(id);
       reply.code(204).send();
     }
   );
