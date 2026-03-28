@@ -54,11 +54,11 @@ async function main() {
 
   const port = parseInt(process.env.PORT || "3000", 10);
   await app.listen({ port, host: "0.0.0.0" });
-  console.log(`ContextVault API running on http://localhost:${port}`);
-  console.log(`Swagger docs at http://localhost:${port}/docs`);
+  app.log.info(`ContextVault API running on http://localhost:${port}`);
+  app.log.info(`Swagger docs at http://localhost:${port}/docs`);
 }
 
 main().catch((err) => {
-  console.error(err);
+  app.log.error(err);
   process.exit(1);
 });
