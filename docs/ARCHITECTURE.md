@@ -1,7 +1,7 @@
 # ContextVault — Architecture
 
 > Multi-tenant, versioned workspace layer for AI agent memory.
-> "Git over S3" — versioned file storage for agent context.
+> "Git for AI agents" — each workspace is a Git repository.
 
 ---
 
@@ -28,15 +28,12 @@ graph TB
     end
 
     subgraph "Storage Layer"
-        Storage[Storage Factory]
-        SQLite[(SQLite Adapter)]
-        DynamoDB[(DynamoDB Adapter)]
-        Files[File Storage]
+        GitStorage[GitStorage]
     end
 
     subgraph "Data Layer"
-        SQLiteDB[(SQLite DB)]
-        S3[(S3 / Local FS)]
+        WorkspaceRepos["workspaces/{id}/.git"]
+        Meta["workspace-meta/{id}.json"]
     end
 
     AI --> Routes
@@ -45,17 +42,39 @@ graph TB
     Routes --> Auth
     Auth --> WorkspaceSvc
     Auth --> CommitSvc
-    WorkspaceSvc --> Storage
-    CommitSvc --> Storage
-    Storage --> Files
-    Storage --> SQLite
-    Storage --> DynamoDB
-    SQLite --> SQLiteDB
-    Files --> S3
+    WorkspaceSvc --> GitStorage
+    CommitSvc --> GitStorage
+    GitStorage --> WorkspaceRepos
+    GitStorage --> Meta
 
     style AI fill:#e1f5fe
-    style Files fill:#fff3e0
-    style S3 fill:#fff3e0
+    style GitStorage fill:#e8f5e9
+    style WorkspaceRepos fill:#fff3e0
+```
+
+---
+
+## Key Insight: Git-native Storage
+
+Each workspace IS a Git repository. All versioning is handled by Git — no custom commit tracking, no diff logic, no rollbacks to implement.
+
+**Benefits:**
+- Battle-tested Git operations (diff, merge, blame, revert)
+- Branching for agent experiments
+- Standard tool — no proprietary versioning
+- Commit messages encode agent metadata
+
+---
+
+## Directory Structure
+
+```
+data/
+├── workspace-meta/           # JSON files for workspace metadata
+│   └── {workspaceId}.json   # (customerId, name, timestamps)
+└── workspaces/
+    └── {workspaceId}/       # One git repo per workspace
+        └── .git/            # Actual Git repository
 ```
 
 ---
@@ -67,21 +86,19 @@ sequenceDiagram
     participant Agent as AI Agent
     participant API as Fastify API
     participant Service as Commit Service
-    participant Storage as Storage Layer
-    participant FS as File System
+    participant Git as GitStorage
+    participant GitRepo as .git Repo
 
     Agent->>API: POST /workspaces/{id}/push<br/>{files, metadata}
-    API->>API: Validate API key
-    API->>Service: createCommit(workspaceId, data)
-    Service->>Storage: createCommit()
-    Storage->>FS: Write files to<br/>/commits/{commitId}/
-    Storage->>FS: Write manifest.json<br/>(commit metadata)
-    Storage->>SQLiteDB: Insert commit record
-    SQLiteDB-->>Storage: commit record
-    FS-->>Storage: files written
-    Storage-->>Service: Commit created
-    Service-->>API: {commitId, parentId, ...}
-    API-->>Agent: 201 Created
+    API->>API: Validate X-API-Key
+    API->>Service: pushCommit(workspaceId, files, metadata)
+    Service->>Git: pushCommit()
+    Git->>GitRepo: git add -A
+    Git->>GitRepo: git commit -m<br/>"agent: {id} | task: {id}\n---<br/>{json: files, size, ...}"
+    GitRepo-->>Git: commit hash
+    Git-->>Service: {commitId, parentId, sizeBytes}
+    Service-->>API: 201 Created
+    API-->>Agent: {commitId, ...}
 ```
 
 ---
@@ -93,111 +110,57 @@ sequenceDiagram
     participant Agent as AI Agent
     participant API as Fastify API
     participant Service as Commit Service
-    participant Storage as Storage Layer
-    participant FS as File System
+    participant Git as GitStorage
+    participant GitRepo as .git Repo
 
-    Agent->>API: GET /workspaces/{id}/pull<br/>?version=xxx (optional)
-    API->>API: Validate API key
-    API->>Service: getCommit(workspaceId, version?)
-    Service->>Storage: getLatestCommit() or<br/>getCommit(commitId)
-    Storage->>SQLiteDB: Query commit record
-    SQLiteDB-->>Storage: commit record
-    Storage->>FS: Read manifest.json
-    Storage->>FS: Read all files in commit
-    FS-->>Storage: files content
-    Storage-->>Service: Commit with files
-    Service-->>API: {commitId, files, metadata}
-    API-->>Agent: 200 OK
+    Agent->>API: GET /workspaces/{id}/pull?version=xxx
+    API->>API: Validate X-API-Key
+    API->>Service: pullCommit(workspaceId, version?)
+    Service->>Git: pullCommit()
+    Git->>GitRepo: git log / git show
+    GitRepo-->>Git: commit info + file contents
+    Git-->>Service: {commitId, files, metadata}
+    Service-->>API: 200 OK
+    API-->>Agent: {commitId, files, metadata}
 ```
 
 ---
 
-## Directory Structure (File Storage)
+## Commit Message Format
 
-```mermaid
-graph TD
-    Root["data/"]
-    WS["workspaces/"]
-    Commits["commits/"]
-    Commit1["v_001/"]
-    Commit2["v_002/"]
-    Manifest1["manifest.json"]
-    Manifest2["manifest.json"]
-    Files1["files/"]
-    Files2["files/"]
-    Summary["summary.md"]
-    Output["output.json"]
-    State["state.json"]
+Git commit messages encode agent metadata:
 
-    Root --> WS
-    WS --> WS1["ws_abc123/"]
-    WS1 --> Commits
-    Commits --> Commit1
-    Commits --> Commit2
-    Commit1 --> Manifest1
-    Commit1 --> Files1
-    Commit2 --> Manifest2
-    Commit2 --> Files2
-    Files1 --> Summary
-    Files1 --> Output
-    Files2 --> Summary
-    Files2 --> State
-
-    style Root fill:#fafafa
-    style Manifest1 fill:#e8f5e9
-    style Manifest2 fill:#e8f5e9
 ```
+agent: agent_123 | task: task_456
+---
+{"agentId":"agent_123","taskId":"task_456","files":["summary.md"],"sizeBytes":1024}
+```
+
+**Parsed on read** to extract metadata without a database.
 
 ---
 
-## Storage Abstraction Layer
+## Versioning Model (Git-native)
 
 ```mermaid
-classDiagram
-    class IStorage {
-        <<interface>>
-        +createWorkspace(data) Workspace
-        +getWorkspace(id) Workspace
-        +listWorkspaces() Workspace[]
-        +deleteWorkspace(id) void
-        +createCommit(wsId, data) Commit
-        +getCommit(wsId, commitId) Commit
-        +getLatestCommit(wsId) Commit
-        +listCommits(wsId) Commit[]
-    }
+graph LR
+    V1["v1 (root)"]
+    V2["v2"]
+    V3["v3"]
+    RV["rollback<br/>to v1"]
 
-    class SqliteStorage {
-        +createWorkspace(data)
-        +getWorkspace(id)
-        +listWorkspaces()
-        +deleteWorkspace(id)
-        +createCommit(wsId, data)
-        +getCommit(wsId, commitId)
-        +getLatestCommit(wsId)
-        +listCommits(wsId)
-    }
+    V1 --> V2
+    V2 --> V3
+    V3 --> RV
 
-    class DynamoDBStorage {
-        +createWorkspace(data)
-        +getWorkspace(id)
-        +listWorkspaces()
-        +deleteWorkspace(id)
-        +createCommit(wsId, data)
-        +getCommit(wsId, commitId)
-        +getLatestCommit(wsId)
-        +listCommits(wsId)
-    }
-
-    class StorageFactory {
-        +createStorage() IStorage
-    }
-
-    IStorage <|.. SqliteStorage
-    IStorage <|.. DynamoDBStorage
-    StorageFactory ..> IStorage
-
-    note for StorageFactory "STORAGE_TYPE=sqlite<br/>STORAGE_TYPE=dynamodb"
+    style RV fill:#ffecb3
 ```
+
+**Git handles:**
+- Parent pointers
+- Full history
+- Diff between any two commits
+- Revert/rollback creates new commit (preserves history)
 
 ---
 
@@ -212,7 +175,7 @@ graph LR
         DWS["DELETE /workspaces/:id"]
     end
 
-    subgraph "Commits"
+    subgraph "Commits (Git Operations)"
         Push["POST /workspaces/:id/push"]
         Pull["GET /workspaces/:id/pull"]
         Hist["GET /workspaces/:id/history"]
@@ -220,122 +183,84 @@ graph LR
         Roll["POST /workspaces/:id/rollback"]
     end
 
-    subgraph "System"
-        Health["GET /health"]
-        Docs["GET /docs"]
-    end
+    CWS --> Create["git init"]
+    LWS --> List["ls workspace-meta/"]
+    GWS --> Get["read meta JSON"]
+    DWS --> Delete["mark deleted"]
+    Push --> NewCommit["git add + commit"]
+    Pull --> Latest["git show HEAD"]
+    Pull -.-> Specific["git show {hash}"]
+    Hist --> Log["git log"]
+    Diff --> Compare["git diff"]
+    Roll --> Revert["git revert"]
 
-    CWS --> Create["Create workspace"]
-    LWS --> List["List all workspaces"]
-    GWS --> Get["Get workspace details"]
-    DWS --> Delete["Soft delete workspace"]
-    Push --> NewCommit["Create new commit"]
-    Pull --> Latest["Get latest commit"]
-    Pull -.-> Specific["Get specific version"]
-    Hist --> Commits["List commit history"]
-    Diff --> Compare["Compare two versions"]
-    Roll --> Revert["Revert to version"]
-
-    style Create fill:#e3f2fd
     style NewCommit fill:#e8f5e9
-    style Latest fill:#fff3e0
+    style Log fill:#e8f5e9
 ```
 
 ---
 
-## Manifest Format
-
-Each commit folder contains a `manifest.json`:
-
-```json
-{
-  "commitId": "v_01KMV8AD9C57X4BE65ZGFC672S",
-  "workspaceId": "ws_01KMV8A7Q49R28XN7CHH0TAA8Z",
-  "parentId": "v_01KMV8A7Q49R28XN7CHH0TAA8Z",
-  "metadata": {
-    "agentId": "agent_support_01",
-    "taskId": "ticket_123",
-    "tags": ["resolved", "customer_a"]
-  },
-  "sizeBytes": 1024,
-  "createdAt": "2026-03-28T14:30:00Z",
-  "files": [
-    {
-      "path": "context/summary.md",
-      "content": "# Task Summary\n\nResolved issue..."
-    },
-    {
-      "path": "artifacts/response.json",
-      "content": "{\"status\": \"success\"}"
-    }
-  ]
-}
-```
-
----
-
-## Versioning Model (Git-like)
+## Storage Abstraction
 
 ```mermaid
-graph LR
-    V1["v_001<br/>parent: null"]
-    V2["v_002<br/>parent: v_001"]
-    V3["v_003<br/>parent: v_002"]
-    V4["v_004<br/>parent: v_003<br/>(rollback)"]
+classDiagram
+    class IStorage {
+        <<interface>>
+        +createWorkspace(data) Workspace
+        +getWorkspace(id) Workspace
+        +listWorkspaces() Workspace[]
+        +deleteWorkspace(id) void
+        +pushCommit(wsId, files, meta) Commit
+        +pullCommit(wsId, version?) Commit
+        +getHistory(wsId) Commit[]
+        +getDiff(wsId, from, to) Diff
+        +rollback(wsId, hash) Commit
+    }
 
-    V1 --> V2
-    V2 --> V3
-    V3 --> V4
+    class GitStorage {
+        +createWorkspace(data)
+        +getWorkspace(id)
+        +listWorkspaces()
+        +deleteWorkspace(id)
+        +pushCommit(wsId, files, meta)
+        +pullCommit(wsId, version?)
+        +getHistory(wsId)
+        +getDiff(wsId, from, to)
+        +rollback(wsId, hash)
+    }
 
-    style V4 fill:#ffecb3
+    IStorage <|.. GitStorage
 ```
 
-**Key concepts:**
-- Each commit has a `parentId` (like git)
-- Rollback creates a *new* commit (doesn't destroy history)
-- Files stored directly (content-addressable in future)
+**Current implementation:** GitStorage only (local filesystem)
+
+**Future adapters:** S3-backed Git, GitHub-backed, etc.
 
 ---
 
-## Why Filesystem + Database?
+## Why Git?
 
-| Concern | Filesystem | Database |
-|---------|------------|----------|
-| Agent artifacts (code, outputs) | ✅ Native | ❌ Awkward |
-| Version history | ✅ Git-like | ❌ Extra complexity |
-| Streaming/binary data | ✅ Native | ⚠️ BLOB needed |
-| "List all workspaces" | ❌ Slow scan | ✅ Indexed |
-| "Find commits by agent" | ❌ Full scan | ✅ Indexed |
-| Simplicity | ✅ Just files | ❌ Schema migrations |
-
-**Current approach:** Filesystem for artifacts + SQLite for metadata index.
-
-**Future:** Could drop SQLite entirely and use a manifest-based approach (filesystem IS the database).
+| Aspect | Custom Implementation | Git |
+|--------|----------------------|-----|
+| Diff | Write diff algorithm | `git diff` |
+| History | Track commit records | `git log` |
+| Rollback | Track reverse changes | `git revert` |
+| Branching | Build from scratch | `git branch` |
+| Storage | Custom file management | Git handles it |
+| Reliability | Unknown | Battle-tested |
 
 ---
 
 ## Environment Configuration
 
-```mermaid
-graph TD
-    ENV["Environment Variables"]
-    StorageType["STORAGE_TYPE"]
-    DBPath["DB_PATH<br/>(SQLite)"]
-    S3Bucket["S3_BUCKET<br/>(Production)"]
-    DynamoEndpoint["DYNAMODB_ENDPOINT<br/>(Production)"]
-    APIKey["API_KEY"]
+```bash
+# Local development (default)
+STORAGE_TYPE=git
+DATA_DIR=./data
 
-    ENV --> StorageType
-    StorageType --> Local["sqlite"]
-    StorageType --> Prod["dynamodb"]
-    Local --> DBPath
-    Prod --> S3Bucket
-    Prod --> DynamoEndpoint
-    ENV --> APIKey
-
-    style StorageType fill:#e8f5e9
-    style Local fill:#c8e6c9
-    style Prod fill:#ffccbc
+# Future: Production with S3-backed Git
+# STORAGE_TYPE=s3-git
+# S3_BUCKET=contextvault-prod
 ```
 
 ---
@@ -347,7 +272,7 @@ graph TB
     Request["HTTP Request"]
     APIKey["X-API-Key Header"]
     Auth["Auth Middleware"]
-    Workspace["Workspace Access Check"]
+    Workspace["Workspace Ownership"]
     Denied["401 Unauthorized"]
     Allowed["Proceed"]
 
@@ -355,6 +280,22 @@ graph TB
     APIKey --> Auth
     Auth -->|Valid| Workspace
     Auth -->|Invalid| Denied
-    Workspace -->|Same Org| Allowed
-    Workspace -->|Wrong Org| Denied
+    Workspace -->|Owner| Allowed
+    Workspace -->|Not Owner| Denied
 ```
+
+---
+
+## Verification Checklist
+
+Before claiming a feature works:
+
+- [ ] `npm run build` passes (TypeScript compiles)
+- [ ] `npm run dev` starts without errors
+- [ ] Create workspace → `.git` folder exists
+- [ ] Push → `git log` shows commit with metadata
+- [ ] Pull → files returned correctly
+- [ ] History → commits parsed with metadata
+- [ ] Diff → git diff output matches
+- [ ] Rollback → new commit created, old content restored
+- [ ] Push to GitHub
