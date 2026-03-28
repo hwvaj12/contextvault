@@ -5,6 +5,7 @@ import swaggerUi from "@fastify/swagger-ui";
 import { authMiddleware } from "./middleware/auth";
 import { workspaceRoutes } from "./routes/workspaces";
 import { commitRoutes } from "./routes/commits";
+import { gitRemoteRoutes } from "./routes/git-remote";
 
 async function main() {
   const app = Fastify({ logger: true });
@@ -38,7 +39,10 @@ async function main() {
     routePrefix: "/docs",
   });
 
-  // Auth
+  // Git remote routes — registered before auth middleware (handles own auth)
+  await app.register(gitRemoteRoutes);
+
+  // Auth for other routes
   app.addHook("onRequest", authMiddleware);
 
   // Health check (no auth)

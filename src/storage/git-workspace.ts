@@ -91,6 +91,8 @@ export class GitStorage implements IStorage {
     await fs.mkdir(dir, { recursive: true });
     const git = simpleGit(dir);
     await git.init();
+    // Allow pushes to the checked-out branch (updates working tree automatically)
+    await git.addConfig("receive.denyCurrentBranch", "updateInstead");
 
     const meta: WorkspaceMeta = {
       id: data.id,
