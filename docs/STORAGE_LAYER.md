@@ -1,149 +1,146 @@
-# ContextVault — Storage Abstraction Layer
+# ContextVault — Git-Native Storage
 
-## Goal
+> **Status:** This document describes the current implementation (as of 2026-03-28).
+> The old SQLite/DynamoDB abstraction has been replaced with Git-native storage.
 
-Abstract the storage layer so the same code works with SQLite locally and DynamoDB in production.
+## Overview
 
-## Architecture
+Each workspace **is** a Git repository. All versioning is handled by Git itself — no custom commit tracking, no diff logic, no rollback implementation needed.
 
 ```
-routes/
-  └── calls → services/
-                    └── calls → storage.interface.ts
-                                      ├── sqlite.adapter.ts  (local)
-                                      └── dynamodb.adapter.ts (production)
+data/
+├── workspace-meta/           # JSON files for workspace metadata
+│   └── {workspaceId}.json   # (customerId, name, timestamps)
+└── workspaces/
+    └── {workspaceId}/       # One git repo per workspace
+        └── .git/           # Actual Git repository
 ```
 
-## Interface Design
+## Why Git?
+
+| Aspect | Custom Implementation | Git-native |
+|--------|----------------------|------------|
+| Diff | Write diff algorithm | `git diff` |
+| History | Track commit records | `git log` |
+| Rollback | Track reverse changes | `git revert` |
+| Branching | Build from scratch | `git branch` |
+| Storage | Custom file management | Git handles it |
+| Reliability | Unknown | Battle-tested |
+
+## Core Operations
+
+### Create Workspace
+```typescript
+git init data/workspaces/{workspace_id}/
+```
+Creates a new bare git repo per workspace.
+
+### Push (Create Commit)
+```typescript
+git add -A
+git commit -m "agent: {agentId}, task: {taskId}\n---\n{files: [...], sizeBytes: N}"
+```
+- Stage all files in workspace
+- Commit with metadata in message body
+- Returns commit hash (the version ID)
+
+### Pull (Get Files)
+```typescript
+git show {commitHash}:{filePath}
+// or for entire state:
+git checkout {commitHash} -- .
+```
+- Get files from specific commit (or HEAD for latest)
+
+### History
+```typescript
+git log --oneline --format="%H %s %at"
+// Returns: [{hash, message, timestamp}, ...]
+```
+
+### Diff
+```typescript
+git diff {fromCommit} {toCommit}
+// Returns unified diff output
+```
+
+### Rollback
+```typescript
+git revert --no-commit {commitHash}
+git commit -m "Revert to {commitHash}"
+```
+- Creates a NEW commit that undoes the old one
+- Preserves full history (non-destructive)
+
+## Implementation
+
+Using `simple-git` npm package for Git operations.
 
 ```typescript
-// src/storage/interfaces.ts
+// src/storage/git-storage.ts
 
-export interface IStorage {
-  // Workspace operations
-  createWorkspace(data: CreateWorkspaceInput): Promise<Workspace>;
-  getWorkspace(id: string): Promise<Workspace | null>;
-  listWorkspaces(): Promise<Workspace[]>;
-  deleteWorkspace(id: string): Promise<void>;
-
-  // Commit operations
-  createCommit(workspaceId: string, data: CreateCommitInput): Promise<Commit>;
-  getCommit(workspaceId: string, commitId: string): Promise<Commit | null>;
-  getLatestCommit(workspaceId: string): Promise<Commit | null>;
-  listCommits(workspaceId: string, limit?: number, offset?: number): Promise<Commit[]>;
-}
-
-export interface CreateWorkspaceInput {
-  id: string;
-  customerId: string;
-  name: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface CreateCommitInput {
-  id: string;
-  workspaceId: string;
-  parentId: string | null;
-  files: FileRecord[];
-  metadata: CommitMetadata;
-  sizeBytes: number;
-  createdAt: string;
-}
-
-export interface Workspace {
-  id: string;
-  customerId: string;
-  name: string;
-  latestCommitId: string | null;
-  createdAt: string;
-  updatedAt: string;
-  deletedAt: string | null;
-}
-
-export interface Commit {
-  id: string;
-  workspaceId: string;
-  parentId: string | null;
-  files: FileRecord[];
-  metadata: CommitMetadata;
-  sizeBytes: number;
-  createdAt: string;
-}
-
-export interface FileRecord {
-  path: string;
-  content: string;
-}
-
-export interface CommitMetadata {
-  agentId?: string;
-  taskId?: string;
-  tags?: string[];
+export interface IGitStorage {
+  initWorkspace(workspaceId: string): Promise<void>;
+  pushCommit(workspaceId: string, files: FileRecord[], metadata: CommitMetadata): Promise<Commit>;
+  pullCommit(workspaceId: string, version?: string): Promise<Commit>;
+  getHistory(workspaceId: string): Promise<Commit[]>;
+  getDiff(workspaceId: string, from: string, to: string): Promise<DiffResult>;
+  rollback(workspaceId: string, toVersion: string): Promise<Commit>;
 }
 ```
 
-## Adapter Pattern
+## Commit Message Format
 
-Each adapter implements `IStorage`:
+Git commit messages encode all agent metadata:
 
-### SQLite Adapter
-- File storage via `./data/workspaces/{id}/commits/{commitId}/`
-- Metadata in SQLite via `better-sqlite3`
--路径: `src/storage/sqlite.adapter.ts`
-
-### DynamoDB Adapter
-- File storage via S3
-- Metadata in DynamoDB
--路径: `src/storage/dynamodb.adapter.ts`
-
-## Factory Pattern
-
-```typescript
-// src/storage/index.ts
-
-import { IStorage } from './interfaces';
-import { SqliteStorage } from './sqlite.adapter';
-import { DynamoDBStorage } from './dynamodb.adapter';
-
-export function createStorage(): IStorage {
-  const type = process.env.STORAGE_TYPE || 'sqlite';
-  
-  switch (type) {
-    case 'sqlite':
-      return new SqliteStorage();
-    case 'dynamodb':
-      return new DynamoDBStorage();
-    default:
-      throw new Error(`Unknown storage type: ${type}`);
-  }
-}
-
-export { IStorage, Workspace, Commit, FileRecord, CommitMetadata } from './interfaces';
 ```
+agent: {agentId} | task: {taskId} | tags: {tag1,tag2}
+---
+{"agentId":"...","taskId":"...","files":["summary.md"],"sizeBytes":1024,"createdAt":"..."}
+```
+
+**Header line:** Human-readable summary for `git log`
+**Body (JSON):** Machine-parseable metadata
+
+## Metadata Storage
+
+| Data | Storage |
+|------|---------|
+| Workspace metadata (customerId, name) | `workspace-meta/{id}.json` |
+| File versions | Git commits |
+| Commit metadata (agentId, taskId, tags) | Git commit message |
+| File contents | Git objects |
 
 ## Environment Variables
 
 ```bash
-# Local development (default)
-STORAGE_TYPE=sqlite
+# Local development (current)
+STORAGE_TYPE=git
+DATA_DIR=./data
 
-# Production
-STORAGE_TYPE=dynamodb
-DYNAMODB_ENDPOINT=https://dynamodb.us-east-1.amazonaws.com
-DYNAMODB_REGION=us-east-1
-S3_BUCKET=contextvault-production
+# Future: S3-backed Git repos
+# STORAGE_TYPE=s3-git
+# S3_BUCKET=contextvault-prod
 ```
 
-## Migration Path
+## Future: Remote Git Backends
 
-1. **Now:** SQLite adapter for local development ✅
-2. **Later:** DynamoDB adapter for production
-3. **Future:** Could add PostgreSQL, Supabase, etc.
+The Git-native design makes distributed storage straightforward:
 
-## Benefits
+1. **S3-backed Git** — Push to S3, pull from S3
+2. **GitHub-backed** — Workspaces as GitHub repos
+3. **Custom Git server** — `git push contextvault.ai`
 
-- **Testability:** Can mock storage in unit tests
-- **Flexibility:** Swap backends without touching business logic
-- **Parity:** Local and production behave identically at the interface level
-- **Extensibility:** Add new adapters without modifying existing code
+All benefit from Git's built-in replication and caching.
+
+## Verification
+
+After any storage change:
+- [ ] `npm run build` passes (TypeScript compiles)
+- [ ] `npm run dev` starts without errors
+- [ ] Create workspace → `.git` folder exists in `data/workspaces/{id}/`
+- [ ] Push → `git log` shows commit with metadata in message
+- [ ] Pull → files returned correctly from git
+- [ ] History → commits parsed with metadata from messages
+- [ ] Diff → `git diff` output is returned
+- [ ] Rollback → new commit created, old content restored

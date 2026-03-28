@@ -15,20 +15,20 @@ This is ContextVault — a multi-tenant, versioned workspace layer for AI agent 
 5. **Async/await** — No raw Promises without await in route handlers
 6. **Naming** — `camelCase` for variables/functions, `PascalCase` for types/classes, `SCREAMING_SNAKE` for constants
 
-### Clean Architecture
+### Clean Architecture (Git-Native)
 
 ```
 src/
 ├── routes/        # HTTP layer (Fastify route handlers)
 ├── services/     # Business logic (orchestration)
-├── storage/      # Data access layer (interface + adapters)
-│   ├── interfaces.ts   # IStorage contract
-│   ├── sqlite-*.ts      # SQLite implementation
-│   └── dynamodb-*.ts    # DynamoDB implementation
+├── storage/      # Git-native storage (simple-git)
+│   └── git-storage.ts   # Git operations adapter
 ├── middleware/   # Auth, validation, error handling
-├── types/       # Shared TypeScript types
-└── utils/       # Helpers, constants
+├── types/        # Shared TypeScript types
+└── utils/        # Helpers, constants
 ```
+
+**Key insight:** Each workspace IS a Git repository. Versioning is handled entirely by Git — no custom commit tracking needed.
 
 **Dependency rule:** Dependencies point inward. Routes → Services → Storage. Never the reverse.
 
