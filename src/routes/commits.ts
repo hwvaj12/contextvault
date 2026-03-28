@@ -1,10 +1,10 @@
 import { FastifyInstance } from "fastify";
 import { ulid } from "ulid";
 import { z } from "zod";
-import { PutCommand, GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import * as fs from "fs/promises";
 import * as path from "path";
-import { docClient, TABLE_WORKSPACES, TABLE_COMMITS } from "../db/client";
+import { getWorkspace, updateLatestCommit } from "../services/workspace.service";
+import { createCommit, getCommitHistory } from "../services/commit.service";
 
 const DATA_DIR = path.join(process.cwd(), "data", "workspaces");
 
@@ -25,17 +25,6 @@ const PushSchema = z.object({
 const RollbackSchema = z.object({
   toVersion: z.string().min(1),
 });
-
-async function getWorkspace(id: string) {
-  const result = await docClient.send(
-    new GetCommand({
-      TableName: TABLE_WORKSPACES,
-      Key: { PK: `WORKSPACE#${id}`, SK: "METADATA" },
-    })
-  );
-  if (!result.Item || result.Item.deletedAt) return null;
-  return result.Item;
-}
 
 async function writeCommitFiles(
   workspaceId: string,
@@ -118,7 +107,7 @@ export async function commitRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const body = PushSchema.parse(request.body);
 
-      const workspace = await getWorkspace(id);
+      const workspace = getWorkspace(id);
       if (!workspace) {
         return reply.code(404).send({ error: "Workspace not found" });
       }
@@ -134,36 +123,8 @@ export async function commitRoutes(app: FastifyInstance) {
         parentId
       );
 
-      // Store commit record in DynamoDB
-      await docClient.send(
-        new PutCommand({
-          TableName: TABLE_COMMITS,
-          Item: {
-            PK: `WORKSPACE#${id}`,
-            SK: `COMMIT#${commitId}`,
-            id: commitId,
-            workspaceId: id,
-            parentId,
-            metadata: body.metadata,
-            sizeBytes,
-            createdAt,
-          },
-        })
-      );
-
-      // Update workspace latestCommitId
-      await docClient.send(
-        new UpdateCommand({
-          TableName: TABLE_WORKSPACES,
-          Key: { PK: `WORKSPACE#${id}`, SK: "METADATA" },
-          UpdateExpression:
-            "SET latestCommitId = :commitId, updatedAt = :updatedAt",
-          ExpressionAttributeValues: {
-            ":commitId": commitId,
-            ":updatedAt": createdAt,
-          },
-        })
-      );
+      createCommit(commitId, id, parentId, body.metadata, sizeBytes, createdAt);
+      updateLatestCommit(id, commitId, createdAt);
 
       reply.code(201).send({
         commitId,
@@ -199,7 +160,7 @@ export async function commitRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const { version } = request.query as { version?: string };
 
-      const workspace = await getWorkspace(id);
+      const workspace = getWorkspace(id);
       if (!workspace) {
         return reply.code(404).send({ error: "Workspace not found" });
       }
@@ -266,33 +227,12 @@ export async function commitRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const { limit } = request.query as { limit?: number };
 
-      const workspace = await getWorkspace(id);
+      const workspace = getWorkspace(id);
       if (!workspace) {
         return reply.code(404).send({ error: "Workspace not found" });
       }
 
-      const result = await docClient.send(
-        new QueryCommand({
-          TableName: TABLE_COMMITS,
-          KeyConditionExpression: "PK = :pk AND begins_with(SK, :skPrefix)",
-          ExpressionAttributeValues: {
-            ":pk": `WORKSPACE#${id}`,
-            ":skPrefix": "COMMIT#",
-          },
-          ScanIndexForward: false,
-          Limit: limit || 20,
-        })
-      );
-
-      const commits = (result.Items || []).map((item) => ({
-        id: item.id,
-        workspaceId: item.workspaceId,
-        parentId: item.parentId,
-        metadata: item.metadata,
-        sizeBytes: item.sizeBytes,
-        createdAt: item.createdAt,
-      }));
-
+      const commits = getCommitHistory(id, limit || 20);
       reply.send({ commits, count: commits.length });
     }
   );
@@ -427,7 +367,7 @@ export async function commitRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const body = RollbackSchema.parse(request.body);
 
-      const workspace = await getWorkspace(id);
+      const workspace = getWorkspace(id);
       if (!workspace) {
         return reply.code(404).send({ error: "Workspace not found" });
       }
@@ -465,43 +405,18 @@ export async function commitRoutes(app: FastifyInstance) {
       // Create new commit with same content
       const newCommitId = `v_${ulid()}`;
       const parentId = workspace.latestCommitId || null;
+      const rollbackMetadata = { ...manifest.metadata, rollbackFrom: body.toVersion };
 
       const { sizeBytes, createdAt } = await writeCommitFiles(
         id,
         newCommitId,
         files,
-        { ...manifest.metadata, rollbackFrom: body.toVersion },
+        rollbackMetadata,
         parentId
       );
 
-      await docClient.send(
-        new PutCommand({
-          TableName: TABLE_COMMITS,
-          Item: {
-            PK: `WORKSPACE#${id}`,
-            SK: `COMMIT#${newCommitId}`,
-            id: newCommitId,
-            workspaceId: id,
-            parentId,
-            metadata: { ...manifest.metadata, rollbackFrom: body.toVersion },
-            sizeBytes,
-            createdAt,
-          },
-        })
-      );
-
-      await docClient.send(
-        new UpdateCommand({
-          TableName: TABLE_WORKSPACES,
-          Key: { PK: `WORKSPACE#${id}`, SK: "METADATA" },
-          UpdateExpression:
-            "SET latestCommitId = :commitId, updatedAt = :updatedAt",
-          ExpressionAttributeValues: {
-            ":commitId": newCommitId,
-            ":updatedAt": createdAt,
-          },
-        })
-      );
+      createCommit(newCommitId, id, parentId, rollbackMetadata, sizeBytes, createdAt);
+      updateLatestCommit(id, newCommitId, createdAt);
 
       reply.code(201).send({
         commitId: newCommitId,
