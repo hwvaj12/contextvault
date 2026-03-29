@@ -112,6 +112,27 @@ class Workspaces
     }
 
     /**
+     * Clone a workspace to a new customer (or same customer).
+     *
+     * @param string      $workspaceId      Source workspace identifier.
+     * @param string      $targetCustomerId Customer who will own the clone.
+     * @param string|null $name             Optional name for the cloned workspace.
+     * @return array Cloned workspace data.
+     */
+    public function clone(string $workspaceId, string $targetCustomerId, ?string $name = null): array
+    {
+        $encodedId = rawurlencode($workspaceId);
+        $body = ['targetCustomerId' => $targetCustomerId];
+        if ($name !== null) {
+            $body['name'] = $name;
+        }
+
+        return $this->client->request('POST', "/workspaces/{$encodedId}/clone", [
+            RequestOptions::JSON => $body,
+        ]);
+    }
+
+    /**
      * Checkout a workspace (create a sandbox for editing).
      *
      * @param string $workspaceId Workspace identifier.

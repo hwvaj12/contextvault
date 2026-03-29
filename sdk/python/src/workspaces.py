@@ -174,6 +174,31 @@ class Workspaces:
             json={"workspaceIds": workspace_ids},
         )
 
+    def clone(
+        self,
+        workspace_id: str,
+        target_customer_id: str,
+        name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Clone a workspace to a new customer (or same customer).
+
+        Args:
+            workspace_id: The source workspace ID.
+            target_customer_id: The customer who will own the clone.
+            name: Optional name for the cloned workspace.
+
+        Returns:
+            The cloned workspace object.
+        """
+        body: Dict[str, Any] = {"targetCustomerId": target_customer_id}
+        if name is not None:
+            body["name"] = name
+        return self._request(
+            "POST",
+            f"/workspaces/{workspace_id}/clone",
+            json=body,
+        )
+
     def checkout(self, workspace_id: str) -> Dict[str, Any]:
         """Checkout a workspace (create a sandbox for editing).
 

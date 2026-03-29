@@ -7,6 +7,7 @@ import {
   listWorkspaces,
   softDeleteWorkspace,
   bulkDeleteWorkspaces,
+  cloneWorkspace,
 } from "../services/workspace.service";
 
 const CreateWorkspaceSchema = z.object({
@@ -16,6 +17,11 @@ const CreateWorkspaceSchema = z.object({
 
 const BulkDeleteSchema = z.object({
   workspaceIds: z.array(z.string().min(1)).min(1).max(100),
+});
+
+const CloneWorkspaceSchema = z.object({
+  targetCustomerId: z.string().min(1),
+  name: z.string().min(1).optional(),
 });
 
 export async function workspaceRoutes(app: FastifyInstance) {
@@ -195,6 +201,58 @@ export async function workspaceRoutes(app: FastifyInstance) {
       const body = BulkDeleteSchema.parse(request.body);
       const result = await bulkDeleteWorkspaces(body.workspaceIds);
       reply.send(result);
+    }
+  );
+
+  // POST /workspaces/:id/clone - Clone workspace to new customer/workspace
+  app.post(
+    "/workspaces/:id/clone",
+    {
+      schema: {
+        description: "Clone a workspace to a new customer or as a new workspace",
+        tags: ["Workspaces"],
+        params: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"],
+        },
+        body: {
+          type: "object",
+          required: ["targetCustomerId"],
+          properties: {
+            targetCustomerId: { type: "string" },
+            name: { type: "string" },
+          },
+        },
+        response: {
+          201: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              customerId: { type: "string" },
+              name: { type: "string" },
+              latestCommitId: { type: ["string", "null"] },
+              createdAt: { type: "string" },
+              updatedAt: { type: "string" },
+              deletedAt: { type: ["string", "null"] },
+            },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = CloneWorkspaceSchema.parse(request.body);
+      try {
+        const cloned = await cloneWorkspace(id, body.targetCustomerId, body.name);
+        reply.code(201).send(cloned);
+      } catch (err) {
+        const message = (err as Error).message;
+        if (message.includes("not found")) {
+          return reply.code(404).send({ error: message });
+        }
+        throw err;
+      }
     }
   );
 

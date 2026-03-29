@@ -197,6 +197,71 @@ export async function bulkDeleteWorkspaces(ids: string[]): Promise<BulkDeleteRes
   return { deleted, failed };
 }
 
+export async function cloneWorkspace(
+  sourceId: string,
+  targetCustomerId: string,
+  newName?: string
+): Promise<Workspace> {
+  // Verify source exists
+  const source = await getWorkspace(sourceId);
+  if (!source) {
+    throw new Error(`Source workspace not found: ${sourceId}`);
+  }
+
+  const newId = `ws_${(await import("ulid")).ulid()}`;
+  const name = newName || `${source.name} (clone)`;
+  const sourceRepoDir = path.join(WORKSPACES_DIR, sourceId);
+  const targetRepoDir = path.join(WORKSPACES_DIR, newId);
+
+  // Clone the bare git repo
+  const { execSync } = await import("child_process");
+  execSync(`git clone --bare "${sourceRepoDir}" "${targetRepoDir}"`, {
+    stdio: "pipe",
+  });
+
+  const now = new Date().toISOString();
+
+  // Insert new workspace record into SQLite
+  const db = getDb();
+  const sourceRow = db.prepare("SELECT * FROM workspaces WHERE id = ?").get(sourceId) as any;
+  const currentHead = sourceRow?.current_head ?? null;
+
+  db.prepare(`
+    INSERT INTO workspaces (id, customer_id, name, repo_location, default_branch, current_head, status, storage_class, created_at, updated_at, last_accessed_at)
+    VALUES (?, ?, ?, ?, 'main', ?, 'active', 'standard', ?, ?, ?)
+  `).run(newId, targetCustomerId, name, targetRepoDir, currentHead, now, now, now);
+
+  // Write JSON metadata for backward compatibility
+  const metaDir = path.join(DATA_DIR, "workspace-meta");
+  if (!fsSync.existsSync(metaDir)) {
+    await fs.mkdir(metaDir, { recursive: true });
+  }
+  await fs.writeFile(
+    path.join(metaDir, `${newId}.json`),
+    JSON.stringify({ id: newId, customerId: targetCustomerId, name, createdAt: now, updatedAt: now })
+  );
+
+  logAuditEvent({
+    workspaceId: newId,
+    actorType: "user",
+    actorId: targetCustomerId,
+    eventType: "workspace.cloned",
+    payload: { sourceWorkspaceId: sourceId, name, customerId: targetCustomerId },
+  });
+
+  deliver("workspace.cloned", { sourceWorkspaceId: sourceId, workspaceId: newId, customerId: targetCustomerId, name });
+
+  return {
+    id: newId,
+    customerId: targetCustomerId,
+    name,
+    latestCommitId: currentHead,
+    createdAt: now,
+    updatedAt: now,
+    deletedAt: null,
+  };
+}
+
 export function updateWorkspaceHead(workspaceId: string, commitHash: string): void {
   const db = getDb();
   const now = new Date().toISOString();

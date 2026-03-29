@@ -63,6 +63,17 @@ export class Workspaces {
     });
   }
 
+  /** Clone a workspace to a new customer (or same customer). */
+  async clone(
+    workspaceId: string,
+    targetCustomerId: string,
+    newName?: string
+  ): Promise<Workspace> {
+    const body: Record<string, string> = { targetCustomerId };
+    if (newName) body.name = newName;
+    return this.request<Workspace>("POST", `/workspaces/${enc(workspaceId)}/clone`, { body });
+  }
+
   // ─── Sandbox lifecycle ───────────────────────────────────────────
 
   /** Checkout a workspace (create a sandbox). */

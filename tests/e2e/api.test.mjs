@@ -208,8 +208,56 @@ async function main() {
     await request("DELETE", `/workspaces/${diffWsId}`);
     console.log("");
 
+    // ── Workspace Clone ──────────────────────────────────────────────────
+    console.log(`7. Workspace Clone`);
+
+    // Create a workspace with content
+    const cloneSrcWs = await request("POST", "/workspaces", {
+      customerId: TEST_CUSTOMER,
+      name: "Clone Source Workspace",
+    });
+    const cloneSrcId = cloneSrcWs.id;
+
+    // Push some content to the source workspace
+    const clonePush = await request("POST", `/workspaces/${cloneSrcId}/push`, {
+      files: [
+        { path: "profile.json", content: '{"athlete":"Jordan","sport":"basketball"}' },
+        { path: "notes.md", content: "# Training Notes\nDay 1 complete.\n" },
+      ],
+    });
+    assert(typeof clonePush.commitId === "string", `Source has commit: ${clonePush.commitId.slice(0, 8)}...`);
+
+    // Clone to a new customer
+    const cloneTargetCustomer = `${TEST_CUSTOMER}-clone`;
+    const cloned = await request("POST", `/workspaces/${cloneSrcId}/clone`, {
+      targetCustomerId: cloneTargetCustomer,
+      name: "Cloned Athlete Profile",
+    });
+    assert(cloned.id.startsWith("ws_"), `Cloned workspace: ${cloned.id}`);
+    assert(cloned.customerId === cloneTargetCustomer, "Clone has correct customerId");
+    assert(cloned.name === "Cloned Athlete Profile", "Clone has correct name");
+
+    // Pull both and verify content matches
+    const srcPull = await request("GET", `/workspaces/${cloneSrcId}/pull`);
+    const clonePull = await request("GET", `/workspaces/${cloned.id}/pull`);
+
+    assert(srcPull.files.length === clonePull.files.length, `Both have ${srcPull.files.length} files`);
+
+    const srcFiles = {};
+    for (const f of srcPull.files) srcFiles[f.path] = f.content;
+    const cloneFiles = {};
+    for (const f of clonePull.files) cloneFiles[f.path] = f.content;
+
+    assert(srcFiles["profile.json"] === cloneFiles["profile.json"], "profile.json content matches");
+    assert(srcFiles["notes.md"] === cloneFiles["notes.md"], "notes.md content matches");
+
+    // Cleanup clone workspaces
+    await request("DELETE", `/workspaces/${cloneSrcId}`);
+    await request("DELETE", `/workspaces/${cloned.id}`);
+    console.log("");
+
     // ── Abort run ────────────────────────────────────────────────────────
-    console.log(`7. Run Abort`);
+    console.log(`8. Run Abort`);
 
     // Abort requires empty JSON body
     const abort = await request("POST", `/runs/${runId}/abort`, {});
@@ -217,7 +265,7 @@ async function main() {
     console.log("");
 
     // ── Cleanup ─────────────────────────────────────────────────────────
-    console.log(`8. Cleanup`);
+    console.log(`9. Cleanup`);
 
     // Destroy sandbox
     const destroy = await request("DELETE", `/workspaces/${workspaceId}/sandbox`);
