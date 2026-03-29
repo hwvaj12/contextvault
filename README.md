@@ -26,43 +26,15 @@ Memory that persists. Context that travels. Git that scales.
 
 ## How It Works
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  1. Create workspace (durable Git repo)                         │
-│     → data/workspaces/{id}.git/                                 │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  2. Start run (agent execution)                                 │
-│     → Checkout workspace to sandbox                              │
-│     → Record base commit + workspace HEAD                        │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  3. Agent works in sandbox                                      │
-│     → Normal file operations (read, write, create, delete)       │
-│     → No Git knowledge required                                 │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  4. Finalize run (commit changes)                               │
-│     → Detect file changes (added, modified, deleted)              │
-│     → Create structured commit with metadata                     │
-│     → Merge to canonical workspace                              │
-│     → Detect conflicts if concurrent                            │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  5. Cleanup                                                     │
-│     → Destroy sandbox                                           │
-│     → Release locks                                             │
-│     → Update workspace metadata                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+**1. Create workspace** — A durable Git repo is created at `data/workspaces/{id}.git/`
+
+**2. Start run** — Agent checks out the workspace into an ephemeral sandbox, recording the base commit and workspace HEAD
+
+**3. Agent works** — Agent operates on normal files in the sandbox (read, write, create, delete). No Git knowledge required.
+
+**4. Finalize** — ContextVault detects all changes, creates a structured commit, merges to the canonical workspace, and detects any conflicts
+
+**5. Cleanup** — Sandbox is destroyed, locks are released, workspace metadata is updated
 
 ## Features
 
