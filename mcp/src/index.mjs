@@ -1,6 +1,6 @@
 // ContextVault MCP Server
-import { Server } from "@modelcontextprotocol/sdk/server";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import simpleGit from "simple-git";
 import { ulid } from "ulid";
 import fs from "fs/promises";
@@ -13,17 +13,21 @@ import * as z from "zod";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const WORKSPACES_DIR = path.join(DATA_DIR, "workspaces");
+const SANDBOX_DIR = path.join(DATA_DIR, "sandboxes");
 const META_DIR = path.join(DATA_DIR, "workspace-meta");
 
 function ensureDirs() {
   fsSync.mkdirSync(WORKSPACES_DIR, { recursive: true });
+  fsSync.mkdirSync(SANDBOX_DIR, { recursive: true });
   fsSync.mkdirSync(META_DIR, { recursive: true });
 }
 ensureDirs();
 
 function metaPath(workspaceId) { return path.join(META_DIR, `${workspaceId}.json`); }
 function repoPath(workspaceId) { return path.join(WORKSPACES_DIR, workspaceId); }
+function sandboxPath(workspaceId) { return path.join(SANDBOX_DIR, workspaceId); }
 function gitFor(workspaceId) { return simpleGit(repoPath(workspaceId)); }
+function gitForSandbox(workspaceId) { return simpleGit(sandboxPath(workspaceId)); }
 
 function readMeta(workspaceId) {
   const p = metaPath(workspaceId);
@@ -255,11 +259,139 @@ async function rollbackWorkspace(workspaceId, toVersion, metadata) {
   return { commitId, parentId, sizeBytes, createdAt, files };
 }
 
+// ============ Sandbox Operations ============
+
+async function checkoutWorkspace(workspaceId) {
+  const src = repoPath(workspaceId);
+  const dest = sandboxPath(workspaceId);
+
+  // Verify source exists
+  if (!fsSync.existsSync(src)) {
+    throw new Error(`Workspace ${workspaceId} does not exist`);
+  }
+
+  // Remove existing sandbox if present
+  if (fsSync.existsSync(dest)) {
+    await fs.rm(dest, { recursive: true, force: true });
+  }
+
+  // Create sandbox directory
+  fsSync.mkdirSync(dest, { recursive: true });
+
+  // Clone from persistent to sandbox (with working tree)
+  const git = simpleGit(src);
+  const log = await git.log({ maxCount: 1 });
+
+  if (log.latest) {
+    // Clone to sandbox with working tree
+    await git.clone(src, dest, ['--single-branch', '--branch', 'main']);
+    const sandboxGit = simpleGit(dest);
+    // Checkout to the latest commit
+    await sandboxGit.checkout(log.latest.hash);
+  } else {
+    // Empty workspace - just init
+    const sandboxGit = simpleGit(dest);
+    await sandboxGit.init();
+    await sandboxGit.addConfig("receive.denyCurrentBranch", "updateInstead");
+  }
+
+  return { sandboxPath: dest };
+}
+
+async function commitWorkspace(workspaceId, agentId, taskId, tags) {
+  const sandbox = sandboxPath(workspaceId);
+  const persistent = repoPath(workspaceId);
+
+  // Verify sandbox exists
+  if (!fsSync.existsSync(sandbox)) {
+    throw new Error(`Sandbox ${workspaceId} does not exist`);
+  }
+
+  const sandboxGit = gitForSandbox(workspaceId);
+
+  // Check if there are changes to commit
+  const status = await sandboxGit.status();
+  if (status.files.length === 0) {
+    throw new Error("No changes to commit in sandbox");
+  }
+
+  // Commit in sandbox
+  const metadata = {};
+  if (agentId) metadata.agentId = agentId;
+  if (taskId) metadata.taskId = taskId;
+  if (tags) metadata.tags = tags;
+
+  const filePaths = status.files;
+  const message = encodeCommitMessage(metadata, filePaths, 0);
+
+  await sandboxGit.add("-A");
+  const result = await sandboxGit.commit(message);
+  let commitId = result.commit || "";
+  if (!commitId) {
+    const log = await sandboxGit.log({ maxCount: 1 });
+    commitId = log.latest?.hash || "";
+  }
+
+  // Push to persistent storage - handle files directly
+  const persistentGit = gitFor(workspaceId);
+  
+  // Get the committed files from sandbox
+  const treeRaw = await sandboxGit.raw(["ls-tree", "-r", "--name-only", commitId]);
+  const files = treeRaw.trim().split("\n").filter(Boolean);
+  
+  // Sync files to persistent storage
+  for (const fp of files) {
+    const content = await sandboxGit.raw(["show", `${commitId}:${fp}`]);
+    const filePath = path.join(persistent, fp);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, content, "utf-8");
+  }
+  
+  // Commit to persistent storage
+  await persistentGit.add("-A");
+  const persistResult = await persistentGit.commit(message);
+  let persistCommitId = persistResult.commit || "";
+  if (!persistCommitId) {
+    const log = await persistentGit.log({ maxCount: 1 });
+    persistCommitId = log.latest?.hash || "";
+  }
+
+  return { commitId: persistCommitId };
+}
+
+async function destroySandbox(workspaceId) {
+  const sandbox = sandboxPath(workspaceId);
+
+  if (fsSync.existsSync(sandbox)) {
+    await fs.rm(sandbox, { recursive: true, force: true });
+  }
+
+  return { success: true };
+}
+
+async function getSandboxStatus(workspaceId) {
+  const sandbox = sandboxPath(workspaceId);
+  const exists = fsSync.existsSync(sandbox);
+
+  if (!exists) {
+    return { exists: false, path: sandbox, hasChanges: false };
+  }
+
+  let hasChanges = false;
+  try {
+    const sandboxGit = gitForSandbox(workspaceId);
+    const status = await sandboxGit.status();
+    hasChanges = status.files.length > 0;
+  } catch {}
+
+  return { exists: true, path: sandbox, hasChanges };
+}
+
 // ============ MCP Server ============
 
 const WORKSPACE_ID_REGEX = /^ws_[A-Za-z0-9]{10,26}$/;
 
-const mcpServer = new Server({ name: "contextvault-mcp", version: "0.1.0" });
+const mcpServer = new McpServer({ name: "contextvault-mcp", version: "0.1.0" });
 
 mcpServer.registerTool("create_workspace", {
   description: "Create a new workspace",
@@ -382,6 +514,69 @@ mcpServer.registerTool("rollback_workspace", {
   const metadata = {};
   if (agentId) metadata.agentId = agentId;
   const result = await rollbackWorkspace(workspaceId, toVersion, metadata);
+  return { content: [{ type: "text", text: JSON.stringify(result) }] };
+});
+
+mcpServer.registerTool("checkout_workspace", {
+  description: "Checkout a workspace into a sandbox for editing",
+  inputSchema: {
+    workspaceId: z.string().describe("Workspace ID to checkout"),
+  }
+}, async ({ workspaceId }) => {
+  if (!WORKSPACE_ID_REGEX.test(workspaceId)) {
+    return { content: [{ type: "text", text: "Invalid workspace ID" }], isError: true };
+  }
+  try {
+    const result = await checkoutWorkspace(workspaceId);
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  } catch (err) {
+    return { content: [{ type: "text", text: err.message }], isError: true };
+  }
+});
+
+mcpServer.registerTool("commit_workspace", {
+  description: "Commit sandbox changes back to the persistent workspace",
+  inputSchema: {
+    workspaceId: z.string().describe("Workspace ID"),
+    agentId: z.string().optional().describe("Agent ID"),
+    taskId: z.string().optional().describe("Task ID"),
+    tags: z.array(z.string()).optional().describe("Tags"),
+  }
+}, async ({ workspaceId, agentId, taskId, tags }) => {
+  if (!WORKSPACE_ID_REGEX.test(workspaceId)) {
+    return { content: [{ type: "text", text: "Invalid workspace ID" }], isError: true };
+  }
+  try {
+    const result = await commitWorkspace(workspaceId, agentId, taskId, tags);
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  } catch (err) {
+    return { content: [{ type: "text", text: err.message }], isError: true };
+  }
+});
+
+mcpServer.registerTool("destroy_workspace", {
+  description: "Destroy a workspace sandbox (does not affect persistent storage)",
+  inputSchema: {
+    workspaceId: z.string().describe("Workspace ID"),
+  }
+}, async ({ workspaceId }) => {
+  if (!WORKSPACE_ID_REGEX.test(workspaceId)) {
+    return { content: [{ type: "text", text: "Invalid workspace ID" }], isError: true };
+  }
+  const result = await destroySandbox(workspaceId);
+  return { content: [{ type: "text", text: JSON.stringify(result) }] };
+});
+
+mcpServer.registerTool("get_sandbox_status", {
+  description: "Get sandbox status for a workspace",
+  inputSchema: {
+    workspaceId: z.string().describe("Workspace ID"),
+  }
+}, async ({ workspaceId }) => {
+  if (!WORKSPACE_ID_REGEX.test(workspaceId)) {
+    return { content: [{ type: "text", text: "Invalid workspace ID" }], isError: true };
+  }
+  const result = await getSandboxStatus(workspaceId);
   return { content: [{ type: "text", text: JSON.stringify(result) }] };
 });
 
