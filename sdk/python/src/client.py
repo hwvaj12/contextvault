@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .workspaces import Workspaces
 from .webhooks import Webhooks
+from .apikeys import ApiKeys
 
 DEFAULT_BASE_URL = "http://localhost:3000"
 
@@ -35,3 +36,4 @@ class Client:
         self.base_url = base_url.rstrip("/")
         self.workspaces = Workspaces(self.base_url, self.api_key)
         self.webhooks = Webhooks(self.base_url, self.api_key)
+        self.api_keys = ApiKeys(self.base_url, self.api_key)

@@ -4,6 +4,7 @@ import { getWorkspace } from "../services/workspace.service";
 import { getCommitHistory } from "../services/commit.service";
 import { deliver } from "../services/webhook.service";
 import { getStorage } from "../storage";
+import { verifyWorkspaceOwnership } from "../middleware/tenant";
 
 const PushSchema = z.object({
   files: z.array(
@@ -65,6 +66,9 @@ export async function commitRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
+
       const body = PushSchema.parse(request.body);
 
       const workspace = await getWorkspace(id);
@@ -112,6 +116,8 @@ export async function commitRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const { version } = request.query as { version?: string };
+
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
 
       const workspace = await getWorkspace(id);
       if (!workspace) {
@@ -161,6 +167,8 @@ export async function commitRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const { limit } = request.query as { limit?: number };
 
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
+
       const workspace = await getWorkspace(id);
       if (!workspace) {
         return reply.code(404).send({ error: "Workspace not found" });
@@ -203,6 +211,8 @@ export async function commitRoutes(app: FastifyInstance) {
           .send({ error: "Both 'from' and 'to' query params are required" });
       }
 
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
+
       const workspace = await getWorkspace(id);
       if (!workspace) {
         return reply.code(404).send({ error: "Workspace not found" });
@@ -241,6 +251,9 @@ export async function commitRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
+
       const body = RollbackSchema.parse(request.body);
 
       const workspace = await getWorkspace(id);

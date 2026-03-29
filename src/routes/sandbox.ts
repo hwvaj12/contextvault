@@ -7,6 +7,7 @@ import {
   commitSandbox,
   destroySandbox,
 } from "../services/sandbox.service";
+import { verifyWorkspaceOwnership } from "../middleware/tenant";
 
 const CommitSandboxSchema = z.object({
   agentId: z.string().optional(),
@@ -48,6 +49,8 @@ export async function sandboxRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params as { id: string };
 
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
+
       const workspace = await getWorkspace(id);
       if (!workspace) {
         return reply.code(404).send({ error: { code: "WORKSPACE_NOT_FOUND", message: `Workspace ${id} not found` } });
@@ -78,6 +81,8 @@ export async function sandboxRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
 
       try {
         const status = await getSandboxStatus(id);
@@ -112,6 +117,9 @@ export async function sandboxRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
+
       const body = CommitSandboxSchema.parse(request.body || {});
 
       try {
@@ -139,6 +147,8 @@ export async function sandboxRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
 
       try {
         const result = await destroySandbox(id);

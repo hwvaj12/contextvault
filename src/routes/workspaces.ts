@@ -9,6 +9,7 @@ import {
   bulkDeleteWorkspaces,
   cloneWorkspace,
 } from "../services/workspace.service";
+import { getRequestCustomerId, verifyWorkspaceOwnership } from "../middleware/tenant";
 
 const CreateWorkspaceSchema = z.object({
   customerId: z.string().min(1),
@@ -58,6 +59,13 @@ export async function workspaceRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const body = CreateWorkspaceSchema.parse(request.body);
+      const tenantId = getRequestCustomerId(request);
+
+      // Non-admin users can only create workspaces for themselves
+      if (tenantId && body.customerId !== tenantId) {
+        return (reply as any).code(403).send({ error: "Cannot create workspace for another customer" });
+      }
+
       const id = `ws_${ulid()}`;
       const workspace = await createWorkspace(id, body.customerId, body.name);
       reply.code(201).send(workspace);
@@ -119,7 +127,11 @@ export async function workspaceRoutes(app: FastifyInstance) {
         customerId?: string;
       };
 
-      const result = await listWorkspaces({ limit, offset, customerId });
+      // Non-admin users always scoped to their own customer
+      const tenantId = getRequestCustomerId(request);
+      const effectiveCustomerId = tenantId || customerId;
+
+      const result = await listWorkspaces({ limit, offset, customerId: effectiveCustomerId });
       reply.send({
         data: result.workspaces,
         pagination: {
@@ -148,6 +160,9 @@ export async function workspaceRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
+
       const workspace = await getWorkspace(id);
 
       if (!workspace) {
@@ -199,7 +214,22 @@ export async function workspaceRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const body = BulkDeleteSchema.parse(request.body);
-      const result = await bulkDeleteWorkspaces(body.workspaceIds);
+      const tenantId = getRequestCustomerId(request);
+
+      // Filter to only workspaces owned by this customer
+      let idsToDelete = body.workspaceIds;
+      if (tenantId) {
+        const { getDb } = await import("../db");
+        const db = getDb();
+        idsToDelete = body.workspaceIds.filter((wsId) => {
+          const row = db
+            .prepare("SELECT customer_id FROM workspaces WHERE id = ?")
+            .get(wsId) as { customer_id: string } | undefined;
+          return row?.customer_id === tenantId;
+        });
+      }
+
+      const result = await bulkDeleteWorkspaces(idsToDelete);
       reply.send(result);
     }
   );
@@ -242,6 +272,9 @@ export async function workspaceRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
+
       const body = CloneWorkspaceSchema.parse(request.body);
       try {
         const cloned = await cloneWorkspace(id, body.targetCustomerId, body.name);
@@ -249,7 +282,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
       } catch (err) {
         const message = (err as Error).message;
         if (message.includes("not found")) {
-          return reply.code(404).send({ error: message });
+          return (reply as any).code(404).send({ error: message });
         }
         throw err;
       }
@@ -272,6 +305,9 @@ export async function workspaceRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
+
       await softDeleteWorkspace(id);
       reply.code(204).send();
     }

@@ -23,6 +23,7 @@ class Client
     private int $maxRetries;
     private ?Workspaces $workspaces = null;
     private ?WebhooksResource $webhooksResource = null;
+    private ?ApiKeysResource $apiKeysResource = null;
 
     public function __construct(
         string $apiKey,
@@ -71,6 +72,20 @@ class Client
         }
 
         return $this->webhooksResource;
+    }
+
+    /**
+     * Get the API keys resource.
+     *
+     * @return ApiKeysResource
+     */
+    public function apiKeys(): ApiKeysResource
+    {
+        if ($this->apiKeysResource === null) {
+            $this->apiKeysResource = new ApiKeysResource($this);
+        }
+
+        return $this->apiKeysResource;
     }
 
     /**

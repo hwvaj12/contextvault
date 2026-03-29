@@ -7,10 +7,33 @@ import {
   listRunsForWorkspace,
   transitionRun,
 } from "../services/run.service";
+import { verifyWorkspaceOwnership, getRequestCustomerId } from "../middleware/tenant";
+import { getDb } from "../db";
 
 const CreateRunSchema = z.object({
   agentId: z.string().min(1),
 });
+
+/**
+ * Verify that a run belongs to a workspace owned by the authenticated customer.
+ * Returns false and sends 404 if not allowed.
+ */
+function verifyRunOwnership(request: any, reply: any, run: any): boolean {
+  const customerId = getRequestCustomerId(request);
+  if (customerId === null) return true; // admin
+
+  const db = getDb();
+  const row = db
+    .prepare("SELECT customer_id FROM workspaces WHERE id = ? AND status != 'deleted'")
+    .get(run.workspaceId) as { customer_id: string } | undefined;
+
+  if (!row || row.customer_id !== customerId) {
+    reply.code(404).send({ error: { code: "RUN_NOT_FOUND", message: `Run ${run.id} not found` } });
+    return false;
+  }
+
+  return true;
+}
 
 export async function runRoutes(app: FastifyInstance) {
   // POST /workspaces/:id/runs - Create a new run
@@ -35,6 +58,8 @@ export async function runRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const body = CreateRunSchema.parse(request.body);
+
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
 
       const workspace = await getWorkspace(id);
       if (!workspace) {
@@ -70,6 +95,8 @@ export async function runRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const { limit } = request.query as { limit?: number };
 
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
+
       const workspace = await getWorkspace(id);
       if (!workspace) {
         return reply.code(404).send({
@@ -104,6 +131,9 @@ export async function runRoutes(app: FastifyInstance) {
           error: { code: "RUN_NOT_FOUND", message: `Run ${id} not found` },
         });
       }
+
+      if (!verifyRunOwnership(request, reply, run)) return;
+
       reply.send(run);
     }
   );
@@ -139,8 +169,9 @@ export async function runRoutes(app: FastifyInstance) {
         });
       }
 
+      if (!verifyRunOwnership(request, reply, run)) return;
+
       try {
-        // Transition to finalizing
         const finalizing = transitionRun(id, "finalizing", {
           executionSummary: body.executionSummary,
         });
@@ -183,6 +214,8 @@ export async function runRoutes(app: FastifyInstance) {
           error: { code: "RUN_NOT_FOUND", message: `Run ${id} not found` },
         });
       }
+
+      if (!verifyRunOwnership(request, reply, run)) return;
 
       try {
         const aborted = transitionRun(id, "aborted", {

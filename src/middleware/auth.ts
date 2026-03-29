@@ -1,18 +1,44 @@
 import { FastifyRequest, FastifyReply } from "fastify";
+import { verifyKey } from "../services/apikey.service";
 
-const API_KEY = "cv-test-api-key-123";
+const MASTER_KEY = process.env.CONTEXTVAULT_API_KEY || "cv-test-api-key-123";
 
 const PUBLIC_PATHS = ["/health", "/docs", "/docs/"];
 
-function extractBasicAuthKey(authHeader: string | undefined, apiKey: string): boolean {
-  if (!authHeader || !authHeader.startsWith("Basic ")) return false;
+declare module "fastify" {
+  interface FastifyRequest {
+    customerId?: string;
+    isAdmin?: boolean;
+  }
+}
+
+function extractBasicAuthKey(authHeader: string | undefined): string | null {
+  if (!authHeader || !authHeader.startsWith("Basic ")) return null;
   const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
-  // Git sends "username:password" — we accept the API key as either part
   const colonIdx = decoded.indexOf(":");
-  if (colonIdx === -1) return decoded === apiKey;
+  if (colonIdx === -1) return decoded;
   const username = decoded.slice(0, colonIdx);
   const password = decoded.slice(colonIdx + 1);
-  return username === apiKey || password === apiKey;
+  // Return whichever part looks like a key
+  return password || username;
+}
+
+function authenticateKey(key: string, request: FastifyRequest): boolean {
+  // Master key = admin bypass (no customer scoping)
+  if (key === MASTER_KEY) {
+    request.isAdmin = true;
+    return true;
+  }
+
+  // Try tenant-scoped key lookup
+  const verified = verifyKey(key);
+  if (verified) {
+    request.customerId = verified.customerId;
+    request.isAdmin = false;
+    return true;
+  }
+
+  return false;
 }
 
 export async function authMiddleware(
@@ -27,11 +53,12 @@ export async function authMiddleware(
   }
 
   // Check X-API-Key header first
-  const apiKey = request.headers["x-api-key"];
-  if (apiKey === API_KEY) return;
+  const apiKey = request.headers["x-api-key"] as string | undefined;
+  if (apiKey && authenticateKey(apiKey, request)) return;
 
   // Fall back to HTTP Basic Auth (used by git clone/push)
-  if (extractBasicAuthKey(request.headers.authorization, API_KEY)) return;
+  const basicKey = extractBasicAuthKey(request.headers.authorization);
+  if (basicKey && authenticateKey(basicKey, request)) return;
 
   // For git requests, send WWW-Authenticate to trigger credential prompt
   if (request.url.startsWith("/repos/")) {

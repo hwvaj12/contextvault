@@ -4,6 +4,7 @@ export { ContextVaultClient } from "./client";
 // Resource classes
 export { Workspaces } from "./workspaces";
 export { Webhooks } from "./webhooks";
+export { ApiKeys } from "./apikeys";
 
 // Types
 export type {
@@ -32,6 +33,12 @@ export type {
   WebhookRegistration,
   RegisterWebhookOptions,
 } from "./types";
+
+export type {
+  ApiKey,
+  ApiKeyWithPlainKey,
+  CreateApiKeyOptions,
+} from "./apikeys";
 
 // Errors
 export {

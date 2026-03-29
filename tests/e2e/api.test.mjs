@@ -274,7 +274,7 @@ async function main() {
 
     // Delete workspace
     await request("DELETE", `/workspaces/${workspaceId}`);
-    
+
     // Verify deletion
     try {
       await request("GET", `/workspaces/${workspaceId}`);
@@ -282,6 +282,89 @@ async function main() {
     } catch {
       assert(true, "Deleted workspace returns 404");
     }
+    console.log("");
+
+    // ── Multi-tenant Isolation ──────────────────────────────────────────
+    console.log(`10. Multi-tenant Isolation`);
+
+    // Create API keys for two different customers
+    const customerA = `tenant-a-${Date.now()}`;
+    const customerB = `tenant-b-${Date.now()}`;
+
+    const keyA = await request("POST", "/api-keys", { customerId: customerA, name: "Key A" });
+    assert(typeof keyA.plainKey === "string" && keyA.plainKey.startsWith("cvk_"), `Created API key for customer A: ${keyA.id}`);
+    assert(keyA.customerId === customerA, "Key A belongs to customer A");
+
+    const keyB = await request("POST", "/api-keys", { customerId: customerB, name: "Key B" });
+    assert(typeof keyB.plainKey === "string" && keyB.plainKey.startsWith("cvk_"), `Created API key for customer B: ${keyB.id}`);
+    assert(keyB.customerId === customerB, "Key B belongs to customer B");
+
+    // Helper: make requests with a specific tenant key
+    async function tenantRequest(method, path, body, tenantKey) {
+      const url = `${API_BASE_URL}${path}`;
+      const headers = {
+        "X-API-Key": tenantKey,
+        "Accept": "application/json",
+      };
+      if (body !== undefined) {
+        headers["Content-Type"] = "application/json";
+      }
+      const res = await fetch(url, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = text; }
+      return { status: res.status, ok: res.ok, data };
+    }
+
+    // Customer A creates a workspace using their scoped key
+    const wsA = await tenantRequest("POST", "/workspaces", { customerId: customerA, name: "Tenant A Workspace" }, keyA.plainKey);
+    assert(wsA.ok && wsA.data.id, `Customer A created workspace: ${wsA.data.id}`);
+    const wsAId = wsA.data.id;
+
+    // Customer B creates a workspace using their scoped key
+    const wsB = await tenantRequest("POST", "/workspaces", { customerId: customerB, name: "Tenant B Workspace" }, keyB.plainKey);
+    assert(wsB.ok && wsB.data.id, `Customer B created workspace: ${wsB.data.id}`);
+    const wsBId = wsB.data.id;
+
+    // Customer A lists workspaces — should only see their own
+    const listA = await tenantRequest("GET", "/workspaces", undefined, keyA.plainKey);
+    assert(listA.ok, "Customer A can list workspaces");
+    assert(listA.data.data.some(w => w.id === wsAId), "Customer A sees their own workspace");
+    assert(!listA.data.data.some(w => w.id === wsBId), "Customer A does NOT see Customer B's workspace");
+
+    // Customer B lists workspaces — should only see their own
+    const listB = await tenantRequest("GET", "/workspaces", undefined, keyB.plainKey);
+    assert(listB.ok, "Customer B can list workspaces");
+    assert(listB.data.data.some(w => w.id === wsBId), "Customer B sees their own workspace");
+    assert(!listB.data.data.some(w => w.id === wsAId), "Customer B does NOT see Customer A's workspace");
+
+    // Customer A tries to get Customer B's workspace — should 404
+    const crossGet = await tenantRequest("GET", `/workspaces/${wsBId}`, undefined, keyA.plainKey);
+    assert(crossGet.status === 404, "Customer A cannot access Customer B's workspace (404)");
+
+    // Customer A tries to delete Customer B's workspace — should 404
+    const crossDelete = await tenantRequest("DELETE", `/workspaces/${wsBId}`, undefined, keyA.plainKey);
+    assert(crossDelete.status === 404, "Customer A cannot delete Customer B's workspace (404)");
+
+    // Customer A cannot create workspace for Customer B
+    const crossCreate = await tenantRequest("POST", "/workspaces", { customerId: customerB, name: "Sneaky" }, keyA.plainKey);
+    assert(crossCreate.status === 403, "Customer A cannot create workspace for Customer B (403)");
+
+    // List API keys (via scoped key)
+    const keysA = await tenantRequest("GET", "/api-keys", undefined, keyA.plainKey);
+    assert(keysA.ok && keysA.data.data.length >= 1, "Customer A can list their API keys");
+
+    // Cleanup: use admin key to delete test workspaces
+    await request("POST", "/workspaces/bulk-delete", { workspaceIds: [wsAId, wsBId] });
+
+    // Revoke keys
+    await request("DELETE", `/api-keys/${keyA.id}`);
+    await request("DELETE", `/api-keys/${keyB.id}`);
+    assert(true, "Cleaned up tenant test data");
     console.log("");
 
   } catch (err) {

@@ -5,6 +5,7 @@ import * as crypto from "crypto";
 export type WebhookEvent =
   | "workspace.created"
   | "workspace.deleted"
+  | "workspace.cloned"
   | "sandbox.checked_out"
   | "sandbox.destroyed"
   | "run.started"
