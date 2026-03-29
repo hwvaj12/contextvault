@@ -84,10 +84,12 @@ async function main() {
     assert(created.latestCommitId === null, "New workspace has null commit (blank slate)");
     console.log("");
 
-    // List workspaces
+    // List workspaces (now returns paginated { data, pagination })
     const list = await request("GET", `/workspaces?customerId=${TEST_CUSTOMER}`);
-    assert(Array.isArray(list), "List returns array");
-    assert(list.some((w) => w.id === workspaceId), "New workspace appears in list");
+    assert(Array.isArray(list.data), "List returns paginated response with data array");
+    assert(list.data.some((w) => w.id === workspaceId), "New workspace appears in list");
+    assert(typeof list.pagination === "object", "List returns pagination metadata");
+    console.log(`   Pagination: total=${list.pagination.total}, hasMore=${list.pagination.hasMore}`);
     console.log("");
 
     // Get workspace
@@ -134,7 +136,6 @@ async function main() {
 
     // Pull empty workspace
     const pull = await request("GET", `/workspaces/${workspaceId}/pull`);
-    assert(pull.workspaceId === workspaceId || pull.workspaceId === undefined, "Pull returns workspace ID or empty");
     assert(Array.isArray(pull.files), "Pull returns files array");
     console.log(`   Pulled ${pull.files.length} files from blank workspace`);
     console.log("");

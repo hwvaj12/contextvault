@@ -53,35 +53,71 @@ export async function workspaceRoutes(app: FastifyInstance) {
     }
   );
 
-  // GET /workspaces - List workspaces
+  // GET /workspaces - List workspaces (with pagination)
   app.get(
     "/workspaces",
     {
       schema: {
-        description: "List all workspaces",
+        description: "List workspaces with pagination",
         tags: ["Workspaces"],
+        querystring: {
+          type: "object",
+          properties: {
+            limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+            offset: { type: "integer", minimum: 0, default: 0 },
+            customerId: { type: "string" },
+          },
+        },
         response: {
           200: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                id: { type: "string" },
-                customerId: { type: "string" },
-                name: { type: "string" },
-                latestCommitId: { type: ["string", "null"] },
-                createdAt: { type: "string" },
-                updatedAt: { type: "string" },
-                deletedAt: { type: ["string", "null"] },
+            type: "object",
+            properties: {
+              data: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    customerId: { type: "string" },
+                    name: { type: "string" },
+                    latestCommitId: { type: ["string", "null"] },
+                    createdAt: { type: "string" },
+                    updatedAt: { type: "string" },
+                    deletedAt: { type: ["string", "null"] },
+                  },
+                },
+              },
+              pagination: {
+                type: "object",
+                properties: {
+                  total: { type: "integer" },
+                  limit: { type: "integer" },
+                  offset: { type: "integer" },
+                  hasMore: { type: "boolean" },
+                },
               },
             },
           },
         },
       },
     },
-    async (_request, reply) => {
-      const workspaces = await listWorkspaces();
-      reply.send(workspaces);
+    async (request, reply) => {
+      const { limit = 50, offset = 0, customerId } = request.query as {
+        limit?: number;
+        offset?: number;
+        customerId?: string;
+      };
+
+      const result = await listWorkspaces({ limit, offset, customerId });
+      reply.send({
+        data: result.workspaces,
+        pagination: {
+          total: result.total,
+          limit,
+          offset,
+          hasMore: offset + result.workspaces.length < result.total,
+        },
+      });
     }
   );
 

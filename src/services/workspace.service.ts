@@ -69,16 +69,58 @@ export async function getWorkspace(id: string): Promise<Workspace | null> {
   return getStorage().getWorkspace(id);
 }
 
-export async function listWorkspaces(): Promise<Workspace[]> {
+export interface ListWorkspacesOptions {
+  limit?: number;
+  offset?: number;
+  customerId?: string;
+}
+
+export interface ListWorkspacesResult {
+  workspaces: Workspace[];
+  total: number;
+}
+
+export async function listWorkspaces(options: ListWorkspacesOptions = {}): Promise<ListWorkspacesResult> {
+  const { limit = 50, offset = 0, customerId } = options;
+
   const db = getDb();
-  const rows = db.prepare("SELECT * FROM workspaces WHERE status != 'deleted' ORDER BY created_at DESC").all() as any[];
+
+  if (customerId) {
+    const rows = db.prepare(
+      "SELECT * FROM workspaces WHERE status != 'deleted' AND customer_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    ).all(customerId, limit, offset) as any[];
+
+    const total = db.prepare(
+      "SELECT COUNT(*) as count FROM workspaces WHERE status != 'deleted' AND customer_id = ?"
+    ).get(customerId) as { count: number };
+
+    return {
+      workspaces: rows.map(rowToWorkspace),
+      total: total.count,
+    };
+  }
+
+  const rows = db.prepare(
+    "SELECT * FROM workspaces WHERE status != 'deleted' ORDER BY created_at DESC LIMIT ? OFFSET ?"
+  ).all(limit, offset) as any[];
+
+  const total = db.prepare(
+    "SELECT COUNT(*) as count FROM workspaces WHERE status != 'deleted'"
+  ).get() as { count: number };
 
   if (rows.length > 0) {
-    return rows.map(rowToWorkspace);
+    return {
+      workspaces: rows.map(rowToWorkspace),
+      total: total.count,
+    };
   }
 
   // Fall back to JSON metadata
-  return getStorage().listWorkspaces();
+  const fallback = await getStorage().listWorkspaces();
+  return {
+    workspaces: fallback,
+    total: fallback.length,
+  };
 }
 
 export async function softDeleteWorkspace(id: string): Promise<void> {
