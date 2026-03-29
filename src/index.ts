@@ -11,6 +11,7 @@ import { sandboxRoutes } from "./routes/sandbox";
 import { runRoutes } from "./routes/runs";
 import { webhookRoutes } from "./routes/webhooks";
 import { apiKeyRoutes } from "./routes/apikeys";
+import { vaultBrowserRoutes } from "./routes/vault-browser";
 import { getDb, closeDb } from "./db";
 
 async function main() {
@@ -48,6 +49,9 @@ async function main() {
   await app.register(swaggerUi, {
     routePrefix: "/docs",
   });
+
+  // Vault browser — registered before auth middleware (handles own auth via UI)
+  await app.register(vaultBrowserRoutes, { prefix: "/vault" });
 
   // Git remote routes — registered before auth middleware (handles own auth)
   await app.register(gitRemoteRoutes);

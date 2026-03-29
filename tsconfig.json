@@ -15,5 +15,5 @@
     "sourceMap": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "ui"]
+  "exclude": ["node_modules", "dist", "ui", "src/vault-browser"]
 }
