@@ -105,21 +105,29 @@ composer require contextvault/contextvault-php
 
 ## Architecture
 
+The system has two layers:
+
+**Control Plane** — Coordinates workspace operations
+- Workspace Service: manages workspace lifecycle
+- Run Service: manages run lifecycle from created → merged/conflicted/failed
+- Lock Service: exclusive/shared locking with conflict detection
+- Audit Event: logs all significant operations
+
+**Storage Layer** — Commit Gateway handles Git operations
+- Creates run branches for isolated agent work
+- Detects file changes (add/modify/delete)
+- Creates structured commits with metadata
+- Merges to canonical workspace
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Control Plane                                             │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐ │
-│  │Workspace │  │   Run    │  │   Lock   │  │  Audit   │ │
-│  │ Service  │  │ Service  │  │ Service  │  │  Event   │ │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘ │
-│                           │                               │
-│                    Commit Gateway                           │
-│                           │                               │
-│              ┌────────────┴────────────┐                  │
-│              │  Canonical Repo Store   │                  │
-│              │  (Bare Git repos)       │                  │
-│              └─────────────────────────┘                  │
-└─────────────────────────────────────────────────────────────┘
+Sandboxed Agent ←→ Run Service ←→ Lock Service
+                            ↓
+                     Commit Gateway
+                            ↓
+              ┌──────────────────────────┐
+              │   Canonical Repo Store   │
+              │   (Bare Git repos)       │
+              └──────────────────────────┘
 ```
 
 ## Status
