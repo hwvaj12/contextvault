@@ -1,11 +1,19 @@
 import simpleGit from "simple-git";
 import * as path from "path";
-import { Run } from "./run.service";
+import { getDb } from "../db";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const WORKSPACES_DIR = path.join(DATA_DIR, "workspaces");
 
 function repoDir(workspaceId: string): string {
+  // Try to look up from DB first
+  try {
+    const db = getDb();
+    const row = db.prepare("SELECT repo_location FROM workspaces WHERE id = ?").get(workspaceId) as any;
+    if (row?.repo_location) return row.repo_location;
+  } catch {
+    // DB not available, fall back
+  }
   return path.join(WORKSPACES_DIR, workspaceId);
 }
 

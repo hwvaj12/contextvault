@@ -155,8 +155,16 @@ curl -X POST http://localhost:3000/runs/{run_id}/finalize
 
 ## Status
 
-**v0.1** — MVP with sandbox workflow
-**v0.2** (in progress) — Full run lifecycle, concurrency, SQLite DB
+**v0.2** — ✅ All 4 phases complete!
+
+| Phase | Status | Features |
+|-------|--------|----------|
+| Phase 1: Foundation | ✅ Done | SQLite DB, Run service, workspace seeding |
+| Phase 2: Concurrency | ✅ Done | Lock service, conflict detection, path safety |
+| Phase 3: Commit Gateway | ✅ Done | Run branches, structured commits, merge policy |
+| Phase 4: Polish | ✅ Done | 24 tests passing, structured logging |
+
+**Test Results:** 4 test files, 24 tests, all passing
 
 ## Documentation
 
