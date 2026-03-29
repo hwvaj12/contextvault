@@ -8,10 +8,7 @@ Every AI agent session starts from scratch. ContextVault gives agents persistent
 
 AI agents are stateless. They can't remember what happened in previous sessions. Prompt context is expensive and limited.
 
-**ContextVault solution:**
-```
-Agent needs context → materialize workspace into sandbox → agent works → commit → destroy sandbox
-```
+**ContextVault solution:** Agent needs context → materialize workspace into sandbox → agent works → commit → destroy sandbox
 
 Memory that persists. Context that travels. Git that scales.
 
