@@ -44,11 +44,11 @@ ContextVault is a multi-tenant, versioned workspace storage layer for AI agents.
   - [ ] README with quickstart
   - [ ] Integration test
 
-- [ ] **PHP SDK** (🔄 IN PROGRESS - agent running)
-  - [ ] Fix wrong API paths
-  - [ ] Match TypeScript SDK signatures
-  - [ ] Complete composer.json
-  - [ ] README with quickstart
+- [x] **PHP SDK** ✅ COMPLETE (2026-03-29)
+  - [x] Fix wrong API paths
+  - [x] Match TypeScript SDK signatures
+  - [x] Add ConflictError exception
+  - [x] README with quickstart
 
 ### 🟡 Phase 6: DX & Documentation
 **Priority: HIGH** — Docs are the product experience for SDK users.
