@@ -78,30 +78,16 @@ ContextVault is a multi-tenant, versioned workspace storage layer for AI agents.
 
 ## Current Work
 
-### TypeScript SDK (Phase 5, Task 1 of N)
+### ✅ ALL PHASES COMPLETE (2026-03-29)
 
-**Agent:** Claude Code (background)
-**Started:** 2026-03-29
-**Task:** Build complete TypeScript SDK in sdk/typescript/
+**Phases 0-4:** Core Engine ✅ (v0.2, 24 tests, full lifecycle)
+**Phase 5:** SDK Completion ✅ (TypeScript, Python, PHP - all done)
+**Phase 6:** DX & Documentation ✅ (quickstarts, LangChain, Postman)
+**Phase 7:** E2E + Observability ✅ (22/22 E2E tests pass, logger built)
+**Phase 8:** Production Hardening ✅ (rate limiting, pagination)
 
-**Context for agent:**
-- REST API base: http://localhost:3000
-- API key auth: X-API-Key header
-- Key endpoints:
-  - POST /workspaces → create
-  - GET /workspaces → list
-  - GET /workspaces/:id → get
-  - DELETE /workspaces/:id → delete
-  - POST /workspaces/:id/runs → start run
-  - GET /runs/:id → get run
-  - POST /runs/:id/finalize → commit
-  - POST /runs/:id/abort → abort
-  - GET /workspaces/:id/sandbox → sandbox status
-  - DELETE /workspaces/:id/sandbox → destroy sandbox
-  - POST /workspaces/:id/checkout → checkout to sandbox
-  - GET /workspaces/:id/pull → pull latest
-  - GET /workspaces/:id/history → commit history
-  - GET /workspaces/:id/diff?from=&to= → diff
+**Total commits today:** 14
+**Test suite:** 24 unit/integration + 22 E2E = 46 tests passing
 
 ---
 
