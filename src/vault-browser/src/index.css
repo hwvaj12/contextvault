@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgb(17 24 39);
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(75 85 99);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(107 114 128);
+}
+
+/* Syntax highlighting basics */
+.line-add {
+  background: rgba(34, 197, 94, 0.1);
+}
+.line-del {
+  background: rgba(239, 68, 68, 0.1);
+}

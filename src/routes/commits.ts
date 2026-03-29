@@ -115,7 +115,8 @@ export async function commitRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const { version } = request.query as { version?: string };
+      const { version, v } = request.query as { version?: string; v?: string };
+      const commitRef = version || v;
 
       if (!verifyWorkspaceOwnership(request, reply, id)) return;
 
@@ -125,7 +126,7 @@ export async function commitRoutes(app: FastifyInstance) {
       }
 
       const storage = getStorage();
-      const result = await storage.pullCommit(id, version);
+      const result = await storage.pullCommit(id, commitRef);
 
       if (!result) {
         return reply.send({ commitId: null, files: [], metadata: {} });
