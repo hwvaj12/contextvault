@@ -250,39 +250,13 @@ interface AuditEvent {
 
 ## Default Workspace Layout
 
-When a workspace is created, it seeds this structure:
+**ContextVault uses BLANK workspaces.** No forced structure. No template files.
 
-```
-/
-├── profile/
-│   ├── summary.md          # Human-readable summary
-│   └── facts.json          # Structured key facts
-├── memory/
-│   ├── timeline.md         # Chronological events
-│   └── known_entities.json # Known people, places, things
-├── state/
-│   ├── current.json         # Current state snapshot
-│   └── preferences.json    # Preferences/settings
-├── tasks/
-│   ├── open.yaml           # Pending tasks
-│   └── completed.yaml      # Completed tasks
-├── decisions/
-│   └── {date}-{slug}.md    # Decision records
-├── artifacts/
-│   ├── reports/
-│   ├── drafts/
-│   └── outputs/
-├── logs/
-│   └── run_summaries/     # Past run summaries
-└── system/
-    └── workspace_manifest.yaml  # Workspace metadata
-```
+When a workspace is created, it's an empty Git repository. AI agents decide what files and directories to create based on their needs.
 
-**Principles:**
-- Many small, coherent files
-- Predictable directories
-- Text-first formats (Markdown, JSON, YAML)
-- Easy to diff
+This is intentional — different agents have different memory needs. Forcing a structure would be a leaky abstraction.
+
+If you need a structured workspace, seed it yourself after creation.
 
 ---
 
