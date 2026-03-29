@@ -157,7 +157,7 @@ class Workspaces:
         Args:
             workspace_id: The workspace ID.
         """
-        self._request("DELETE", f"/workspaces/{workspace_id}")
+        self._request("DELETE", f"/workspaces/{workspace_id}", json={})
 
     def checkout(self, workspace_id: str) -> Dict[str, Any]:
         """Checkout a workspace (create a sandbox for editing).
@@ -170,7 +170,7 @@ class Workspaces:
         Returns:
             Sandbox details including sandboxId and path.
         """
-        return self._request("POST", f"/workspaces/{workspace_id}/sandbox")
+        return self._request("POST", f"/workspaces/{workspace_id}/sandbox", json={})
 
     def commit(
         self,
@@ -210,7 +210,7 @@ class Workspaces:
         return self._request(
             "POST",
             f"/workspaces/{workspace_id}/sandbox/commit",
-            json=body if body else None,
+            json=body if body else {},
         )
 
     def destroy(self, workspace_id: str) -> Dict[str, Any]:
@@ -224,7 +224,7 @@ class Workspaces:
         Returns:
             Destroy result.
         """
-        return self._request("DELETE", f"/workspaces/{workspace_id}/sandbox")
+        return self._request("DELETE", f"/workspaces/{workspace_id}/sandbox", json={})
 
     def pull(self, workspace_id: str, version: Optional[str] = None) -> Dict[str, Any]:
         """Pull the latest committed state (all files) for a workspace.
