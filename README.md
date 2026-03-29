@@ -18,6 +18,12 @@ AI agents are stateless. They can't remember what happened in previous sessions.
 
 Memory that persists. Context that travels. Git that scales.
 
+## Use Cases
+
+**Persistent customer context** — Store dynamically loadable customer profiles, project state, and user preferences. When an agent picks up a ticket or resumes a conversation, it pulls the full context — past decisions, preferences, history — and continues where it left off.
+
+**Replayable agent runs** — Each agent run is its own workspace with a full Git history. Inspect what happened in a specific run. Resume an interrupted task from the exact checkpoint. Roll back to a previous run if something went wrong. Audit every decision across time.
+
 ## Core Concepts
 
 | Concept | Description |
