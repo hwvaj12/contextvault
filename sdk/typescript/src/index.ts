@@ -11,6 +11,7 @@ export type {
   Sandbox,
   FileEntry,
   CommitEntry,
+  CommitResult,
   CommitMetadata,
   PullResult,
   HistoryResult,

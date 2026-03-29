@@ -23,7 +23,7 @@ export interface Workspace {
 export interface Sandbox {
   workspaceId: string;
   sandboxId: string;
-  path?: string;
+  sandboxPath: string;
   status?: string;
   createdAt?: string;
 }
@@ -43,11 +43,22 @@ export interface CommitMetadata {
 
 /** A commit entry in the workspace history. */
 export interface CommitEntry {
-  commitId: string;
+  id: string;
   workspaceId: string;
   parentId: string | null;
   files?: string[];
   metadata?: CommitMetadata;
+  sizeBytes?: number;
+  createdAt: string;
+}
+
+/** The response from a commit operation. */
+export interface CommitResult {
+  commitId: string;
+  workspaceId: string;
+  sandboxId?: string;
+  parentId: string | null;
+  filesChanged?: string[];
   sizeBytes?: number;
   createdAt: string;
 }

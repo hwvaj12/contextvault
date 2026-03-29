@@ -5,6 +5,7 @@ import {
   FileEntry,
   HistoryResult,
   CommitEntry,
+  CommitResult,
   CreateWorkspaceOptions,
   ListWorkspacesOptions,
   CommitOptions,
@@ -61,8 +62,8 @@ export class Workspaces {
   }
 
   /** Commit sandbox changes back to the workspace. */
-  async commit(workspaceId: string, options: CommitOptions = {}): Promise<CommitEntry> {
-    return this.request<CommitEntry>("POST", `/workspaces/${enc(workspaceId)}/sandbox/commit`, {
+  async commit(workspaceId: string, options: CommitOptions = {}): Promise<CommitResult> {
+    return this.request<CommitResult>("POST", `/workspaces/${enc(workspaceId)}/sandbox/commit`, {
       body: {
         ...(options.agentId && { agentId: options.agentId }),
         ...(options.taskId && { taskId: options.taskId }),
