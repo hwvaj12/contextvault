@@ -1,10 +1,154 @@
 # ContextVault — Multi-Tenant Storage Architecture
 
-> **Design document for production multi-customer storage on S3.**
+> **Design document for production multi-customer storage.**
 
 ## Overview
 
-ContextVault supports multiple customers, where each customer can have unlimited workspaces. Storage must be isolated, scalable, and cost-visible per customer.
+ContextVault supports multiple customers, where each customer can have unlimited workspaces. Storage must be isolated, durable, and fast for agent workloads.
+
+## Hot vs Cold Storage
+
+**Critical distinction (per spec Section 19.3):**
+> "Do not mount object storage as if it were a normal POSIX filesystem and use that as the live active `.git` directory layer."
+
+| Layer | Storage Type | Purpose | Examples |
+|-------|--------------|---------|---------|
+| **Hot (Canonical)** | Git server + local disk | Active Git operations | push, pull, clone, commit |
+| **Cold (Backup)** | S3-compatible object store | Durability, disaster recovery | Nightly snapshots, archives |
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Agent                                                        │
+└────────────────────────┬────────────────────────────────────┘
+                         │ git clone / git push
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  ContextVault Git Server (hot)                              │
+│  - Handles Git smart protocol (upload-pack, receive-pack)    │
+│  - Local SSD/NVMe for active repos                          │
+│  - Low-latency random I/O for Git objects                   │
+└────────────┬────────────────────────────────────────────────┘
+             │ nightly backup
+             ▼
+┌─────────────────────────────────────────────────────────────┐
+│  S3 Compatible Storage (cold)                               │
+│  - Long-term durability (11 9's)                           │
+│  - Disaster recovery                                        │
+│  - Geo-redundancy                                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Git Server Options
+
+### Option 1: Self-Hosted Git Server (Recommended for v1)
+
+ContextVault runs its own Git server — **which it already does**.
+
+The current implementation handles:
+- `git clone http://localhost:3000/repos/{id}` (via upload-pack)
+- `git push` (via receive-pack)
+- Git smart protocol over HTTP
+
+**Pros:**
+- Full control
+- We already built this
+- Simple mental model
+- Can add auth, rate limiting, caching
+
+**Cons:**
+- Need to manage server infrastructure
+- Need to handle scaling
+
+### Option 2: Gitea (Self-hosted, lightweight)
+
+A minimal Git hosting platform:
+- Single binary, easy to deploy
+- Built-in web UI, issue tracking
+- MySQL/PostgreSQL backend
+- S3 for storage backend
+
+```bash
+# docker-compose.yml
+services:
+  gitea:
+    image: gitea/gitea:latest
+    environment:
+      - GITEA__storage__storage__TYPE=s3
+      - GITEA__storage__s3__ACCESSKEYID=xxx
+      - GITEA__storage__s3__SECRETACCESSKEY=xxx
+      - GITEA__storage__s3__BUCKET=gitea repos
+      - GITEA__storage__s3__REGION=us-east-1
+```
+
+**Pros:**
+- Proven, production-ready
+- Web UI included
+- S3 integration built-in
+
+**Cons:**
+- Adds complexity
+- Full Git hosting features (may be overkill)
+
+### Option 3: GitHub/GitLab API
+
+Use existing Git hosting as backend.
+
+**Pros:**
+- Fully managed
+- No server maintenance
+- Great APIs
+
+**Cons:**
+- Vendor lock-in
+- Per-repo pricing
+- Less control
+
+### Option 4: GitHub Enterprise / GitLab Premium
+
+For enterprise customers wanting isolated deployment.
+
+---
+
+## Recommended Architecture for Production
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  ContextVault Cluster (Kubernetes/Docker)                    │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │  ContextVault Git Server                             │  │
+│  │  - Fastify + simple-git                            │  │
+│  │  - Git smart protocol (HTTP)                        │  │
+│  │  - JWT auth middleware                              │  │
+│  │  - Rate limiting                                    │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                           │                                 │
+│         ┌─────────────────┼─────────────────┐              │
+│         │                 │                 │              │
+│         ▼                 ▼                 ▼              │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐      │
+│  │ Worker Node │   │ Worker Node │   │ Worker Node │      │
+│  │ Local SSD   │   │ Local SSD   │   │ Local SSD   │      │
+│  │ repos/{id}  │   │ repos/{id}  │   │ repos/{id}  │      │
+│  └─────────────┘   └─────────────┘   └─────────────┘      │
+│         │                 │                 │              │
+│         └─────────────────┼─────────────────┘              │
+│                           │                                 │
+│                    Shared storage (EBS, NFS, or distributed) │
+└───────────────────────────┼─────────────────────────────────┘
+                            │ nightly sync
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  S3 Compatible Storage (Cold)                              │
+│                                                              │
+│  Bucket: contextvault-backups                               │
+│  Path: {customerId}/workspaces/{workspaceId}/{date}/       │
+│                                                              │
+│  - Nightly snapshots of all repos                          │
+│  - Point-in-time recovery                                   │
+│  - Cross-region replication (optional)                      │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Multi-Tenant Model
 
@@ -27,91 +171,56 @@ ContextVault
 
 ### Data Model
 
-Each workspace belongs to a `customerId`:
-
 ```typescript
 interface Workspace {
-  id: string;           // ws_01HXXXXXXXX
-  customerId: string;   // "meta-profile"
-  name: string;         // "LeBron James"
+  id: string;                // ws_01HXXXXXXXX
+  customerId: string;        // "meta-profile"
+  name: string;             // "LeBron James"
+  repoLocation: string;      // Path to local Git repo
+  defaultBranch: string;     // "main"
+  currentHead: string;       // Latest commit hash
+  status: 'active' | 'suspended' | 'deleted';
   createdAt: string;
-  latestCommitId: string | null;
+  updatedAt: string;
+  lastAccessedAt: string;
 }
 ```
 
-**Namespace rule:** `customerId` + `workspaceId` must be globally unique.
-
-## Storage Layout
-
-### S3 Bucket Structure
+## Local Storage Layout (Hot)
 
 ```
-s3://{bucket-name}/{customerId}/workspaces/{workspaceId}/.git/
-├── HEAD
-├── config
-├── objects/
-│   ├── pack/
-│   └── pack/
-├── refs/
-└── hooks/
+/var/lib/contextvault/
+└── repos/
+    └── {customerId}/
+        └── {workspaceId}.git/
+            ├── objects/
+            ├── refs/
+            ├── HEAD
+            └── hooks/
 ```
 
-**Key insight:** Each workspace is a complete Git repository. The `.git` directory IS the workspace from Git's perspective.
+**Storage characteristics:**
+- SSD/NVMe required for Git object access
+- ~10-100MB per typical workspace
+- Git compression keeps sizes manageable
 
-### S3 Prefix Hierarchy
+## S3 Storage Layout (Cold)
 
 ```
-contextvault-prod/
-├── meta-profile/
-│   └── workspaces/
-│       ├── ws_01HXXXXXXXX/
-│       │   └── .git/
-│       └── ws_01HYYYYYYYY/
-│           └── .git/
-├── tourney-machine/
-│   └── workspaces/
-│       └── ws_01HZZZZZZZZ/
-│           └── .git/
-└── ...
+s3://contextvault-backups/{customerId}/workspaces/{workspaceId}/
+├── 2024-03-28/
+│   └── {workspaceId}.tar.gz
+├── 2024-03-27/
+│   └── {workspaceId}.tar.gz
+└── latest/
+    └── {workspaceId}.git.tar.gz
 ```
 
-**Benefits:**
-- IAM policies can restrict by prefix: `s3://contextvault-prod/meta-profile/*`
-- Cost allocation tags per prefix
-- CloudWatch metrics per prefix
-
-## API Changes
-
-### Customer Scoping
-
-All API calls are scoped by customer via `customerId`:
-
-```bash
-# List workspaces for a customer
-GET /workspaces?customerId=meta-profile
-
-# Create workspace for a customer
-POST /workspaces
-{
-  "customerId": "meta-profile",
-  "name": "LeBron James"
-}
-```
-
-### Storage-Aware Responses
-
-```json
-{
-  "id": "ws_01HXXXXXXXX",
-  "customerId": "meta-profile",
-  "name": "LeBron James",
-  "storage": {
-    "region": "us-east-1",
-    "bucket": "contextvault-prod",
-    "prefix": "meta-profile/workspaces/ws_01HXXXXXXXX/"
-  }
-}
-```
+**Backup strategy:**
+- Nightly incremental backups
+- Weekly full snapshots
+- 30-day retention (configurable)
+- Point-in-time recovery available
 
 ## Authentication & Authorization
 
@@ -125,152 +234,58 @@ tourney-machine: cv-key-prod-tm-yyy
 
 Each key grants access only to that customer's workspaces.
 
-### IAM Policy Example
+### Git Access Control
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-      "Resource": "arn:aws:s3:::contextvault-prod/meta-profile/*"
-    }
-  ]
-}
-```
-
-## Sandbox with Remote Storage
-
-Sandboxes are temporary clones. With S3-backed storage:
-
-```
-1. Agent requests checkout
-   → git clone s3://bucket/customer/workspaces/ws_XXX
-   → Creates temp directory on compute instance
-   
-2. Agent works in sandbox
-   → Local filesystem operations (fast)
-   
-3. Agent commits
-   → git push back to S3
-   
-4. Sandbox destroyed
-   → Temp directory cleaned up
-```
-
-**Challenge:** `git clone` from S3 requires either:
-- A git remote helper (git-remote-s3)
-- An S3-compatible Git server (GitLab S3 storage, Gitea, etc.)
-- A lightweight Git daemon in front of S3
-
-### Solution: git-remote-s3
-
-AWS Labs provides `git-remote-s3` — lets you do:
-
-```bash
-git clone s3://contextvault-prod/meta-profile/workspaces/ws_01HXXX
-```
-
-**Pros:**
-- Native Git experience
-- No server component for storage
-- Works with any S3-compatible provider
-
-**Cons:**
-- Requires helper installed on client
-- Performance varies by object store
-
-### Alternative: Lightweight Git Server
-
-Run a minimal Git server (Node.js/Fastify) that:
-1. Receives `git clone/fetch/push` requests
-2. Translates to S3 operations via `@aws-sdk/client-s3`
-3. Uses git's smart protocol over HTTP
-
+Git operations use the same API key auth:
 ```bash
 git clone https://git.contextvault.ai/customer/workspace.git
+# Auth via: X-API-Key header or .netrc file
 ```
 
-**Pros:**
-- Standard Git over HTTPS (works everywhere)
-- Can add auth, rate limiting, logging
-- Can cache frequently-accessed repos
+## Implementation Roadmap
 
-**Cons:**
-- Need to run/host the server
-- More complexity than pure S3
+### Phase 1: MVP (Current)
+- Local filesystem storage
+- ContextVault API handles Git protocol
+- Basic backup via `git clone --mirror`
 
-## Implementation Options
+### Phase 2: Production Hot Storage
+- Deploy ContextVault Git server cluster
+- Local SSD storage with shared filesystem
+- Implement repo caching and prefetching
 
-| Option | Complexity | Best For |
-|--------|------------|----------|
-| **git-remote-s3** | Low | Simple, client-side |
-| **Git server + S3** | Medium | Production, standard Git |
-| **GitHub/GitLab API** | Low | Quick start, fully managed |
+### Phase 3: Cold Storage Integration
+- Nightly backup jobs to S3
+- Point-in-time recovery
+- Cross-region replication
 
-## Recommended Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  ContextVault API (Fastify)                                 │
-│                                                              │
-│  Routes:                                                    │
-│  - /workspaces (CRUD)                                       │
-│  - /workspaces/:id/sandbox (checkout/commit/destroy)         │
-│  - /push, /pull, /history                                   │
-└────────────────┬────────────────────────────────────────────┘
-                 │ Git operations
-                 ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Git Server (Fastify + simple-git)                          │
-│                                                              │
-│  Implements Git smart protocol over HTTP:                     │
-│  - POST /:customer/:workspace/git/upload-pack               │
-│  - POST /:customer/:workspace/git/receive-pack              │
-│                                                              │
-│  Backed by S3:                                              │
-│  - read/write Git objects to S3                             │
-│  - cache frequently-accessed repos locally                  │
-└────────────────┬────────────────────────────────────────────┘
-                 │ S3 API
-                 ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Amazon S3 (or S3-compatible: R2, MinIO, etc.)             │
-│                                                              │
-│  Bucket: contextvault-prod                                  │
-│  Key: {customerId}/workspaces/{workspaceId}/.git/...       │
-└─────────────────────────────────────────────────────────────┘
-```
+### Phase 4: Multi-Tenant Isolation
+- Namespace per customer
+- Quotas and rate limits
+- Usage metering
 
 ## Cost Estimation
 
 Assuming:
 - 100 customers
 - 1000 workspaces per customer
-- Average workspace: 10MB (.git)
-- 100 commits per workspace
+- Average workspace: 50MB (.git with history)
+- Hot storage: 50GB total
+- Cold storage: 500GB (with compression)
 
-**Storage:**
-- 100 × 1000 × 10MB = 1TB raw storage
-- With Git compression + deltas: ~500GB
-- S3 cost: ~$12/month (at $0.023/GB)
+**Hot Storage (SSD):**
+- 50GB × $0.10/GB = $5/month
 
-**API Requests:**
-- Clone/fetch: ~$0.09 per 1000 requests
-- Push: ~$0.05 per 1000 requests
+**Cold Storage (S3):**
+- 500GB × $0.023/GB = $11.50/month
+- 100,000 objects × $0.001/1000 = $0.10/month
 
-**Total estimated:** ~$15-30/month for 100 customers, 1000 workspaces each.
-
-## Next Steps
-
-1. **MVP:** Use local filesystem + nightly S3 backup
-2. **V1:** Implement git-remote-s3 for direct S3 access
-3. **V2:** Build Git server layer for standard HTTPS Git access
+**Total:** ~$17/month for 100 customers, 1000 workspaces each.
 
 ## Open Questions
 
-- [ ] Which S3-compatible provider (AWS, Cloudflare R2, MinIO)?
-- [ ] Git server hosting (Lambda, EC2, container)?
-- [ ] Customer onboarding flow (API key generation)?
-- [ ] Data migration from local to S3?
+- [x] Hot storage: Use ContextVault's own Git server (already built)
+- [ ] Cold storage: S3 vs R2 vs MinIO?
+- [ ] Backup frequency: Nightly sufficient?
+- [ ] Retention policy: 30 days default?
+- [ ] Git server hosting: Single node vs Kubernetes?
