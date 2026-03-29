@@ -1,146 +1,224 @@
-# ContextVault — Git-Native Storage
+# ContextVault — Storage Layer
 
-> **Status:** This document describes the current implementation (as of 2026-03-28).
-> The old SQLite/DynamoDB abstraction has been replaced with Git-native storage.
+> **Storage Architecture — Updated 2026-03-28**
 
 ## Overview
 
-Each workspace **is** a Git repository. All versioning is handled by Git itself — no custom commit tracking, no diff logic, no rollback implementation needed.
+ContextVault uses **Git-native storage** with a **sandbox model** for agent execution.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  ContextVault                                                │
+│                                                              │
+│  ┌─────────────┐         ┌─────────────┐                   │
+│  │  Sandboxes  │◄───────►│   Agents    │                   │
+│  │  (temp)     │          │             │                   │
+│  └──────┬──────┘          └─────────────┘                   │
+│         │                                                   │
+│         │ commit                                            │
+│         ▼                                                   │
+│  ┌─────────────┐                                            │
+│  │ Workspaces  │  (persistent Git repos)                   │
+│  │             │                                            │
+│  └─────────────┘                                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Storage Layout
 
 ```
 data/
-├── workspace-meta/           # JSON files for workspace metadata
-│   └── {workspaceId}.json   # (customerId, name, timestamps)
-└── workspaces/
-    └── {workspaceId}/       # One git repo per workspace
-        └── .git/           # Actual Git repository
+├── workspace-meta/              # Workspace metadata (JSON)
+│   └── {workspaceId}.json
+├── workspaces/                 # Persistent Git repos (source of truth)
+│   └── {workspaceId}/
+│       └── .git/
+└── sandboxes/                   # Temporary agent workspaces
+    └── {workspaceId}/          # Clone of workspace
+        └── .git/
 ```
 
-## Why Git?
+## Sandbox Model
 
-| Aspect | Custom Implementation | Git-native |
-|--------|----------------------|------------|
-| Diff | Write diff algorithm | `git diff` |
-| History | Track commit records | `git log` |
-| Rollback | Track reverse changes | `git revert` |
-| Branching | Build from scratch | `git branch` |
-| Storage | Custom file management | Git handles it |
-| Reliability | Unknown | Battle-tested |
+### Lifecycle
 
-## Core Operations
-
-### Create Workspace
-```typescript
-git init data/workspaces/{workspace_id}/
 ```
-Creates a new bare git repo per workspace.
+1. CHECKOUT
+   Source: data/workspaces/{id}/.git
+   Dest:   data/sandboxes/{id}/
+   Action: git clone (or git init + pull)
+   Result: Agent can read/write files
 
-### Push (Create Commit)
+2. AGENT EXECUTES
+   Agent works in data/sandboxes/{id}/
+   Normal filesystem operations
+   No impact on persistent storage
+
+3. COMMIT
+   Source: data/sandboxes/{id}/
+   Dest:   data/workspaces/{id}/
+   Action: git add + git commit + git push
+   Result: Changes persisted to workspace
+
+4. DESTROY
+   Target: data/sandboxes/{id}/
+   Action: rm -rf
+   Result: Sandbox removed, workspace intact
+```
+
+### Why Sandboxes?
+
+| Without Sandbox | With Sandbox |
+|----------------|-------------|
+| Agent works directly in workspace | Agent works in temp clone |
+| No isolation between agents | Full isolation |
+| Failed run corrupts history | Failed run = discard sandbox |
+| Agent must understand Git | Agent sees normal files |
+| No room for experimentation | Agent can try anything |
+
+## Git Operations
+
+### Workspace (Persistent)
+
 ```typescript
+// Create workspace
+git init data/workspaces/{id}/
+git config receive.denyCurrentBranch updateInstead
+
+// Push to workspace
 git add -A
-git commit -m "agent: {agentId}, task: {taskId}\n---\n{files: [...], sizeBytes: N}"
-```
-- Stage all files in workspace
-- Commit with metadata in message body
-- Returns commit hash (the version ID)
+git commit -m "message"
+git log --oneline  // history
 
-### Pull (Get Files)
-```typescript
-git show {commitHash}:{filePath}
-// or for entire state:
-git checkout {commitHash} -- .
-```
-- Get files from specific commit (or HEAD for latest)
-
-### History
-```typescript
-git log --oneline --format="%H %s %at"
-// Returns: [{hash, message, timestamp}, ...]
+// Pull from workspace
+git show {commit}:{file}  // specific file
+git checkout {commit} -- .  // entire state
 ```
 
-### Diff
+### Sandbox (Temporary)
+
 ```typescript
-git diff {fromCommit} {toCommit}
-// Returns unified diff output
+// Checkout workspace to sandbox
+git clone data/workspaces/{id}/ data/sandboxes/{id}/
+
+// Agent works... (read/write files normally)
+
+// Commit changes from sandbox to workspace
+cd data/sandboxes/{id}/
+git add -A
+git commit -m "message"
+git push  // pushes to workspace's .git
+
+// Destroy sandbox
+rm -rf data/sandboxes/{id}/
 ```
 
-### Rollback
-```typescript
-git revert --no-commit {commitHash}
-git commit -m "Revert to {commitHash}"
-```
-- Creates a NEW commit that undoes the old one
-- Preserves full history (non-destructive)
+## Workspace Metadata
 
-## Implementation
+Each workspace has metadata in `workspace-meta/{id}.json`:
 
-Using `simple-git` npm package for Git operations.
-
-```typescript
-// src/storage/git-storage.ts
-
-export interface IGitStorage {
-  initWorkspace(workspaceId: string): Promise<void>;
-  pushCommit(workspaceId: string, files: FileRecord[], metadata: CommitMetadata): Promise<Commit>;
-  pullCommit(workspaceId: string, version?: string): Promise<Commit>;
-  getHistory(workspaceId: string): Promise<Commit[]>;
-  getDiff(workspaceId: string, from: string, to: string): Promise<DiffResult>;
-  rollback(workspaceId: string, toVersion: string): Promise<Commit>;
+```json
+{
+  "id": "ws_01HXXXXXXXX",
+  "customerId": "meta-profile",
+  "name": "LeBron James",
+  "createdAt": "2024-02-28T21:00:00Z",
+  "updatedAt": "2024-02-28T21:00:00Z",
+  "deletedAt": null
 }
 ```
 
 ## Commit Message Format
 
-Git commit messages encode all agent metadata:
-
 ```
-agent: {agentId} | task: {taskId} | tags: {tag1,tag2}
+{agentId}: {taskId} | tags: {tag1,tag2}
 ---
-{"agentId":"...","taskId":"...","files":["summary.md"],"sizeBytes":1024,"createdAt":"..."}
+{"agentId":"...","taskId":"...","files":["summary.md"],"sizeBytes":1024}
 ```
 
-**Header line:** Human-readable summary for `git log`
-**Body (JSON):** Machine-parseable metadata
+## File Structure Example
 
-## Metadata Storage
+```
+data/workspaces/ws_01HXXXXXXXX/
+├── .git/
+├── profile/
+│   └── summary.md
+├── games/
+│   ├── 2024_001.json
+│   └── 2024_001.md
+└── analysis/
+    └── shooting-improvement.md
 
-| Data | Storage |
-|------|---------|
-| Workspace metadata (customerId, name) | `workspace-meta/{id}.json` |
-| File versions | Git commits |
-| Commit metadata (agentId, taskId, tags) | Git commit message |
-| File contents | Git objects |
+data/sandboxes/ws_01HXXXXXXXX/  (temporary)
+├── profile/
+│   └── summary.md
+├── games/
+│   └── 2024_001.json
+└── analysis/
+    └── new-analysis.md  (agent added this)
+```
+
+## API vs MCP vs Direct Git
+
+| Access Method | Use Case |
+|-------------|----------|
+| **MCP Server** | AI agents (Claude, Codex) |
+| **REST API** | Developers, webhooks, CLI |
+| **Direct Git** | Advanced operations, scripting |
+
+All three ultimately use the same Git storage.
+
+## Implementation Notes
+
+### Creating a Sandbox
+
+```typescript
+async function createSandbox(workspaceId: string): Promise<string> {
+  const workspacePath = path.join(WORKSPACES_DIR, workspaceId);
+  const sandboxPath = path.join(SANDBOX_DIR, workspaceId);
+  
+  // Clone workspace to sandbox
+  await fs.mkdir(sandboxPath, { recursive: true });
+  const git = simpleGit(workspacePath);
+  await git.clone(workspacePath, sandboxPath);
+  
+  return sandboxPath;
+}
+```
+
+### Committing Sandbox Changes
+
+```typescript
+async function commitSandbox(workspaceId: string, message: string): Promise<string> {
+  const sandboxPath = path.join(SANDBOX_DIR, workspaceId);
+  const workspacePath = path.join(WORKSPACES_DIR, workspaceId);
+  
+  const sandboxGit = simpleGit(sandboxPath);
+  
+  // Commit in sandbox
+  await sandboxGit.add("-A");
+  const result = await sandboxGit.commit(message);
+  
+  // Push to workspace
+  await sandboxGit.push();
+  
+  return result.commit;
+}
+```
+
+### Destroying a Sandbox
+
+```typescript
+async function destroySandbox(workspaceId: string): Promise<void> {
+  const sandboxPath = path.join(SANDBOX_DIR, workspaceId);
+  await fs.rm(sandboxPath, { recursive: true, force: true });
+}
+```
 
 ## Environment Variables
 
 ```bash
-# Local development (current)
-STORAGE_TYPE=git
-DATA_DIR=./data
-
-# Future: S3-backed Git repos
-# STORAGE_TYPE=s3-git
-# S3_BUCKET=contextvault-prod
+CONTEXTVAULT_DATA_DIR=./data           # Root data directory
+CONTEXTVAULT_WORKSPACES_DIR=data/workspaces  # Persistent storage
+CONTEXTVAULT_SANDBOX_DIR=data/sandboxes     # Temporary storage
 ```
-
-## Future: Remote Git Backends
-
-The Git-native design makes distributed storage straightforward:
-
-1. **S3-backed Git** — Push to S3, pull from S3
-2. **GitHub-backed** — Workspaces as GitHub repos
-3. **Custom Git server** — `git push contextvault.ai`
-
-All benefit from Git's built-in replication and caching.
-
-## Verification
-
-After any storage change:
-- [ ] `npm run build` passes (TypeScript compiles)
-- [ ] `npm run dev` starts without errors
-- [ ] Create workspace → `.git` folder exists in `data/workspaces/{id}/`
-- [ ] Push → `git log` shows commit with metadata in message
-- [ ] Pull → files returned correctly from git
-- [ ] History → commits parsed with metadata from messages
-- [ ] Diff → `git diff` output is returned
-- [ ] Rollback → new commit created, old content restored
