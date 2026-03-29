@@ -1,7 +1,6 @@
 import { getDb } from "../db";
 import { getStorage } from "../storage";
 import { Workspace } from "../storage/interfaces";
-import { seedWorkspaceLayout } from "./layout.service";
 import { logAuditEvent } from "./audit.service";
 import * as path from "path";
 
@@ -33,20 +32,12 @@ export async function createWorkspace(
   const now = new Date().toISOString();
   const repoLocation = path.join(WORKSPACES_DIR, id);
 
-  // Seed default layout
-  let currentHead: string | null = null;
-  try {
-    currentHead = await seedWorkspaceLayout(repoLocation, id, customerId, name);
-  } catch {
-    // Layout seeding is best-effort; workspace still usable without it
-  }
-
   // Insert into SQLite
   const db = getDb();
   db.prepare(`
     INSERT OR REPLACE INTO workspaces (id, customer_id, name, repo_location, default_branch, current_head, status, storage_class, created_at, updated_at, last_accessed_at)
-    VALUES (?, ?, ?, ?, 'main', ?, 'active', 'standard', ?, ?, ?)
-  `).run(id, customerId, name, repoLocation, currentHead, now, now, now);
+    VALUES (?, ?, ?, ?, 'main', NULL, 'active', 'standard', ?, ?, ?)
+  `).run(id, customerId, name, repoLocation, now, now, now);
 
   logAuditEvent({
     workspaceId: id,
@@ -58,7 +49,6 @@ export async function createWorkspace(
 
   return {
     ...ws,
-    latestCommitId: currentHead,
   };
 }
 

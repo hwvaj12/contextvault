@@ -107,7 +107,7 @@ class Workspaces:
         )
 
     # ------------------------------------------------------------------
-    # Public API
+    # Public API (matches TypeScript SDK exactly)
     # ------------------------------------------------------------------
 
     def create(self, customer_id: str, name: str) -> Dict[str, Any]:
@@ -122,24 +122,23 @@ class Workspaces:
         """
         return self._request(
             "POST",
-            "/api/workspaces",
+            "/workspaces",
             json={"customerId": customer_id, "name": name},
         )
 
-    def list(self, customer_id: str) -> List[Dict[str, Any]]:
-        """List all workspaces for a customer.
+    def list(self, customer_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List all workspaces, optionally filtered by customer.
 
         Args:
-            customer_id: The customer whose workspaces to list.
+            customer_id: Optional customer ID to filter by.
 
         Returns:
             A list of workspace objects.
         """
-        return self._request(
-            "GET",
-            "/api/workspaces",
-            params={"customerId": customer_id},
-        )
+        params: Optional[Dict[str, Any]] = None
+        if customer_id is not None:
+            params = {"customerId": customer_id}
+        return self._request("GET", "/workspaces", params=params)
 
     def get(self, workspace_id: str) -> Dict[str, Any]:
         """Get a single workspace by ID.
@@ -150,86 +149,135 @@ class Workspaces:
         Returns:
             The workspace object.
         """
-        return self._request("GET", f"/api/workspaces/{workspace_id}")
+        return self._request("GET", f"/workspaces/{workspace_id}")
 
     def delete(self, workspace_id: str) -> None:
-        """Delete a workspace.
+        """Soft-delete a workspace.
 
         Args:
             workspace_id: The workspace ID.
         """
-        self._request("DELETE", f"/api/workspaces/{workspace_id}")
+        self._request("DELETE", f"/workspaces/{workspace_id}")
 
     def checkout(self, workspace_id: str) -> Dict[str, Any]:
-        """Checkout a workspace sandbox for editing.
+        """Checkout a workspace (create a sandbox for editing).
+
+        POST /workspaces/{id}/sandbox
 
         Args:
             workspace_id: The workspace ID.
 
         Returns:
-            Sandbox details including the working path.
+            Sandbox details including sandboxId and path.
         """
-        return self._request("POST", f"/api/workspaces/{workspace_id}/checkout")
+        return self._request("POST", f"/workspaces/{workspace_id}/sandbox")
 
-    def commit(self, workspace_id: str, message: str, author: str) -> Dict[str, Any]:
-        """Commit current sandbox changes.
+    def commit(
+        self,
+        workspace_id: str,
+        message: Optional[str] = None,
+        author: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Commit sandbox changes back to the workspace.
+
+        POST /workspaces/{id}/sandbox/commit
 
         Args:
             workspace_id: The workspace ID.
-            message: Commit message.
-            author: Author name/identifier.
+            message: Optional commit message.
+            author: Optional author name/identifier.
+            agent_id: Optional agent ID.
+            task_id: Optional task ID.
+            tags: Optional list of tags.
 
         Returns:
-            Commit details.
+            Commit entry details.
         """
+        body: Dict[str, Any] = {}
+        if message is not None:
+            body["message"] = message
+        if author is not None:
+            body["author"] = author
+        if agent_id is not None:
+            body["agentId"] = agent_id
+        if task_id is not None:
+            body["taskId"] = task_id
+        if tags is not None:
+            body["tags"] = tags
         return self._request(
             "POST",
-            f"/api/workspaces/{workspace_id}/commit",
-            json={"message": message, "author": author},
+            f"/workspaces/{workspace_id}/sandbox/commit",
+            json=body if body else None,
         )
 
-    def destroy(self, workspace_id: str) -> None:
-        """Destroy a workspace sandbox without committing.
+    def destroy(self, workspace_id: str) -> Dict[str, Any]:
+        """Destroy (tear down) the sandbox for a workspace.
 
-        Args:
-            workspace_id: The workspace ID.
-        """
-        self._request("POST", f"/api/workspaces/{workspace_id}/destroy")
-
-    def pull(self, workspace_id: str) -> List[Dict[str, Any]]:
-        """Pull (list) all files in a workspace.
+        DELETE /workspaces/{id}/sandbox
 
         Args:
             workspace_id: The workspace ID.
 
         Returns:
-            A list of file objects.
+            Destroy result.
         """
-        return self._request("GET", f"/api/workspaces/{workspace_id}/files")
+        return self._request("DELETE", f"/workspaces/{workspace_id}/sandbox")
 
-    def get_file(self, workspace_id: str, file_path: str) -> Any:
-        """Get the contents of a single file.
+    def pull(self, workspace_id: str, version: Optional[str] = None) -> Dict[str, Any]:
+        """Pull the latest committed state (all files) for a workspace.
+
+        GET /workspaces/{id}/pull
+
+        Args:
+            workspace_id: The workspace ID.
+            version: Optional specific commit version to pull.
+
+        Returns:
+            Pull result with files array.
+        """
+        params: Optional[Dict[str, Any]] = None
+        if version is not None:
+            params = {"version": version}
+        return self._request("GET", f"/workspaces/{workspace_id}/pull", params=params)
+
+    def get_file(self, workspace_id: str, file_path: str) -> Dict[str, Any]:
+        """Get a single file from the latest commit of a workspace.
+
+        GET /workspaces/{id}/pull?path=filePath
 
         Args:
             workspace_id: The workspace ID.
             file_path: Path to the file within the workspace.
 
         Returns:
-            The file content/metadata.
+            File entry with path and content.
         """
-        # URL-encode the file path as a path segment
-        safe_path = file_path.lstrip("/")
         return self._request(
-            "GET", f"/api/workspaces/{workspace_id}/files/{safe_path}"
+            "GET",
+            f"/workspaces/{workspace_id}/pull",
+            params={"path": file_path},
         )
 
-    def history(self, workspace_id: str) -> List[Dict[str, Any]]:
+    def history(
+        self, workspace_id: str, limit: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Get the commit history for a workspace.
+
+        GET /workspaces/{id}/history
 
         Args:
             workspace_id: The workspace ID.
+            limit: Optional limit on number of entries to return.
 
         Returns:
-            A list of commit/history entries.
+            History result with commits array and count.
         """
-        return self._request("GET", f"/api/workspaces/{workspace_id}/history")
+        params: Optional[Dict[str, Any]] = None
+        if limit is not None:
+            params = {"limit": limit}
+        return self._request(
+            "GET", f"/workspaces/{workspace_id}/history", params=params
+        )
