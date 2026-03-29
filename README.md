@@ -1,64 +1,161 @@
 # ContextVault
 
-**Multi-tenant, versioned workspace layer for AI agent memory — powered by Git.**
+**Git-native virtual filesystem for AI agents.** Every workspace is a Git repository. Agents work in sandboxes, committing changes that persist forever.
 
-Agents push/pull execution state to customer-scoped workspaces. Every version is a Git commit. Full audit trail, diff, and rollback — built on battle-tested Git.
+## The Problem
+
+AI agents are stateless. Every conversation starts from scratch. Memory, context, and work history — gone.
+
+**ContextVault gives agents a persistent memory layer built on Git.**
+
+## Why Git?
+
+Git is the perfect storage layer for AI agents:
+
+- **Versioned** — Every change is a commit. Full history, instant rollback.
+- **Distributed** — Each workspace is a full Git repo. No single point of failure.
+- **Delta-efficient** — Only changes are stored, not full copies.
+- **Battle-tested** — Git handles billions of commits. Your data is safe.
+- **Agent-native** — Agents already understand files and Git. No new mental models.
+
+## How It Works
+
+```
+You → ContextVault → Workspace (Git repo)
+                    ↘ Sandbox (temp clone)
+```
+
+1. **Create a workspace** — A new Git repository, customer-scoped
+2. **Checkout to sandbox** — Clone the workspace to a temp directory
+3. **Agent works** — Reads and writes files normally
+4. **Commit changes** — Changes are committed back to the workspace
+5. **Destroy sandbox** — Temp directory is cleaned up
+
+The workspace persists forever. The sandbox is ephemeral.
+
+## Virtual Filesystem Model
+
+**Don't push workspace into agent context — pull workspace into a sandbox.**
+
+Agents don't need to understand Git or serialization. They just work with files:
+
+```
+Agent sees:    /sandbox/ws_01HXXXXXXXX/profile/summary.md
+               /sandbox/ws_01HXXXXXXXX/games/2024_001.json
+               /sandbox/ws_01HXXXXXXXX/analysis/shooting.md
+
+Behind scenes: Git commits in data/workspaces/ws_01HXXXXXXXX/.git/
+```
+
+No context bloat. No serialization overhead. Pure filesystem semantics.
+
+## Two Interfaces
+
+| Interface | Purpose | Best For |
+|-----------|---------|----------|
+| **MCP Server** | AI agent tool | Claude, Codex, any MCP client |
+| **REST API** | Developer access | Webhooks, CLI, integrations |
+
+Both use the same Git storage underneath.
 
 ## Quick Start
 
 ```bash
 npm install
 npm run dev        # API at localhost:3000
+cd mcp && npm install && npm run dev  # MCP on stdio
 ```
 
-No external dependencies required. Each workspace is a local Git repository. The database is just JSON metadata.
+## API Example
 
-## What is this?
+```bash
+# Create workspace
+curl -X POST http://localhost:3000/workspaces \
+  -H "X-API-Key: your-key" \
+  -d '{"customerId":"meta-profile","name":"LeBron James"}'
 
-ContextVault solves the problem of stateless AI agents. Every session starts from scratch, losing context, artifacts, and work history.
+# Checkout to sandbox (get a temp directory to work in)
+curl -X POST http://localhost:3000/workspaces/{id}/sandbox \
+  -H "X-API-Key: your-key"
 
-**The insight:** Git is the perfect versioned storage for AI agents. It's distributed, handles deltas, has battle-tested diff/merge/rollback, and agents already understand Git.
+# Agent works in /tmp/contextvault-sandbox/{id}/...
 
-ContextVault provides:
-- **Workspaces** — customer-scoped, isolated storage namespaces
-- **Push** — agents push execution state as Git commits
-- **Pull** — agents pull latest (or specific) state to restore context
-- **History** — full audit trail via `git log`
-- **Diff/Rollback** — compare and revert using native Git operations
+# Commit changes (persist to Git)
+curl -X POST http://localhost:3000/workspaces/{id}/sandbox/commit \
+  -H "X-API-Key: your-key"
+
+# Destroy sandbox (cleanup)
+curl -X DELETE http://localhost:3000/workspaces/{id}/sandbox \
+  -H "X-API-Key: your-key"
+```
+
+## MCP Tools
+
+```typescript
+// Agent workflow
+await checkout_workspace({ workspaceId: "ws_01HXXXXXXXX" })
+// → { sandboxPath: "/tmp/contextvault-sandbox/ws_01HXXXXXXXX" }
+
+// Agent reads/writes files in sandboxPath...
+
+await commit_workspace({ 
+  workspaceId: "ws_01HXXXXXXXX",
+  agentId: "my-agent",
+  taskId: "analysis-001"
+})
+// → { commitId: "abc123", filesChanged: ["profile/summary.md"] }
+
+await destroy_workspace({ workspaceId: "ws_01HXXXXXXXX" })
+// → { success: true }
+```
 
 ## Architecture
 
 ```
-data/
-├── workspace-meta/              # JSON: customerId, name, timestamps
-└── workspaces/
-    └── {workspaceId}/           # One Git repo per workspace
-        └── .git/               # Actual Git repository
+┌─────────────────────────────────────────────────────────────┐
+│  ContextVault                                                │
+│                                                              │
+│  ┌─────────────┐         ┌─────────────┐                   │
+│  │  Sandboxes  │◄──────►│   Agents    │                   │
+│  │  (temp)     │         │  (ephemeral)│                   │
+│  └──────┬──────┘         └─────────────┘                   │
+│         │ commit                                          │
+│         ▼                                                   │
+│  ┌─────────────┐                                            │
+│  │ Workspaces  │  Persistent Git repos                      │
+│  └─────────────┘  (forever)                                │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## API Endpoints
+Storage layout:
+```
+data/
+├── workspace-meta/              # JSON metadata
+├── workspaces/                  # Persistent Git repos
+│   └── {workspaceId}/.git/
+└── sandboxes/                  # Temp sandboxes
+    └── {workspaceId}/          # git clone target
+```
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/workspaces` | Create workspace (git init) |
-| GET | `/workspaces` | List all workspaces |
-| GET | `/workspaces/:id` | Get workspace metadata |
-| DELETE | `/workspaces/:id` | Soft-delete workspace |
-| POST | `/workspaces/:id/push` | Push files (git add + commit) |
-| GET | `/workspaces/:id/pull` | Pull latest state (git checkout) |
-| GET | `/workspaces/:id/pull?v=hash` | Pull specific version |
-| GET | `/workspaces/:id/history` | Commit history (git log) |
-| GET | `/workspaces/:id/diff` | Compare versions (git diff) |
-| POST | `/workspaces/:id/rollback` | Revert to version (git revert) |
+## Use Cases
 
-All endpoints require `X-API-Key` header.
+- **Agent Memory** — Give agents persistent context across sessions
+- **Athlete Profiles** — Store game history, stats, recaps per athlete
+- **Team Workspaces** — Shared context for team AI assistants
+- **Research** — Versioned research artifacts and findings
+- **Any AI Workflow** — Anywhere you need memory that persists
 
 ## Status
 
-v0.1 — Prototype in progress
-- ✅ Git-native storage (simple-git)
-- ✅ Workspace CRUD
-- ✅ Push/Pull operations
-- ✅ History/Diff/Rollback
-- 🚧 Git clone via protocol (git-upload-pack)
-- 📋 Web UI for browsing repos
+v0.1 — MVP complete ✅
+
+- ✅ Git-native storage with full version control
+- ✅ Workspace CRUD with customer scoping
+- ✅ Sandbox workflow (checkout → work → commit → destroy)
+- ✅ MCP server for AI agents
+- ✅ REST API for developers
+- ✅ Push/Pull/History/Diff/Rollback
+
+---
+
+**ContextVault: Memory that persists. Context that travels. Git that scales.**
