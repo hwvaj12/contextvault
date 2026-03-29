@@ -54,14 +54,8 @@ export default function Dashboard({ onSelect }: DashboardProps) {
               <h2 className="font-semibold text-white group-hover:text-blue-400 transition-colors truncate">
                 {ws.name}
               </h2>
-              <span
-                className={`text-xs px-2 py-0.5 rounded-full ${
-                  ws.status === "active"
-                    ? "bg-green-900/30 text-green-400"
-                    : "bg-gray-800 text-gray-500"
-                }`}
-              >
-                {ws.status}
+              <span className="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-400">
+                {ws.latestCommitId ? "active" : "empty"}
               </span>
             </div>
             <div className="space-y-1 text-xs text-gray-500">
@@ -70,12 +64,8 @@ export default function Dashboard({ onSelect }: DashboardProps) {
                 <span className="text-gray-400 font-mono">{ws.customerId}</span>
               </div>
               <div className="flex justify-between">
-                <span>Branch</span>
-                <span className="text-gray-400">{ws.defaultBranch}</span>
-              </div>
-              <div className="flex justify-between">
                 <span>Head</span>
-                <span className="text-gray-400 font-mono">{ws.currentHead?.slice(0, 7) || "none"}</span>
+                <span className="text-gray-400 font-mono">{ws.latestCommitId?.slice(0, 7) || "none"}</span>
               </div>
               <div className="flex justify-between">
                 <span>Updated</span>

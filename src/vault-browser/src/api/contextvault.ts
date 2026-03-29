@@ -29,8 +29,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function listWorkspaces(): Promise<Workspace[]> {
-  const data = await request<{ workspaces: Workspace[] }>("/workspaces?limit=100");
-  return data.workspaces;
+  const data = await request<{ data: Workspace[] }>("/workspaces?limit=100");
+  return data.data;
 }
 
 export async function getWorkspace(id: string): Promise<Workspace> {

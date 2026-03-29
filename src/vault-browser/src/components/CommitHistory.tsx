@@ -25,11 +25,11 @@ export default function CommitHistory({ commits, selectedCommit, onSelect }: Com
     <div className="overflow-x-auto">
       <div className="flex items-start gap-0 min-w-max px-4 py-3">
         {commits.map((commit, i) => {
-          const isSelected = selectedCommit === commit.hash;
+          const isSelected = selectedCommit === commit.id;
           return (
-            <div key={commit.hash} className="flex items-start">
+            <div key={commit.id} className="flex items-start">
               <button
-                onClick={() => onSelect(commit.hash)}
+                onClick={() => onSelect(commit.id)}
                 className={`flex flex-col items-center gap-1 px-3 py-2 rounded transition-colors min-w-[120px] ${
                   isSelected
                     ? "bg-blue-600/20 border border-blue-500/30"
@@ -41,11 +41,11 @@ export default function CommitHistory({ commits, selectedCommit, onSelect }: Com
                     isSelected ? "bg-blue-500 border-blue-400" : "bg-gray-700 border-gray-600"
                   }`}
                 />
-                <span className="text-xs font-mono text-gray-400">{commit.hash.slice(0, 7)}</span>
+                <span className="text-xs font-mono text-gray-400">{commit.id.slice(0, 7)}</span>
                 <span className="text-xs text-gray-300 text-center line-clamp-2 max-w-[100px]">
-                  {commit.message}
+                  {commit.metadata?.tags?.join(", ") || `Commit ${commit.id.slice(0, 7)}`}
                 </span>
-                <span className="text-xs text-gray-500">{timeAgo(commit.date)}</span>
+                <span className="text-xs text-gray-500">{timeAgo(commit.createdAt)}</span>
               </button>
               {i < commits.length - 1 && (
                 <div className="flex items-center h-8 mt-2">

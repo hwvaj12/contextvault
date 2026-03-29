@@ -2,13 +2,10 @@ export interface Workspace {
   id: string;
   customerId: string;
   name: string;
-  defaultBranch: string;
-  currentHead: string | null;
-  status: string;
-  storageClass: string;
+  latestCommitId: string | null;
   createdAt: string;
   updatedAt: string;
-  lastAccessedAt: string | null;
+  deletedAt: string | null;
 }
 
 export interface WorkspaceFile {
@@ -17,25 +14,39 @@ export interface WorkspaceFile {
 }
 
 export interface Commit {
-  hash: string;
-  message: string;
-  author: string;
-  date: string;
-  files?: string[];
+  id: string;
+  parentId: string | null;
+  metadata?: {
+    agentId?: string;
+    taskId?: string;
+    tags?: string[];
+  };
+  sizeBytes?: number;
+  createdAt: string;
 }
 
 export interface DiffFile {
   path: string;
-  status: string;
+  status: "added" | "modified" | "deleted";
   additions: number;
   deletions: number;
-  patch?: string;
+  hunks?: DiffHunk[];
+}
+
+export interface DiffHunk {
+  header: string;
+  lines: string[];
 }
 
 export interface DiffResult {
   from: string;
   to: string;
   files: DiffFile[];
+  summary: {
+    filesChanged: number;
+    additions: number;
+    deletions: number;
+  };
 }
 
 export interface FileTreeNode {
@@ -43,4 +54,14 @@ export interface FileTreeNode {
   path: string;
   type: "file" | "directory";
   children?: FileTreeNode[];
+}
+
+export interface ListWorkspacesResponse {
+  data: Workspace[];
+  pagination: {
+    total: number;
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+  };
 }

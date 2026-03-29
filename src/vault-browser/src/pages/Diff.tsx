@@ -22,8 +22,8 @@ export default function Diff({ workspaceId, onBack }: DiffProps) {
       .then((c) => {
         setCommits(c);
         if (c.length >= 2) {
-          setFromHash(c[1].hash);
-          setToHash(c[0].hash);
+          setFromHash(c[1].id);
+          setToHash(c[0].id);
         }
       })
       .catch((err) => setError(err.message))
@@ -56,6 +56,11 @@ export default function Diff({ workspaceId, onBack }: DiffProps) {
     );
   }
 
+  const getCommitLabel = (c: Commit) => {
+    const tags = c.metadata?.tags?.join(", ") || c.id.slice(0, 7);
+    return `${c.id.slice(0, 7)} - ${tags}`;
+  };
+
   return (
     <div className="flex flex-col h-[calc(100vh-48px)]">
       {/* Toolbar */}
@@ -81,8 +86,8 @@ export default function Diff({ workspaceId, onBack }: DiffProps) {
         >
           <option value="">Select commit...</option>
           {commits.map((c) => (
-            <option key={c.hash} value={c.hash}>
-              {c.hash.slice(0, 7)} - {c.message.slice(0, 30)}
+            <option key={c.id} value={c.id}>
+              {getCommitLabel(c)}
             </option>
           ))}
         </select>
@@ -95,8 +100,8 @@ export default function Diff({ workspaceId, onBack }: DiffProps) {
         >
           <option value="">Select commit...</option>
           {commits.map((c) => (
-            <option key={c.hash} value={c.hash}>
-              {c.hash.slice(0, 7)} - {c.message.slice(0, 30)}
+            <option key={c.id} value={c.id}>
+              {getCommitLabel(c)}
             </option>
           ))}
         </select>
@@ -156,12 +161,12 @@ export default function Diff({ workspaceId, onBack }: DiffProps) {
                     <span className="text-xs text-green-400">+{file.additions}</span>
                     <span className="text-xs text-red-400">-{file.deletions}</span>
                   </div>
-                  {file.patch && (
+                  {file.hunks && file.hunks.length > 0 && (
                     <div className="font-mono text-xs overflow-x-auto">
                       {viewMode === "unified" ? (
-                        <UnifiedDiff patch={file.patch} />
+                        <UnifiedDiff hunks={file.hunks} />
                       ) : (
-                        <SplitDiff patch={file.patch} />
+                        <SplitDiff hunks={file.hunks} />
                       )}
                     </div>
                   )}
@@ -179,57 +184,63 @@ export default function Diff({ workspaceId, onBack }: DiffProps) {
   );
 }
 
-function UnifiedDiff({ patch }: { patch: string }) {
-  const lines = patch.split("\n");
+function UnifiedDiff({ hunks }: { hunks: DiffResult["files"][0]["hunks"] }) {
+  if (!hunks) return null;
+  let lineNum = 0;
   return (
     <table className="w-full border-collapse">
       <tbody>
-        {lines.map((line, i) => {
-          const isAdd = line.startsWith("+") && !line.startsWith("+++");
-          const isDel = line.startsWith("-") && !line.startsWith("---");
-          const isHeader = line.startsWith("@@");
-          return (
-            <tr
-              key={i}
-              className={
-                isAdd ? "line-add" : isDel ? "line-del" : isHeader ? "bg-blue-900/10" : ""
-              }
-            >
-              <td className="text-right text-gray-600 select-none px-2 w-10 border-r border-gray-800/30">
-                {i + 1}
-              </td>
-              <td className="px-3 whitespace-pre">
-                <span className={isAdd ? "text-green-400" : isDel ? "text-red-400" : isHeader ? "text-blue-400" : "text-gray-300"}>
-                  {line}
-                </span>
-              </td>
-            </tr>
-          );
+        {hunks.flatMap((hunk) => {
+          const lines = hunk.lines;
+          return lines.map((line, i) => {
+            lineNum++;
+            const isAdd = line.startsWith("+") && !line.startsWith("+++");
+            const isDel = line.startsWith("-") && !line.startsWith("---");
+            const isHeader = line.startsWith("@@");
+            return (
+              <tr
+                key={`${hunk.header}-${i}`}
+                className={
+                  isAdd ? "bg-green-900/10" : isDel ? "bg-red-900/10" : isHeader ? "bg-blue-900/10" : ""
+                }
+              >
+                <td className="text-right text-gray-600 select-none px-2 w-10 border-r border-gray-800/30">
+                  {isHeader ? "" : lineNum}
+                </td>
+                <td className="px-3 whitespace-pre">
+                  <span className={isAdd ? "text-green-400" : isDel ? "text-red-400" : isHeader ? "text-blue-400" : "text-gray-300"}>
+                    {line}
+                  </span>
+                </td>
+              </tr>
+            );
+          });
         })}
       </tbody>
     </table>
   );
 }
 
-function SplitDiff({ patch }: { patch: string }) {
-  const lines = patch.split("\n");
-  const left: Array<{ text: string; type: string }> = [];
-  const right: Array<{ text: string; type: string }> = [];
+function SplitDiff({ hunks }: { hunks: DiffResult["files"][0]["hunks"] }) {
+  if (!hunks) return null;
+  const left: Array<{ text: string; type: "add" | "del" | "header" | "ctx" | "empty" }> = [];
+  const right: Array<{ text: string; type: "add" | "del" | "header" | "ctx" | "empty" }> = [];
 
-  for (const line of lines) {
-    if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++")) {
-      left.push({ text: line, type: "header" });
-      right.push({ text: line, type: "header" });
-    } else if (line.startsWith("-")) {
-      left.push({ text: line.slice(1), type: "del" });
-    } else if (line.startsWith("+")) {
-      right.push({ text: line.slice(1), type: "add" });
-    } else {
-      // Pad shorter side
-      while (left.length < right.length) left.push({ text: "", type: "empty" });
-      while (right.length < left.length) right.push({ text: "", type: "empty" });
-      left.push({ text: line.slice(1) || line, type: "ctx" });
-      right.push({ text: line.slice(1) || line, type: "ctx" });
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++")) {
+        left.push({ text: line, type: "header" });
+        right.push({ text: line, type: "header" });
+      } else if (line.startsWith("-")) {
+        left.push({ text: line.slice(1), type: "del" });
+      } else if (line.startsWith("+")) {
+        right.push({ text: line.slice(1), type: "add" });
+      } else {
+        while (left.length < right.length) left.push({ text: "", type: "empty" });
+        while (right.length < left.length) right.push({ text: "", type: "empty" });
+        left.push({ text: line.slice(1) || line, type: "ctx" });
+        right.push({ text: line.slice(1) || line, type: "ctx" });
+      }
     }
   }
   while (left.length < right.length) left.push({ text: "", type: "empty" });
@@ -242,7 +253,7 @@ function SplitDiff({ patch }: { patch: string }) {
           {left.map((l, i) => (
             <tr
               key={i}
-              className={l.type === "del" ? "line-del" : l.type === "header" ? "bg-blue-900/10" : ""}
+              className={l.type === "del" ? "bg-red-900/10" : l.type === "header" ? "bg-blue-900/10" : ""}
             >
               <td className="px-3 whitespace-pre">
                 <span className={l.type === "del" ? "text-red-400" : l.type === "header" ? "text-blue-400" : "text-gray-300"}>
@@ -258,7 +269,7 @@ function SplitDiff({ patch }: { patch: string }) {
           {right.map((r, i) => (
             <tr
               key={i}
-              className={r.type === "add" ? "line-add" : r.type === "header" ? "bg-blue-900/10" : ""}
+              className={r.type === "add" ? "bg-green-900/10" : r.type === "header" ? "bg-blue-900/10" : ""}
             >
               <td className="px-3 whitespace-pre">
                 <span className={r.type === "add" ? "text-green-400" : r.type === "header" ? "text-blue-400" : "text-gray-300"}>
