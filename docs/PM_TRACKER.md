@@ -70,7 +70,7 @@ ContextVault is a multi-tenant, versioned workspace storage layer for AI agents.
 **Priority: MEDIUM**
 
 - [ ] API versioning strategy
-- [ ] Rate limiting
+- [x] ~~Rate limiting~~ (moved to gateway layer — belongs there, not in storage service)
 - [ ] S3 backend abstraction layer
 - [ ] Pagination for list endpoints
 

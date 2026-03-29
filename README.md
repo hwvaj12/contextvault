@@ -72,7 +72,10 @@ Memory that persists. Context that travels. Git that scales.
 - **Concurrency control** — Multiple agents safe with conflict detection
 - **Run lifecycle** — Full tracking from created → merged/conflicted/failed
 - **Structured commits** — Machine-readable metadata for audit trails
-- **Default workspace layout** — Pre-seeded directories for organization
+- **MCP server** — AI agents can use ContextVault as a tool
+- **REST API** — Full API for integrations and webhooks
+- **SDKs** — TypeScript, Python, and PHP official SDKs
+- **Blank workspaces** — Agents decide their own file structure (no forced layout)
 
 ## Two Interfaces
 
@@ -84,11 +87,13 @@ Memory that persists. Context that travels. Git that scales.
 ## Quick Start
 
 ```bash
-# API server
+# Install dependencies
 npm install
+
+# Start the API server
 npm run dev
 
-# MCP server (separate terminal)
+# In another terminal, start the MCP server
 cd mcp && npm install && npm run dev
 ```
 
@@ -98,17 +103,32 @@ cd mcp && npm install && npm run dev
 # Create workspace
 curl -X POST http://localhost:3000/workspaces \
   -H "X-API-Key: your-key" \
-  -d '{"customerId":"meta-profile","name":"LeBron James"}'
+  -d '{"customerId":"my-customer","name":"agent-memory"}'
 
-# Start run (checkout to sandbox)
-curl -X POST http://localhost:3000/workspaces/{id}/runs
+# Start a run (creates sandbox)
+curl -X POST http://localhost:3000/workspaces/{id}/runs \
+  -H "X-API-Key: your-key"
 
-# Agent works in /tmp/contextvault/runs/{run_id}/workspace/...
+# Agent works in sandbox at data/sandboxes/{workspace_id}/...
 
 # Finalize (commit changes)
-curl -X POST http://localhost:3000/runs/{run_id}/finalize
+curl -X POST http://localhost:3000/runs/{run_id}/finalize \
+  -H "X-API-Key: your-key"
 
 # Sandbox auto-destroyed, workspace has new commit
+```
+
+## SDKs
+
+```bash
+# TypeScript
+npm install @contextvault/sdk
+
+# Python
+pip install contextvault
+
+# PHP
+composer require contextvault/contextvault-php
 ```
 
 ## Architecture
@@ -130,53 +150,34 @@ curl -X POST http://localhost:3000/runs/{run_id}/finalize
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Default Workspace Layout
-
-```
-/
-├── profile/
-│   ├── summary.md          # Human-readable summary
-│   └── facts.json          # Structured facts
-├── memory/
-│   ├── timeline.md         # Chronological events
-│   └── known_entities.json
-├── state/
-│   ├── current.json
-│   └── preferences.json
-├── tasks/
-│   ├── open.yaml
-│   └── completed.yaml
-├── decisions/
-├── artifacts/
-├── logs/
-└── system/
-    └── workspace_manifest.yaml
-```
-
 ## Status
 
-**v0.2** — ✅ All 4 phases complete!
+**v0.2** — ✅ All phases complete!
 
-| Phase | Status | Features |
-|-------|--------|----------|
-| Phase 1: Foundation | ✅ Done | SQLite DB, Run service, workspace seeding |
-| Phase 2: Concurrency | ✅ Done | Lock service, conflict detection, path safety |
-| Phase 3: Commit Gateway | ✅ Done | Run branches, structured commits, merge policy |
-| Phase 4: Polish | ✅ Done | 24 tests passing, structured logging |
-
-**Test Results:** 4 test files, 24 tests, all passing
+| Component | Status | Details |
+|----------|--------|---------|
+| Core Engine | ✅ | Run lifecycle, lock service, commit gateway, SQLite DB |
+| TypeScript SDK | ✅ | Full API coverage, tested |
+| Python SDK | ✅ | Full API coverage, tested |
+| PHP SDK | ✅ | Full API coverage, tested |
+| MCP Server | ✅ | Tools for agents |
+| REST API | ✅ | Fastify + Swagger docs at /docs |
+| E2E Tests | ✅ | 22/22 tests passing |
+| Unit Tests | ✅ | 24/24 tests passing |
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) — System design
-- [REST API](docs/REST_API.md) — API reference
-- [Storage Layer](docs/STORAGE_LAYER.md) — Git storage details
-- [Multi-Tenant Storage](docs/MULTITENANT_STORAGE.md) — S3 design
-- [Gap Analysis](docs/GAP_ANALYSIS.md) — Implementation roadmap
+- [REST API Reference](docs/api/workspaces.md) — API endpoints
+- [Quickstart: TypeScript](docs/quickstart/typescript.md)
+- [Quickstart: Python](docs/quickstart/python.md)
+- [Quickstart: PHP](docs/quickstart/php.md)
+- [LangChain Integration](docs/examples/langchain/typescript.md)
+- [Postman Collection](docs/ContextVault-API.postman_collection.json)
 
-## GitHub
+## License
 
-https://github.com/hwvaj12/contextvault
+MIT License — see [LICENSE](LICENSE) file.
 
 ---
 

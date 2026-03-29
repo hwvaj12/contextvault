@@ -297,16 +297,14 @@ Plus metrics:
 | Category | Status |
 |----------|--------|
 | Core sandbox workflow | ✅ Working |
-| Run lifecycle | ❌ Missing |
-| Concurrency control | ❌ Missing |
-| Lock service | ❌ Missing |
-| Control plane DB | ❌ Missing (JSON only) |
-| Change detection | ⚠️ Partial |
-| Default workspace layout | ❌ Missing |
-| Tests | ❌ Missing |
-| Observability | ❌ Missing |
-| S3 backend | ❌ Not started |
-
-**Verdict:** Core sandbox mechanic works. Need: run management, concurrency, DB layer, tests.
-
-**Plan:** Spawn coding agent to implement all 4 phases in sequence.
+| Run lifecycle | ✅ Working |
+| Concurrency control | ✅ Working |
+| Lock service | ✅ Working |
+| Control plane DB | ✅ Working (SQLite) |
+| Change detection | ✅ Working |
+| Default workspace layout | ✅ Removed — blank workspaces (agents decide) |
+| Tests | ✅ 46 tests passing (24 unit/integration + 22 E2E) |
+| Observability | ✅ Structured logging service built |
+| S3 backend | ⚠️ Planned but not started |
+| SDKs | ✅ TypeScript, Python, PHP |
+| Documentation | ✅ Quickstarts, API reference, examples |
