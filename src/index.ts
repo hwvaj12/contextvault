@@ -6,6 +6,7 @@ import { authMiddleware } from "./middleware/auth";
 import { workspaceRoutes } from "./routes/workspaces";
 import { commitRoutes } from "./routes/commits";
 import { gitRemoteRoutes } from "./routes/git-remote";
+import { sandboxRoutes } from "./routes/sandbox";
 
 async function main() {
   const app = Fastify({ logger: true });
@@ -45,16 +46,28 @@ async function main() {
   // Auth for other routes
   app.addHook("onRequest", authMiddleware);
 
-  // Health check (no auth)
+  // Health check (no auth — registered before auth hook takes effect)
   app.get(
     "/health",
     { schema: { description: "Health check", tags: ["System"] } },
-    async () => ({ status: "ok", timestamp: new Date().toISOString() })
+    async () => ({ status: "healthy", version: "1.0.0", timestamp: new Date().toISOString() })
+  );
+
+  // API info (no auth)
+  app.get(
+    "/",
+    { schema: { description: "API info", tags: ["System"] } },
+    async () => ({
+      name: "ContextVault",
+      version: "1.0.0",
+      documentation: "https://github.com/lab-rat0212/contextvault",
+    })
   );
 
   // Routes
   await app.register(workspaceRoutes);
   await app.register(commitRoutes);
+  await app.register(sandboxRoutes);
 
   const port = parseInt(process.env.PORT || "3000", 10);
   await app.listen({ port, host: "0.0.0.0" });
