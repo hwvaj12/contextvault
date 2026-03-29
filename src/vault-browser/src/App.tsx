@@ -38,8 +38,20 @@ export default function App() {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center">
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-8 max-w-md w-full">
-          <h1 className="text-xl font-bold text-white mb-2">ContextVault Browser</h1>
-          <p className="text-gray-400 text-sm mb-6">Enter your API key to continue.</p>
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
+              <span className="text-white text-lg">🗂️</span>
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-white">ContextVault</h1>
+              <p className="text-gray-500 text-xs">Vault Browser</p>
+            </div>
+          </div>
+          
+          <p className="text-gray-400 text-sm mb-4">
+            Enter your API key to access the vault. Keys are scoped to your customer — you'll only see your own workspaces.
+          </p>
+          
           <input
             type="password"
             value={keyInput}
@@ -50,7 +62,7 @@ export default function App() {
                 setHasKey(true);
               }
             }}
-            placeholder="cv-..."
+            placeholder="cv_key_..."
             className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm mb-4 focus:outline-none focus:border-blue-500"
           />
           <button
@@ -60,10 +72,32 @@ export default function App() {
                 setHasKey(true);
               }
             }}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition-colors"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition-colors mb-3"
           >
             Connect
           </button>
+          
+          <div className="border-t border-gray-800 pt-4 mt-4">
+            <p className="text-gray-500 text-xs mb-2">Need an API key?</p>
+            <div className="space-y-2">
+              <a
+                href="/docs"
+                target="_blank"
+                className="block text-blue-400 hover:text-blue-300 text-xs"
+              >
+                → Create API key at Swagger docs (/docs)
+              </a>
+              <button
+                onClick={() => {
+                  // Use master key from env as default for local dev
+                  setKeyInput("cv-test-api-key-123");
+                }}
+                className="text-gray-500 hover:text-gray-400 text-xs"
+              >
+                → Use local dev key (cv-test-api-key-123)
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     );
