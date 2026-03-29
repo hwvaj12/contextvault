@@ -1,6 +1,6 @@
 # ContextVault REST API
 
-REST API for ContextVault — HTTP interface for managing workspaces and sandboxes.
+REST API for ContextVault — HTTP interface for managing workspaces, sandboxes, and webhooks.
 
 ## Base URL
 
@@ -15,6 +15,73 @@ All endpoints require `X-API-Key` header:
 X-API-Key: your-api-key
 ```
 
+For development, use the master key (set via `CONTEXTVAULT_API_KEY` env var). In production, create scoped API keys via `/api-keys`.
+
+---
+
+## API Keys
+
+### Create API Key
+```
+POST /api-keys
+```
+
+**Request:**
+```json
+{
+  "customerId": "my-customer",
+  "name": "production-key"
+}
+```
+
+**Response (201):**
+```json
+{
+  "id": "ak_01HXXXXXXXX",
+  "customerId": "my-customer",
+  "name": "production-key",
+  "key": "cv_key_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "createdAt": "2024-02-28T21:00:00Z"
+}
+```
+> ⚠️ The `key` field is only returned on creation. Store it securely.
+
+---
+
+### List API Keys
+```
+GET /api-keys
+```
+
+**Response (200):**
+```json
+{
+  "keys": [
+    {
+      "id": "ak_01HXXXXXXXX",
+      "customerId": "my-customer",
+      "name": "production-key",
+      "createdAt": "2024-02-28T21:00:00Z",
+      "lastUsedAt": "2024-02-28T22:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### Revoke API Key
+```
+DELETE /api-keys/{keyId}
+```
+
+**Response (200):**
+```json
+{
+  "success": true
+}
+```
+
 ---
 
 ## Workspaces
@@ -27,7 +94,7 @@ POST /workspaces
 **Request:**
 ```json
 {
-  "customerId": "meta-profile",
+  "customerId": "my-customer",
   "name": "LeBron James"
 }
 ```
@@ -36,7 +103,7 @@ POST /workspaces
 ```json
 {
   "id": "ws_01HXXXXXXXX",
-  "customerId": "meta-profile",
+  "customerId": "my-customer",
   "name": "LeBron James",
   "createdAt": "2024-02-28T21:00:00Z",
   "latestCommitId": null
@@ -50,8 +117,7 @@ POST /workspaces
 GET /workspaces
 ```
 
-**Query params:**
-- `customerId` (optional) — Filter by customer
+Returns workspaces scoped to the authenticated customer.
 
 **Response (200):**
 ```json
@@ -59,12 +125,18 @@ GET /workspaces
   "workspaces": [
     {
       "id": "ws_01HXXXXXXXX",
-      "customerId": "meta-profile",
+      "customerId": "my-customer",
       "name": "LeBron James",
       "createdAt": "2024-02-28T21:00:00Z",
       "latestCommitId": "abc123"
     }
-  ]
+  ],
+  "pagination": {
+    "total": 1,
+    "limit": 20,
+    "offset": 0,
+    "hasMore": false
+  }
 }
 ```
 
@@ -79,7 +151,7 @@ GET /workspaces/{workspaceId}
 ```json
 {
   "id": "ws_01HXXXXXXXX",
-  "customerId": "meta-profile",
+  "customerId": "my-customer",
   "name": "LeBron James",
   "createdAt": "2024-02-28T21:00:00Z",
   "updatedAt": "2024-02-28T21:00:00Z",
@@ -89,7 +161,7 @@ GET /workspaces/{workspaceId}
 
 ---
 
-### Delete Workspace
+### Delete Workspace (Soft)
 ```
 DELETE /workspaces/{workspaceId}
 ```
@@ -99,6 +171,66 @@ DELETE /workspaces/{workspaceId}
 {
   "success": true,
   "deletedAt": "2024-02-28T21:00:00Z"
+}
+```
+
+---
+
+### Bulk Delete Workspaces
+```
+POST /workspaces/bulk-delete
+```
+
+**Request:**
+```json
+{
+  "workspaceIds": ["ws_01HXXXXXXXX", "ws_01HYYYYYYYY"]
+}
+```
+
+**Response (200):**
+```json
+{
+  "deleted": 2,
+  "failed": []
+}
+```
+
+**With failures:**
+```json
+{
+  "deleted": 1,
+  "failed": [
+    { "id": "ws_01HYYYYYYYY", "error": "Workspace not found" }
+  ]
+}
+```
+
+---
+
+### Clone Workspace
+```
+POST /workspaces/{workspaceId}/clone
+```
+
+Create a copy of a workspace for a target customer.
+
+**Request:**
+```json
+{
+  "targetCustomerId": "other-customer",
+  "name": "LeBron James (Copy)"
+}
+```
+
+**Response (201):**
+```json
+{
+  "id": "ws_01HZZZZZZZ",
+  "workspaceId": "ws_01HZZZZZZZ",
+  "customerId": "other-customer",
+  "name": "LeBron James (Copy)",
+  "createdAt": "2024-02-28T21:00:00Z"
 }
 ```
 
@@ -118,10 +250,6 @@ POST /workspaces/{workspaceId}/push
     {
       "path": "profile/summary.md",
       "content": "# LeBron James\n\n..."
-    },
-    {
-      "path": "games/2024_001.json",
-      "content": "{\"points\":28,...}"
     }
   ],
   "agentId": "meta-profile",
@@ -194,15 +322,9 @@ GET /workspaces/{workspaceId}/history
       },
       "sizeBytes": 4096,
       "createdAt": "2024-02-28T21:00:00Z"
-    },
-    {
-      "id": "abc123",
-      "parentId": null,
-      "metadata": {},
-      "sizeBytes": 2048,
-      "createdAt": "2024-02-28T20:00:00Z"
     }
-  ]
+  ],
+  "count": 1
 }
 ```
 
@@ -213,6 +335,8 @@ GET /workspaces/{workspaceId}/history
 GET /workspaces/{workspaceId}/diff
 ```
 
+Compare two commits and get structured file changes.
+
 **Query params:**
 - `from` — Source commit hash
 - `to` — Target commit hash
@@ -222,9 +346,32 @@ GET /workspaces/{workspaceId}/diff
 {
   "from": "abc123",
   "to": "def456",
-  "added": ["games/2024_001.md", "games/2024_001.json"],
-  "removed": [],
-  "modified": ["profile/summary.md"]
+  "files": [
+    {
+      "path": "profile/summary.md",
+      "status": "modified",
+      "additions": 12,
+      "deletions": 3,
+      "hunks": [
+        {
+          "header": "@@ -1,5 +1,8 @@",
+          "lines": ["...", "+new line", "..."]
+        }
+      ]
+    },
+    {
+      "path": "games/2024_002.md",
+      "status": "added",
+      "additions": 45,
+      "deletions": 0,
+      "hunks": []
+    }
+  ],
+  "summary": {
+    "filesChanged": 2,
+    "additions": 57,
+    "deletions": 3
+  }
 }
 ```
 
@@ -288,7 +435,7 @@ GET /workspaces/{workspaceId}/sandbox
   "workspaceId": "ws_01HXXXXXXXX",
   "sandboxId": "sb_01HXXXXXXXX",
   "sandboxPath": "/tmp/contextvault-sandbox/ws_01HXXXXXXXX",
-  "exists": true,
+  "status": "ready",
   "hasChanges": true,
   "createdAt": "2024-02-28T21:00:00Z"
 }
@@ -313,11 +460,12 @@ POST /workspaces/{workspaceId}/sandbox/commit
 **Response (201):**
 ```json
 {
+  "commitId": "jkl012",
   "workspaceId": "ws_01HXXXXXXXX",
   "sandboxId": "sb_01HXXXXXXXX",
-  "commitId": "jkl012",
   "parentId": "def456",
   "filesChanged": ["analysis/shooting.md"],
+  "sizeBytes": 1024,
   "createdAt": "2024-02-28T21:00:00Z"
 }
 ```
@@ -333,54 +481,113 @@ DELETE /workspaces/{workspaceId}/sandbox
 ```json
 {
   "success": true,
-  "workspaceId": "ws_01HXXXXXXXX",
-  "sandboxPath": "/tmp/contextvault-sandbox/ws_01HXXXXXXXX"
+  "workspaceId": "ws_01HXXXXXXXX"
 }
 ```
 
 ---
 
-## Files
+## Webhooks
 
-### Get Single File
+### Register Webhook
 ```
-GET /workspaces/{workspaceId}/files/{path}
+POST /webhooks
 ```
 
-**Query params:**
-- `v` (optional) — Commit hash. Defaults to HEAD.
-
-**Response (200):**
+**Request:**
 ```json
 {
-  "path": "profile/summary.md",
-  "content": "# LeBron James\n\n...",
-  "commitId": "def456",
-  "size": 2048
+  "url": "https://my-app.com/webhooks/contextvault",
+  "events": ["workspace.created", "workspace.deleted", "sandbox.committed"],
+  "secret": "my-webhook-secret"
 }
-```
-
----
-
-### Upload Multiple Files
-```
-POST /workspaces/{workspaceId}/files
-```
-
-**Request:** `multipart/form-data`
-```
-files: [file1.md, file2.json]
-basePath: "games/2024_001/"  (optional)
 ```
 
 **Response (201):**
 ```json
 {
-  "uploaded": [
-    { "path": "games/2024_001/file1.md", "size": 1024 },
-    { "path": "games/2024_001/file2.json", "size": 512 }
+  "id": "wh_01HXXXXXXXX",
+  "url": "https://my-app.com/webhooks/contextvault",
+  "events": ["workspace.created", "workspace.deleted", "sandbox.committed"],
+  "secret": "cv_whsec_xxxxxxxxxxxxxxxx",
+  "active": true,
+  "createdAt": "2024-02-28T21:00:00Z"
+}
+```
+
+**Available events:**
+- `workspace.created`
+- `workspace.deleted`
+- `sandbox.checked_out`
+- `sandbox.destroyed`
+- `sandbox.committed`
+- `run.started`
+- `run.completed`
+- `run.failed`
+
+---
+
+### List Webhooks
+```
+GET /webhooks
+```
+
+**Response (200):**
+```json
+{
+  "webhooks": [
+    {
+      "id": "wh_01HXXXXXXXX",
+      "url": "https://my-app.com/webhooks/contextvault",
+      "events": ["workspace.created", "sandbox.committed"],
+      "active": true,
+      "createdAt": "2024-02-28T21:00:00Z"
+    }
   ]
 }
+```
+
+---
+
+### Delete Webhook
+```
+DELETE /webhooks/{webhookId}
+```
+
+**Response (200):**
+```json
+{
+  "success": true
+}
+```
+
+---
+
+### Webhook Payload
+
+When an event fires, your endpoint receives:
+```json
+{
+  "event": "sandbox.committed",
+  "timestamp": "2024-02-28T21:00:00Z",
+  "workspaceId": "ws_01HXXXXXXXX",
+  "data": {
+    "commitId": "jkl012",
+    "sandboxId": "sb_01HXXXXXXXX",
+    "parentId": "def456",
+    "filesChanged": ["profile/summary.md"]
+  }
+}
+```
+
+**Headers:**
+- `X-CV-Signature` — HMAC-SHA256 signature of payload using your secret
+- `X-CV-Event` — Event type
+- `X-CV-Webhook-ID` — Webhook ID
+
+Verify signature:
+```bash
+echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$SECRET"
 ```
 
 ---
@@ -396,24 +603,8 @@ GET /health
 ```json
 {
   "status": "healthy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "timestamp": "2024-02-28T21:00:00Z"
-}
-```
-
----
-
-### API Info
-```
-GET /
-```
-
-**Response (200):**
-```json
-{
-  "name": "ContextVault",
-  "version": "0.1.0",
-  "documentation": "https://github.com/lab-rat0212/contextvault"
 }
 ```
 
@@ -438,46 +629,53 @@ All errors follow this format:
 | HTTP Status | Code | Description |
 |-------------|------|-------------|
 | 400 | `INVALID_REQUEST` | Malformed request body |
-| 400 | `INVALID_WORKSPACE_ID` | Workspace ID format invalid |
+| 400 | `NO_CHANGES` | No changes to commit |
+| 403 | `FORBIDDEN` | Access denied (wrong customer) |
 | 404 | `WORKSPACE_NOT_FOUND` | Workspace does not exist |
 | 404 | `SANDBOX_NOT_FOUND` | Sandbox does not exist |
 | 404 | `FILE_NOT_FOUND` | File not found in workspace |
 | 409 | `SANDBOX_EXISTS` | Sandbox already exists for workspace |
+| 409 | `WORKSPACE_EXISTS` | Workspace already exists |
 | 500 | `GIT_ERROR` | Git operation failed |
 | 500 | `INTERNAL_ERROR` | Unexpected server error |
-
----
-
-## Rate Limits
-
-| Tier | Requests/minute |
-|------|-----------------|
-| Free | 60 |
-| Pro | 600 |
-| Enterprise | Unlimited |
 
 ---
 
 ## Example: Full Sandbox Workflow
 
 ```bash
-# 1. Create workspace
+# 1. Create API key
+curl -X POST http://localhost:3000/api-keys \
+  -H "X-API-Key: cv-test-api-key-123" \
+  -d '{"customerId":"my-customer","name":"dev-key"}'
+# Returns: { "key": "cv_key_xxx", ... }
+
+# 2. Create workspace
 curl -X POST http://localhost:3000/workspaces \
-  -H "X-API-Key: your-key" \
-  -d '{"customerId":"meta-profile","name":"LeBron James"}'
+  -H "X-API-Key: cv_key_xxx" \
+  -d '{"customerId":"my-customer","name":"LeBron James"}'
 
-# 2. Checkout to sandbox
+# 3. Checkout to sandbox
 curl -X POST http://localhost:3000/workspaces/ws_01HXXXXXXXX/sandbox \
-  -H "X-API-Key: your-key"
+  -H "X-API-Key: cv_key_xxx"
 
-# 3. Agent works in sandbox at /tmp/contextvault-sandbox/ws_01HXXXXXXXX/
+# 4. Agent works in sandbox at /tmp/contextvault-sandbox/ws_01HXXXXXXXX/
 
-# 4. Commit sandbox changes
+# 5. Commit sandbox changes
 curl -X POST http://localhost:3000/workspaces/ws_01HXXXXXXXX/sandbox/commit \
-  -H "X-API-Key: your-key" \
+  -H "X-API-Key: cv_key_xxx" \
   -d '{"agentId":"meta-profile","taskId":"analysis-001"}'
 
-# 5. Destroy sandbox
+# 6. Check diff between commits
+curl "http://localhost:3000/workspaces/ws_01HXXXXXXXX/diff?from=abc123&to=def456" \
+  -H "X-API-Key: cv_key_xxx"
+
+# 7. Register webhook for commits
+curl -X POST http://localhost:3000/webhooks \
+  -H "X-API-Key: cv_key_xxx" \
+  -d '{"url":"https://my-app.com/cv-webhook","events":["sandbox.committed"]}'
+
+# 8. Destroy sandbox
 curl -X DELETE http://localhost:3000/workspaces/ws_01HXXXXXXXX/sandbox \
-  -H "X-API-Key: your-key"
+  -H "X-API-Key: cv_key_xxx"
 ```

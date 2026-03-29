@@ -146,13 +146,26 @@ Sandboxed Agent ←→ Run Service ←→ Lock Service
 | Component | Status | Details |
 |----------|--------|---------|
 | Core Engine | ✅ | Run lifecycle, lock service, commit gateway, SQLite DB |
-| TypeScript SDK | ✅ | Full API coverage, tested |
-| Python SDK | ✅ | Full API coverage, tested |
-| PHP SDK | ✅ | Full API coverage, tested |
+| TypeScript SDK | ✅ | Full API coverage, 65 E2E tests passing |
+| Python SDK | ✅ | Full API coverage |
+| PHP SDK | ✅ | Full API coverage |
 | MCP Server | ✅ | Tools for agents |
 | REST API | ✅ | Fastify + Swagger docs at /docs |
-| E2E Tests | ✅ | 22/22 tests passing |
-| Unit Tests | ✅ | 24/24 tests passing |
+| E2E Tests | ✅ | 65/65 tests passing |
+| Multi-tenant | ✅ | API key scoping, customer isolation |
+| Webhooks | ✅ | Event notifications with HMAC signatures |
+| Diff | ✅ | Structured file diffs with hunks |
+| Workspace Clone | ✅ | Clone workspace to new customer |
+| Bulk Delete | ✅ | Delete multiple workspaces at once |
+
+## What's New in v0.2
+
+- **Multi-tenant isolation** — Customer-scoped API keys with full isolation
+- **Webhook notifications** — Get notified when workspaces are created, commits happen, or runs complete
+- **Structured diff** — Get detailed file changes with line-level hunks
+- **Workspace clone** — Copy a workspace to a new customer
+- **Bulk delete** — Remove multiple workspaces in one call
+- **Environment config** — `.env` file support for local development
 
 ## Documentation
 
