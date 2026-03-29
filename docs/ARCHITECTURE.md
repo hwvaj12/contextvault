@@ -318,33 +318,6 @@ s3://{bucket}/{customerId}/workspaces/{workspaceId}.git/
 
 ---
 
-## Build Phases
-
-### Phase 1: Foundation
-- [x] SQLite database layer
-- [x] Workspace, Run, Lock, Audit tables
-- [x] Run service with state machine
-
-### Phase 2: Concurrency & Safety
-- [x] Lock service
-- [x] Concurrency control (base commit tracking)
-- [x] Conflict detection
-- [x] Path safety validation
-
-### Phase 3: Commit Gateway
-- [x] Run branches (`run/{run_id}`)
-- [x] Structured commit messages
-- [x] Proper change detection (add/modify/delete)
-- [x] Merge policy enforcement
-
-### Phase 4: Polish
-- [x] Unit tests
-- [x] Integration tests
-- [x] E2E test scenario (22/22 passing)
-- [x] Structured logging (service built, not yet integrated into routes)
-
----
-
 ## Commit Message Format
 
 ```text
@@ -380,4 +353,4 @@ CONTEXTVAULT_LOCK_MODE=exclusive  # or "optimistic"
 
 ---
 
-_Last updated: 2026-03-28_
+_Last updated: 2026-03-29
