@@ -2,7 +2,6 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
-import rateLimit from "@fastify/rate-limit";
 import { authMiddleware } from "./middleware/auth";
 import { workspaceRoutes } from "./routes/workspaces";
 import { commitRoutes } from "./routes/commits";
@@ -20,22 +19,6 @@ async function main() {
 
   // CORS
   await app.register(cors, { origin: true });
-
-  // Rate limiting — 100 requests per minute per API key
-  await app.register(rateLimit, {
-    global: true,
-    max: 100,
-    timeWindow: "1 minute",
-    keyGenerator: (request) => {
-      // Rate limit by API key, fall back to IP
-      return request.headers["x-api-key"] as string || request.ip;
-    },
-    errorResponseBuilder: (_request, context) => ({
-      statusCode: 429,
-      error: "Too Many Requests",
-      message: `Rate limit exceeded. Retry after ${context.after}.`,
-    }),
-  });
 
   // Swagger
   await app.register(swagger, {
