@@ -146,8 +146,70 @@ async function main() {
     console.log(`   ${history.commits.length} commits in history`);
     console.log("");
 
+    // ── File Diffing ──────────────────────────────────────────────────────
+    console.log(`6. File Diffing`);
+
+    // Create a fresh workspace for diff testing
+    const diffWs = await request("POST", "/workspaces", {
+      customerId: TEST_CUSTOMER,
+      name: "E2E Diff Workspace",
+    });
+    const diffWsId = diffWs.id;
+
+    // Push v1
+    const push1 = await request("POST", `/workspaces/${diffWsId}/push`, {
+      files: [
+        { path: "readme.md", content: "# Hello v1\n" },
+        { path: "config.json", content: '{"v":1}' },
+      ],
+    });
+    const commit1 = push1.commitId;
+    assert(typeof commit1 === "string" && commit1.length > 0, `Push v1 created commit: ${commit1.slice(0, 8)}...`);
+
+    // Push v2 (modify readme, add notes.txt, config.json removed implicitly)
+    const push2 = await request("POST", `/workspaces/${diffWsId}/push`, {
+      files: [
+        { path: "readme.md", content: "# Hello v2\nUpdated.\n" },
+        { path: "notes.txt", content: "new file\n" },
+      ],
+    });
+    const commit2 = push2.commitId;
+    assert(typeof commit2 === "string" && commit2.length > 0, `Push v2 created commit: ${commit2.slice(0, 8)}...`);
+
+    // Get diff
+    const diff = await request("GET", `/workspaces/${diffWsId}/diff?from=${commit1}&to=${commit2}`);
+    assert(diff.from === commit1, "Diff has correct 'from' commit");
+    assert(diff.to === commit2, "Diff has correct 'to' commit");
+    assert(Array.isArray(diff.files), "Diff returns files array");
+    assert(diff.files.length === 3, `Diff has 3 changed files (got ${diff.files.length})`);
+
+    // Verify structured file entries
+    const byPath = {};
+    for (const f of diff.files) byPath[f.path] = f;
+
+    assert(byPath["config.json"]?.status === "removed", "config.json is removed");
+    assert(byPath["notes.txt"]?.status === "added", "notes.txt is added");
+    assert(byPath["readme.md"]?.status === "modified", "readme.md is modified");
+
+    assert(typeof byPath["readme.md"]?.additions === "number", "readme.md has additions count");
+    assert(typeof byPath["readme.md"]?.deletions === "number", "readme.md has deletions count");
+    assert(Array.isArray(byPath["readme.md"]?.hunks), "readme.md has hunks array");
+    assert(byPath["readme.md"].hunks.length > 0, "readme.md has at least one hunk");
+    assert(typeof byPath["readme.md"].hunks[0].oldStart === "number", "Hunk has oldStart");
+    assert(typeof byPath["readme.md"].hunks[0].content === "string", "Hunk has content");
+
+    // Verify summary
+    assert(typeof diff.summary === "object", "Diff has summary object");
+    assert(diff.summary.filesChanged === 3, `Summary shows 3 files changed (got ${diff.summary.filesChanged})`);
+    assert(diff.summary.additions > 0, "Summary shows additions > 0");
+    assert(diff.summary.deletions > 0, "Summary shows deletions > 0");
+
+    // Cleanup diff workspace
+    await request("DELETE", `/workspaces/${diffWsId}`);
+    console.log("");
+
     // ── Abort run ────────────────────────────────────────────────────────
-    console.log(`6. Run Abort`);
+    console.log(`7. Run Abort`);
 
     // Abort requires empty JSON body
     const abort = await request("POST", `/runs/${runId}/abort`, {});
@@ -155,7 +217,7 @@ async function main() {
     console.log("");
 
     // ── Cleanup ─────────────────────────────────────────────────────────
-    console.log(`7. Cleanup`);
+    console.log(`8. Cleanup`);
 
     // Destroy sandbox
     const destroy = await request("DELETE", `/workspaces/${workspaceId}/sandbox`);

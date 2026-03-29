@@ -261,6 +261,27 @@ class Workspaces:
             params={"path": file_path},
         )
 
+    def diff(
+        self, workspace_id: str, from_commit: str, to_commit: str
+    ) -> Dict[str, Any]:
+        """Compare two commits and return structured diff output.
+
+        GET /workspaces/{id}/diff?from=<commit>&to=<commit>
+
+        Args:
+            workspace_id: The workspace ID.
+            from_commit: The source commit hash.
+            to_commit: The target commit hash.
+
+        Returns:
+            Diff result with files array and summary.
+        """
+        return self._request(
+            "GET",
+            f"/workspaces/{workspace_id}/diff",
+            params={"from": from_commit, "to": to_commit},
+        )
+
     def history(
         self, workspace_id: str, limit: Optional[int] = None
     ) -> Dict[str, Any]:

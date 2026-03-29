@@ -325,37 +325,142 @@ export class GitStorage implements IStorage {
     workspaceId: string,
     from: string,
     to: string
-  ): Promise<{ added: string[]; removed: string[]; modified: string[]; unchanged: string[] }> {
+  ): Promise<{
+    files: {
+      path: string;
+      status: "added" | "removed" | "modified";
+      additions: number;
+      deletions: number;
+      hunks: { oldStart: number; oldLines: number; newStart: number; newLines: number; content: string }[];
+    }[];
+    summary: { filesChanged: number; additions: number; deletions: number };
+  }> {
     const git = gitFor(workspaceId);
 
-    const raw = await git.raw(["diff", "--name-status", from, to]);
-    const added: string[] = [];
-    const removed: string[] = [];
-    const modified: string[] = [];
+    // Get numstat for additions/deletions counts
+    const numstatRaw = await git.raw(["diff", "--numstat", from, to]);
+    const numstatMap = new Map<string, { additions: number; deletions: number }>();
+    for (const line of numstatRaw.trim().split("\n").filter(Boolean)) {
+      const [add, del, ...fileParts] = line.split("\t");
+      const filePath = fileParts.join("\t");
+      numstatMap.set(filePath, {
+        additions: add === "-" ? 0 : parseInt(add, 10),
+        deletions: del === "-" ? 0 : parseInt(del, 10),
+      });
+    }
 
-    for (const line of raw.trim().split("\n").filter(Boolean)) {
+    // Get name-status for file status
+    const nameStatusRaw = await git.raw(["diff", "--name-status", from, to]);
+    const statusMap = new Map<string, "added" | "removed" | "modified">();
+    for (const line of nameStatusRaw.trim().split("\n").filter(Boolean)) {
       const [status, ...fileParts] = line.split("\t");
       const filePath = fileParts.join("\t");
       switch (status) {
-        case "A":
-          added.push(filePath);
-          break;
-        case "D":
-          removed.push(filePath);
-          break;
-        case "M":
-          modified.push(filePath);
-          break;
+        case "A": statusMap.set(filePath, "added"); break;
+        case "D": statusMap.set(filePath, "removed"); break;
+        case "M": statusMap.set(filePath, "modified"); break;
       }
     }
 
-    // Get all files at 'to' commit for unchanged calculation
-    const toTreeRaw = await git.raw(["ls-tree", "-r", "--name-only", to]);
-    const toFiles = new Set(toTreeRaw.trim().split("\n").filter(Boolean));
-    const changedFiles = new Set([...added, ...removed, ...modified]);
-    const unchanged = [...toFiles].filter((f) => !changedFiles.has(f));
+    // Get unified diff for hunks
+    const unifiedRaw = await git.raw(["diff", "--unified=3", from, to]);
+    const fileHunks = this.parseUnifiedDiff(unifiedRaw);
 
-    return { added, removed, modified, unchanged };
+    const files: {
+      path: string;
+      status: "added" | "removed" | "modified";
+      additions: number;
+      deletions: number;
+      hunks: { oldStart: number; oldLines: number; newStart: number; newLines: number; content: string }[];
+    }[] = [];
+
+    let totalAdditions = 0;
+    let totalDeletions = 0;
+
+    for (const [filePath, status] of statusMap) {
+      const stats = numstatMap.get(filePath) || { additions: 0, deletions: 0 };
+      const hunks = fileHunks.get(filePath) || [];
+      totalAdditions += stats.additions;
+      totalDeletions += stats.deletions;
+      files.push({
+        path: filePath,
+        status,
+        additions: stats.additions,
+        deletions: stats.deletions,
+        hunks,
+      });
+    }
+
+    return {
+      files,
+      summary: {
+        filesChanged: files.length,
+        additions: totalAdditions,
+        deletions: totalDeletions,
+      },
+    };
+  }
+
+  private parseUnifiedDiff(raw: string): Map<string, { oldStart: number; oldLines: number; newStart: number; newLines: number; content: string }[]> {
+    const result = new Map<string, { oldStart: number; oldLines: number; newStart: number; newLines: number; content: string }[]>();
+    if (!raw.trim()) return result;
+
+    const lines = raw.split("\n");
+    let currentFile: string | null = null;
+    let currentHunks: { oldStart: number; oldLines: number; newStart: number; newLines: number; content: string }[] = [];
+    let hunkContent: string[] = [];
+    let currentHunkHeader: { oldStart: number; oldLines: number; newStart: number; newLines: number } | null = null;
+
+    for (const line of lines) {
+      if (line.startsWith("diff --git")) {
+        // Save previous file
+        if (currentFile !== null) {
+          if (currentHunkHeader && hunkContent.length > 0) {
+            currentHunks.push({ ...currentHunkHeader, content: hunkContent.join("\n") });
+          }
+          result.set(currentFile, currentHunks);
+        }
+        currentHunks = [];
+        hunkContent = [];
+        currentHunkHeader = null;
+        currentFile = null;
+      } else if (line.startsWith("+++ b/")) {
+        currentFile = line.slice(6);
+      } else if (line.startsWith("+++ /dev/null") && currentFile === null) {
+        // Deleted file — use the --- a/ line which we already skipped
+      } else if (line.startsWith("--- a/") && currentFile === null) {
+        // For deleted files, +++ will be /dev/null, so capture from ---
+        currentFile = line.slice(6);
+      } else if (line.startsWith("@@ ")) {
+        // Save previous hunk
+        if (currentHunkHeader && hunkContent.length > 0) {
+          currentHunks.push({ ...currentHunkHeader, content: hunkContent.join("\n") });
+        }
+        hunkContent = [];
+        const match = line.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+        if (match) {
+          currentHunkHeader = {
+            oldStart: parseInt(match[1], 10),
+            oldLines: match[2] !== undefined ? parseInt(match[2], 10) : 1,
+            newStart: parseInt(match[3], 10),
+            newLines: match[4] !== undefined ? parseInt(match[4], 10) : 1,
+          };
+        }
+        hunkContent.push(line);
+      } else if (currentHunkHeader !== null && (line.startsWith("+") || line.startsWith("-") || line.startsWith(" "))) {
+        hunkContent.push(line);
+      }
+    }
+
+    // Save last file
+    if (currentFile !== null) {
+      if (currentHunkHeader && hunkContent.length > 0) {
+        currentHunks.push({ ...currentHunkHeader, content: hunkContent.join("\n") });
+      }
+      result.set(currentFile, currentHunks);
+    }
+
+    return result;
   }
 
   async rollback(

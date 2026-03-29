@@ -9,6 +9,7 @@ import {
   CreateWorkspaceOptions,
   ListWorkspacesOptions,
   CommitOptions,
+  DiffResult,
   DestroyResult,
 } from "./types";
 import { NetworkError, mapResponseToError } from "./errors";
@@ -97,6 +98,13 @@ export class Workspaces {
       "GET",
       `/workspaces/${enc(workspaceId)}/pull?${params.toString()}`
     );
+  }
+
+  /** Compare two commits and return structured diff output. */
+  async diff(workspaceId: string, from: string, to: string): Promise<DiffResult> {
+    const params = new URLSearchParams({ from, to });
+    const path = `/workspaces/${enc(workspaceId)}/diff?${params.toString()}`;
+    return this.request<DiffResult>("GET", path);
   }
 
   /** Get the commit history for a workspace. */

@@ -117,11 +117,37 @@ export interface PushResult {
   createdAt: string;
 }
 
-/** A diff entry comparing two commits. */
+/** A hunk within a file diff. */
+export interface DiffHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  content: string;
+}
+
+/** A single file's diff between two commits. */
+export interface DiffFile {
+  path: string;
+  status: "added" | "removed" | "modified";
+  additions: number;
+  deletions: number;
+  hunks: DiffHunk[];
+}
+
+/** Summary statistics for a diff. */
+export interface DiffSummary {
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+}
+
+/** The result of comparing two commits. */
 export interface DiffResult {
   from: string;
   to: string;
-  diff: Record<string, unknown>[];
+  files: DiffFile[];
+  summary: DiffSummary;
 }
 
 /** Rollback result. */

@@ -196,6 +196,22 @@ class Workspaces
     }
 
     /**
+     * Compare two commits and return structured diff output.
+     *
+     * @param string $workspaceId Workspace identifier.
+     * @param string $from        Source commit hash.
+     * @param string $to          Target commit hash.
+     * @return array Diff result with files array and summary.
+     */
+    public function diff(string $workspaceId, string $from, string $to): array
+    {
+        $encodedId = rawurlencode($workspaceId);
+        $query = http_build_query(['from' => $from, 'to' => $to]);
+
+        return $this->client->request('GET', "/workspaces/{$encodedId}/diff?{$query}");
+    }
+
+    /**
      * Get the commit history for a workspace.
      *
      * @param string  $workspaceId Workspace identifier.

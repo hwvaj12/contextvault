@@ -205,8 +205,8 @@ export async function commitRoutes(app: FastifyInstance) {
 
       try {
         const storage = getStorage();
-        const diff = await storage.getDiff(id, from, to);
-        reply.send({ from, to, diff });
+        const result = await storage.getDiff(id, from, to);
+        reply.send({ from, to, files: result.files, summary: result.summary });
       } catch {
         return reply.code(404).send({ error: "One or both commits not found" });
       }
