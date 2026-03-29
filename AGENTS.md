@@ -1,78 +1,146 @@
-# ContextVault — AGENTS.md
+# ContextVault — Agent Guidelines
 
-## Project Context
+## Project Overview
 
-This is ContextVault — a multi-tenant, versioned workspace layer for AI agent memory.
+ContextVault is a **multi-tenant, versioned workspace storage layer** for AI agents. Each workspace is a Git repository. Versioning is handled entirely by Git.
 
-## Codebase Standards
+## Core Insight
 
-### TypeScript Best Practices
-
-1. **Strict mode enabled** — `strict: true` in tsconfig.json
-2. **Explicit types** — No `any`, use proper interfaces and generics
-3. **Immutability** — Prefer `const`, readonly arrays/objects, `Readonly<T>`
-4. **Error handling** — Never swallow errors, always propagate or handle explicitly
-5. **Async/await** — No raw Promises without await in route handlers
-6. **Naming** — `camelCase` for variables/functions, `PascalCase` for types/classes, `SCREAMING_SNAKE` for constants
-
-### Clean Architecture (Git-Native)
+**Don't put workspace in agent context — put it in a sandbox.**
 
 ```
-src/
-├── routes/        # HTTP layer (Fastify route handlers)
-├── services/     # Business logic (orchestration)
-├── storage/      # Git-native storage (simple-git)
-│   └── git-storage.ts   # Git operations adapter
-├── middleware/   # Auth, validation, error handling
-├── types/        # Shared TypeScript types
-└── utils/        # Helpers, constants
+Agent needs context → checkout workspace to sandbox → agent works → commit → destroy sandbox
 ```
 
-**Key insight:** Each workspace IS a Git repository. Versioning is handled entirely by Git — no custom commit tracking needed.
+This avoids context bloat and keeps agents isolated.
 
-**Dependency rule:** Dependencies point inward. Routes → Services → Storage. Never the reverse.
+## Architecture
 
-### API Design
+```
+┌─────────────────────────────────────────────────────────────┐
+│  ContextVault                                                │
+│                                                              │
+│  ┌─────────────┐         ┌─────────────┐                   │
+│  │  Sandboxes  │◄──────►│   Agents    │                   │
+│  │  (temp)     │         │             │                   │
+│  └──────┬──────┘         └─────────────┘                   │
+│         │                                                   │
+│         │ commit                                            │
+│         ▼                                                   │
+│  ┌─────────────┐                                            │
+│  │ Workspaces  │  Persistent Git repos                      │
+│  │             │                                            │
+│  └─────────────┘                                            │
+└─────────────────────────────────────────────────────────────┘
+```
 
-- RESTful endpoints with proper HTTP methods
-- JSON request/response bodies
-- Consistent error format: `{ error: string, message: string, details?: object }`
-- HTTP status codes: 200 (ok), 201 (created), 400 (bad request), 401 (unauthorized), 404 (not found), 500 (server error)
-- All endpoints require `X-API-Key` header
+## Storage Layout
 
-### Testing Policy
+```
+data/
+├── workspace-meta/              # JSON metadata
+│   └── {id}.json
+├── workspaces/                 # Persistent Git repos
+│   └── {workspaceId}/
+│       └── .git/
+└── sandboxes/                  # Temporary sandboxes
+    └── {workspaceId}/
+        └── .git/
+```
 
-**User is skeptical of results. Always provide verifiable proof.**
+## Interfaces
 
-When claiming something works:
-- Run actual tests (curl, unit tests, integration tests)
-- Show actual output (logs, screenshots, API responses)
-- Never claim tests pass without running them
-- Never claim code works without verification
+| Interface | Use For |
+|-----------|---------|
+| **MCP Server** | AI agents (Claude, Codex) |
+| **REST API** | Developers, webhooks, CLI |
 
-### Git Workflow
+## Workspace Operations
 
-- Commit messages follow conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`
-- One logical change per commit
-- Push to GitHub after each significant milestone
-- Never commit secrets, credentials, or sensitive data
+### Creating a Workspace
+```typescript
+POST /workspaces
+{ customerId: "meta-profile", name: "LeBron James" }
+// Creates: data/workspaces/ws_{ulid}/
+```
 
-## Running Locally
+### Sandbox Workflow
+```
+1. checkout_workspace(id)
+   → Clones workspace to data/sandboxes/{id}/
+
+2. Agent works in sandbox
+   → Normal file operations
+
+3. commit_workspace(id, metadata)
+   → git add + commit in sandbox
+   → Push to persistent workspace
+
+4. destroy_workspace(id)
+   → rm -rf data/sandboxes/{id}/
+```
+
+## Agent Workflow Example
+
+```typescript
+// Agent needs to analyze LeBron's game history
+
+// 1. Get workspace context
+const ws = await getWorkspace("ws_01HXXXXXXXX");
+
+// 2. Checkout to sandbox
+const { sandboxPath } = await checkoutWorkspace("ws_01HXXXXXXXX");
+// sandboxPath = "/path/to/data/sandboxes/ws_01HXXXXXXXX"
+
+// 3. Agent works in sandbox
+// - Reads: data/sandboxes/ws_01HXXXXXXXX/games/*.json
+// - Writes: data/sandboxes/ws_01HXXXXXXXX/analysis.md
+
+// 4. Commit changes
+await commitWorkspace("ws_01HXXXXXXXX", {
+  agentId: "meta-profile",
+  taskId: "game-analysis"
+});
+
+// 5. Clean up
+await destroyWorkspace("ws_01HXXXXXXXX");
+// Sandbox gone, workspace has new commit
+```
+
+## Git Storage Details
+
+- **Commit tracking:** Git log
+- **Diff:** Git diff between commits
+- **Rollback:** Git revert (creates new commit)
+- **Branching:** Future consideration
+
+## Key Design Decisions
+
+1. **Git-native** — Leverage Git's battle-tested version control
+2. **Sandbox isolation** — Each agent run is isolated
+3. **MCP + REST** — Both interfaces, same storage
+4. **No database** — JSON metadata + Git = everything needed
+
+## Project Structure
+
+```
+ContextVault/
+├── src/
+│   ├── routes/           # HTTP endpoints
+│   ├── services/         # Business logic
+│   └── storage/         # Git operations
+├── mcp/
+│   └── src/index.mjs    # MCP server
+├── docs/
+│   ├── ARCHITECTURE.md
+│   ├── REST_API.md
+│   └── STORAGE_LAYER.md
+└── data/                # Workspace storage
+```
+
+## Environment Variables
 
 ```bash
-npm install
-npm run dev        # API at localhost:3000
-cd ui && npm run dev  # Test UI at localhost:5173
+CONTEXTVAULT_DATA_DIR=./data
+CONTEXTVAULT_API_KEY=your-key
 ```
-
-## Verification Checklist
-
-Before claiming a feature is complete:
-
-- [ ] `npm run build` passes (TypeScript compiles)
-- [ ] `npm run dev` starts without errors
-- [ ] API endpoints return expected responses
-- [ ] Unit tests pass (if applicable)
-- [ ] Changes pushed to GitHub
-
-**Provide proof:** Log output, curl commands, or screenshots showing the feature working.
