@@ -53,6 +53,11 @@ async function main() {
   // Vault browser — registered before auth middleware (handles own auth via UI)
   await app.register(vaultBrowserRoutes, { prefix: "/vault" });
 
+  // Redirect /vault to /vault/
+  app.get("/vault", async (_, reply) => {
+    return reply.redirect("/vault/");
+  });
+
   // Git remote routes — registered before auth middleware (handles own auth)
   await app.register(gitRemoteRoutes);
 

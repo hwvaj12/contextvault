@@ -3,7 +3,7 @@ import { verifyKey } from "../services/apikey.service";
 
 const MASTER_KEY = process.env.CONTEXTVAULT_API_KEY || "cv-test-api-key-123";
 
-const PUBLIC_PATHS = ["/health", "/docs", "/docs/"];
+const PUBLIC_PATHS = ["/health", "/docs", "/docs/", "/vault"];
 
 declare module "fastify" {
   interface FastifyRequest {
