@@ -26,6 +26,7 @@ export type {
   DiffResult,
   RollbackResult,
   DestroyResult,
+  BulkDeleteResult,
   ApiErrorResponse,
 } from "./types";
 

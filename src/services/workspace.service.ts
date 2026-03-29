@@ -3,6 +3,8 @@ import { getStorage } from "../storage";
 import { Workspace } from "../storage/interfaces";
 import { logAuditEvent } from "./audit.service";
 import * as path from "path";
+import * as fs from "fs/promises";
+import * as fsSync from "fs";
 
 export type { Workspace };
 
@@ -137,6 +139,57 @@ export async function softDeleteWorkspace(id: string): Promise<void> {
     actorId: "system",
     eventType: "workspace.deleted",
   });
+}
+
+export async function deleteWorkspace(id: string): Promise<void> {
+  const db = getDb();
+
+  // Remove any active sandbox
+  const sandboxDir = path.join(DATA_DIR, "sandboxes", id);
+  const sandboxMeta = path.join(DATA_DIR, "sandboxes", `${id}.meta.json`);
+  await fs.rm(sandboxDir, { recursive: true, force: true }).catch(() => {});
+  await fs.rm(sandboxMeta, { force: true }).catch(() => {});
+
+  // Remove the bare repo
+  const repoDir = path.join(WORKSPACES_DIR, id);
+  await fs.rm(repoDir, { recursive: true, force: true }).catch(() => {});
+
+  // Remove JSON metadata
+  const metaFile = path.join(DATA_DIR, "workspace-meta", `${id}.json`);
+  await fs.rm(metaFile, { force: true }).catch(() => {});
+
+  // Delete related DB records (audit_events don't have FK, locks/runs do)
+  db.prepare("DELETE FROM locks WHERE workspace_id = ?").run(id);
+  db.prepare("DELETE FROM runs WHERE workspace_id = ?").run(id);
+  db.prepare("DELETE FROM workspaces WHERE id = ?").run(id);
+
+  logAuditEvent({
+    workspaceId: id,
+    actorType: "user",
+    actorId: "system",
+    eventType: "workspace.hard_deleted",
+  });
+}
+
+export interface BulkDeleteResult {
+  deleted: number;
+  failed: { id: string; error: string }[];
+}
+
+export async function bulkDeleteWorkspaces(ids: string[]): Promise<BulkDeleteResult> {
+  let deleted = 0;
+  const failed: { id: string; error: string }[] = [];
+
+  for (const id of ids) {
+    try {
+      await deleteWorkspace(id);
+      deleted++;
+    } catch (err) {
+      failed.push({ id, error: (err as Error).message });
+    }
+  }
+
+  return { deleted, failed };
 }
 
 export function updateWorkspaceHead(workspaceId: string, commitHash: string): void {

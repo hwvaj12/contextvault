@@ -6,11 +6,16 @@ import {
   getWorkspace,
   listWorkspaces,
   softDeleteWorkspace,
+  bulkDeleteWorkspaces,
 } from "../services/workspace.service";
 
 const CreateWorkspaceSchema = z.object({
   customerId: z.string().min(1),
   name: z.string().min(1),
+});
+
+const BulkDeleteSchema = z.object({
+  workspaceIds: z.array(z.string().min(1)).min(1).max(100),
 });
 
 export async function workspaceRoutes(app: FastifyInstance) {
@@ -144,6 +149,52 @@ export async function workspaceRoutes(app: FastifyInstance) {
       }
 
       reply.send(workspace);
+    }
+  );
+
+  // POST /workspaces/bulk-delete - Hard delete multiple workspaces
+  app.post(
+    "/workspaces/bulk-delete",
+    {
+      schema: {
+        description: "Hard delete multiple workspaces (removes DB records, repos, and sandboxes)",
+        tags: ["Workspaces"],
+        body: {
+          type: "object",
+          required: ["workspaceIds"],
+          properties: {
+            workspaceIds: {
+              type: "array",
+              items: { type: "string" },
+              minItems: 1,
+              maxItems: 100,
+            },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              deleted: { type: "integer" },
+              failed: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    error: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = BulkDeleteSchema.parse(request.body);
+      const result = await bulkDeleteWorkspaces(body.workspaceIds);
+      reply.send(result);
     }
   );
 

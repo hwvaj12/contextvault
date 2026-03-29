@@ -159,6 +159,21 @@ class Workspaces:
         """
         self._request("DELETE", f"/workspaces/{workspace_id}", json={})
 
+    def bulk_delete(self, workspace_ids: List[str]) -> Dict[str, Any]:
+        """Hard-delete multiple workspaces (removes DB records, repos, and sandboxes).
+
+        Args:
+            workspace_ids: List of workspace IDs to delete.
+
+        Returns:
+            Dict with 'deleted' count and 'failed' list of {id, error}.
+        """
+        return self._request(
+            "POST",
+            "/workspaces/bulk-delete",
+            json={"workspaceIds": workspace_ids},
+        )
+
     def checkout(self, workspace_id: str) -> Dict[str, Any]:
         """Checkout a workspace (create a sandbox for editing).
 

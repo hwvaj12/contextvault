@@ -97,6 +97,21 @@ class Workspaces
     }
 
     /**
+     * Hard-delete multiple workspaces (removes DB records, repos, and sandboxes).
+     *
+     * @param string[] $workspaceIds List of workspace IDs to delete.
+     * @return array{deleted: int, failed: array<int, array{id: string, error: string}>}
+     */
+    public function bulkDelete(array $workspaceIds): array
+    {
+        return $this->client->request('POST', '/workspaces/bulk-delete', [
+            RequestOptions::JSON => [
+                'workspaceIds' => $workspaceIds,
+            ],
+        ]);
+    }
+
+    /**
      * Checkout a workspace (create a sandbox for editing).
      *
      * @param string $workspaceId Workspace identifier.

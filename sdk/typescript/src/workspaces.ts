@@ -11,6 +11,7 @@ import {
   CommitOptions,
   DiffResult,
   DestroyResult,
+  BulkDeleteResult,
 } from "./types";
 import { NetworkError, mapResponseToError } from "./errors";
 
@@ -53,6 +54,13 @@ export class Workspaces {
   /** Soft-delete a workspace. */
   async delete(workspaceId: string): Promise<void> {
     await this.request<void>("DELETE", `/workspaces/${enc(workspaceId)}`);
+  }
+
+  /** Hard-delete multiple workspaces (removes DB records, repos, and sandboxes). */
+  async bulkDelete(workspaceIds: string[]): Promise<BulkDeleteResult> {
+    return this.request<BulkDeleteResult>("POST", "/workspaces/bulk-delete", {
+      body: { workspaceIds },
+    });
   }
 
   // ─── Sandbox lifecycle ───────────────────────────────────────────

@@ -166,6 +166,12 @@ export interface DestroyResult {
   status: string;
 }
 
+/** Result of a bulk delete operation. */
+export interface BulkDeleteResult {
+  deleted: number;
+  failed: { id: string; error: string }[];
+}
+
 /** Raw API error response shape. */
 export interface ApiErrorResponse {
   error: string | { code: string; message: string };
