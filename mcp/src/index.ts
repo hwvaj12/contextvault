@@ -1,5 +1,5 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
+import { McpServer } from "@modelcontextprotocol/sdk/dist/esm/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/dist/esm/server/stdio.js";
 import { simpleGit } from "simple-git";
 import { ulid } from "ulid";
 import fs from "fs/promises";

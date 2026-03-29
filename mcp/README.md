@@ -2,20 +2,155 @@
 
 MCP server for ContextVault — enables AI agents to interact with ContextVault workspaces via the Model Context Protocol.
 
+## Key Concept: Sandboxed Execution
+
+**Don't put workspace in agent context — put it in a sandbox.**
+
+```
+Agent needs context → checkout workspace to sandbox → agent works in filesystem → commit → destroy sandbox
+```
+
+This avoids context bloat and keeps agents isolated from each other.
+
+## Architecture
+
+```
+Consumer (MetaProfile, etc.)
+         │
+         │ MCP over stdio or HTTP
+         ▼
+┌────────────────────────────────┐
+│  ContextVault MCP Server        │
+│                                │
+│  Tools:                        │
+│  • create_workspace            │
+│  • checkout_workspace  ───────►│──► Temporary sandbox
+│  • commit_workspace   ◄───────│◄───── Agent works in files
+│  • destroy_workspace          │
+│  • pull / push / history      │
+└────────────────────────────────┘
+         │
+         │ Git operations
+         ▼
+┌────────────────────────────────┐
+│  ContextVault Storage           │
+│  (persistent Git repos)        │
+└────────────────────────────────┘
+```
+
+## Sandbox Lifecycle
+
+```
+1. checkout_workspace(workspaceId)
+   → Clones workspace to /tmp/contextvault-sandbox/{workspaceId}/
+   → Returns sandbox path
+
+2. Agent works in sandbox
+   → Reads/writes files normally
+   → Files are in a real directory
+
+3. commit_workspace(workspaceId)
+   → git add + commit in sandbox
+   → Pushes changes to persistent storage
+   → Returns new commit hash
+
+4. destroy_workspace(workspaceId)
+   → rm -rf /tmp/contextvault-sandbox/{workspaceId}/
+   → ContextVault storage untouched
+```
+
+## MCP Tools
+
+### Sandbox Operations
+
+**checkout_workspace**
+```typescript
+// Pull workspace to temp sandbox
+workspaceId: "ws_01HXXXXXXXX"
+→ Returns: { sandboxPath: "/tmp/contextvault-sandbox/ws_01HXXXXXXXX" }
+```
+
+**commit_workspace**
+```typescript
+// Commit sandbox changes to ContextVault
+workspaceId: "ws_01HXXXXXXXX"
+agentId: "claude-code"
+taskId: "analyze-performance"
+tags: ["analysis", "game-recap"]
+→ Returns: { commitId: "abc123", parentId: "def456", files: ["games/001.md"] }
+```
+
+**destroy_workspace**
+```typescript
+// Destroy sandbox, keep persistent storage
+workspaceId: "ws_01HXXXXXXXX"
+→ Returns: { success: true }
+```
+
+**get_sandbox_status**
+```typescript
+// Check if sandbox exists
+workspaceId: "ws_01HXXXXXXXX"
+→ Returns: { exists: true, path: "/tmp/contextvault-sandbox/ws_01HXXXXXXXX" }
+```
+
+### Workspace Management
+
+**create_workspace**
+```typescript
+customerId: "meta-profile"
+name: "LeBron James"
+→ Returns: { id: "ws_01HXXXXXXXX", ... }
+```
+
+**list_workspaces**
+```typescript
+// Returns all workspaces
+```
+
+**get_workspace**
+```typescript
+workspaceId: "ws_01HXXXXXXXX"
+→ Returns: { id, customerId, name, latestCommitId, ... }
+```
+
+**delete_workspace**
+```typescript
+workspaceId: "ws_01HXXXXXXXX"
+// Soft delete
+```
+
+### Version Control (Direct)
+
+**push_to_workspace** — Direct push (skip sandbox)
+**pull_from_workspace** — Direct pull (skip sandbox)
+**get_workspace_history** — Git log
+**diff_workspace** — Compare versions
+**rollback_workspace** — Git revert
+
 ## Installation
 
 ```bash
 cd mcp
 npm install
-npm run build
 ```
 
-## Configuration for Claude Desktop
+## Running
 
-Add to your Claude Desktop configuration file:
+### Development
+```bash
+npm run dev    # Uses tsx for hot reload
+```
 
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+### Production
+```bash
+npm run build  # Compiles to dist/
+npm start      # Runs compiled JS
+```
+
+## Claude Desktop Configuration
+
+Add to `claude_desktop_config.json`:
 
 ```json
 {
@@ -24,90 +159,57 @@ Add to your Claude Desktop configuration file:
       "command": "node",
       "args": ["/path/to/contextvault/mcp/dist/index.js"],
       "env": {
-        "DATA_DIR": "/path/to/contextvault/data"
+        "CONTEXTVAULT_DATA_DIR": "/path/to/contextvault/data",
+        "CONTEXTVAULT_SANDBOX_DIR": "/tmp/contextvault-sandbox"
       }
     }
   }
 }
 ```
 
-## Available Tools
+## Environment Variables
 
-### Workspace Management
-
-- **create_workspace** — Create a new workspace
-  - `customerId`: Customer ID this workspace belongs to
-  - `name`: Human-readable name
-
-- **list_workspaces** — List all workspaces (optionally filtered by customerId)
-
-- **get_workspace** — Get details of a specific workspace
-  - `workspaceId`: Format `ws_<ulid>`
-
-- **delete_workspace** — Soft-delete a workspace
-  - `workspaceId`: Workspace ID to delete
-
-### Version Control Operations
-
-- **push_to_workspace** — Push files as a new commit (agent saves state)
-  - `workspaceId`: Target workspace ID
-  - `files`: Array of `{path, content}` objects
-  - `agentId`: ID of the agent pushing
-  - `taskId`: Current task ID
-  - `tags`: Optional tags array
-
-- **pull_from_workspace** — Pull files from a workspace (agent restores state)
-  - `workspaceId`: Workspace to pull from
-  - `version`: Specific commit hash (optional, defaults to HEAD)
-
-- **get_workspace_history** — Get commit history for a workspace
-  - `workspaceId`: Workspace ID
-  - `limit`: Max commits to return (default 20)
-
-- **diff_workspace** — Compare two versions
-  - `workspaceId`: Workspace ID
-  - `from`: Source commit hash
-  - `to`: Target commit hash
-
-- **rollback_workspace** — Rollback to a previous version (creates new commit)
-  - `workspaceId`: Workspace ID
-  - `toVersion`: Commit hash to rollback to
-  - `agentId`: Agent performing rollback
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONTEXTVAULT_DATA_DIR` | `./data` | Where workspaces are stored |
+| `CONTEXTVAULT_SANDBOX_DIR` | `/tmp/contextvault-sandbox` | Where sandboxes are created |
+| `CONTEXTVAULT_API_KEY` | (none) | API key for authentication |
 
 ## Example Usage
 
+```typescript
+// 1. Create workspace
+const ws = await callTool("create_workspace", {
+  customerId: "meta-profile",
+  name: "LeBron James"
+});
+
+// 2. Checkout to sandbox
+const { sandboxPath } = await callTool("checkout_workspace", {
+  workspaceId: ws.id
+});
+// sandboxPath = "/tmp/contextvault-sandbox/ws_01HXXXXXXXX"
+
+// 3. Agent works in sandbox
+// - Reads /tmp/contextvault-sandbox/ws_01HXXXXXXXX/games/001.md
+// - Writes /tmp/contextvault-sandbox/ws_01HXXXXXXXX/analysis.md
+
+// 4. Commit changes
+const { commitId } = await callTool("commit_workspace", {
+  workspaceId: ws.id,
+  agentId: "meta-profile",
+  taskId: "game-analysis"
+});
+
+// 5. Destroy sandbox
+await callTool("destroy_workspace", { workspaceId: ws.id });
+// Sandbox is gone, ContextVault storage intact
 ```
-# Create a workspace
-Tool: create_workspace
-customerId: "cust_123"
-name: "My Agent Context"
 
-# Push files to save state
-Tool: push_to_workspace
-workspaceId: "ws_01HXXXXXXXX"
-files: [{"path": "context/summary.md", "content": "# Session Summary..."}]
-agentId: "claude-code"
+## MCP Transport
 
-# Pull to restore state
-Tool: pull_from_workspace
-workspaceId: "ws_01HXXXXXXXX"
-```
+- **Default**: stdio (same machine)
+- **Future**: Streamable HTTP (remote access)
 
-## Development
-
-```bash
-npm run build    # Compile TypeScript
-npm run dev      # Run with tsx (hot reload)
-```
-
-## How It Works
-
-The MCP server wraps the ContextVault Git-native storage layer:
-- Each workspace is a Git repository
-- Push = `git add` + `git commit`
-- Pull = `git show` at specific commit
-- History = `git log`
-- Diff = `git diff`
-- Rollback = `git revert`
-
-This gives agents full version control semantics without needing to understand Git.
+For Claude Desktop on the same machine, stdio is fine.
+For remote access, use the HTTP transport (see HTTP_SERVER.md).
