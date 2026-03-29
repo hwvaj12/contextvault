@@ -1,11 +1,6 @@
 # ContextVault PHP SDK
 
-Official PHP SDK for [ContextVault](https://github.com/contextvault) -- versioned context storage for AI agents.
-
-## Requirements
-
-- PHP 8.0+
-- Guzzle 7.x
+Official PHP SDK for [ContextVault](https://github.com/hwvaj12/contextvault) — versioned context storage for AI agents.
 
 ## Installation
 
@@ -21,92 +16,172 @@ composer require contextvault/contextvault-php
 require_once 'vendor/autoload.php';
 
 use ContextVault\Client;
-use ContextVault\Exception\NotFoundError;
-use ContextVault\Exception\AuthError;
 
 // Initialize the client
-$cv = new Client('your-api-key', 'http://localhost:3000');
+$client = new Client('your-api-key', 'http://localhost:3000');
 
 // Create a workspace
-$workspace = $cv->workspaces()->create('customer-123', 'my-workspace');
-$workspaceId = $workspace['id'];
+$workspace = $client->workspaces()->create('cust_123', 'my-agent-project');
+echo "Created workspace: " . $workspace['id'] . "\n";
 
-// List workspaces for a customer
-$workspaces = $cv->workspaces()->list('customer-123');
-
-// Get a single workspace
-$workspace = $cv->workspaces()->get($workspaceId);
-
-// Checkout a sandbox for editing
-$sandbox = $cv->workspaces()->checkout($workspaceId);
+// Checkout to get a sandbox
+$sandbox = $client->workspaces()->checkout($workspace['id']);
+echo "Sandbox path: " . ($sandbox['sandboxPath'] ?? 'N/A') . "\n";
 
 // Commit changes
-$result = $cv->workspaces()->commit($workspaceId, 'Updated profile', 'agent@example.com');
+$commit = $client->workspaces()->commit($workspace['id'], [
+    'message' => 'Initial files',
+    'agentId' => 'agent_001',
+    'tags' => ['setup'],
+]);
+echo "Commit: " . $commit['commitId'] . "\n";
 
-// Destroy the sandbox when done
-$cv->workspaces()->destroy($workspaceId);
+// Pull latest files
+$pullResult = $client->workspaces()->pull($workspace['id']);
+foreach ($pullResult['files'] as $file) {
+    echo $file['path'] . ": " . strlen($file['content']) . " bytes\n";
+}
 
-// Pull files from a workspace
-$files = $cv->workspaces()->pull($workspaceId);
+// Get a single file
+$file = $client->workspaces()->getFile($workspace['id'], 'README.md');
+echo $file['path'] . " content: " . substr($file['content'], 0, 100) . "...\n";
 
-// Get a specific file
-$file = $cv->workspaces()->getFile($workspaceId, 'profile/summary.md');
+// Get commit history
+$history = $client->workspaces()->history($workspace['id'], 10);
+echo "Total commits: " . $history['count'] . "\n";
 
-// View commit history
-$history = $cv->workspaces()->history($workspaceId);
+// Destroy sandbox when done
+$client->workspaces()->destroy($workspace['id']);
+echo "Sandbox destroyed\n";
 
-// Delete a workspace
-$cv->workspaces()->delete($workspaceId);
+// List workspaces
+$workspaces = $client->workspaces()->list('cust_123');
+foreach ($workspaces as $ws) {
+    echo "- {$ws['name']} ({$ws['id']})\n";
+}
+
+// Delete workspace
+$client->workspaces()->delete($workspace['id']);
+echo "Workspace deleted\n";
+```
+
+## API Reference
+
+### Client
+
+```php
+$client = new Client(string $apiKey, string $baseUrl = 'http://localhost:3000', int $maxRetries = 3);
+```
+
+### Workspaces
+
+| Method | Description |
+|--------|-------------|
+| `create(string $customerId, string $name)` | Create a new workspace |
+| `list(?string $customerId = null)` | List all workspaces, optionally filtered |
+| `get(string $workspaceId)` | Get a workspace by ID |
+| `delete(string $workspaceId)` | Soft-delete a workspace |
+| `checkout(string $workspaceId)` | Create a sandbox for editing |
+| `commit(string $workspaceId, array $options = [])` | Commit sandbox changes |
+| `destroy(string $workspaceId)` | Destroy the sandbox |
+| `pull(string $workspaceId, ?string $version = null)` | Pull latest files |
+| `getFile(string $workspaceId, string $filePath)` | Get a single file |
+| `history(string $workspaceId, ?int $limit = null)` | Get commit history |
+
+### Commit Options
+
+```php
+$client->workspaces()->commit($workspaceId, [
+    'message'  => 'What changed',   // Commit message
+    'author'   => 'Agent Name',     // Author name
+    'agentId'  => 'agent_001',       // Agent identifier
+    'taskId'   => 'task_123',       // Task identifier
+    'tags'     => ['tag1', 'tag2'], // Metadata tags
+]);
 ```
 
 ## Error Handling
 
-The SDK throws typed exceptions for different error scenarios:
-
 ```php
-use ContextVault\Exception\AuthError;
+use ContextVault\Client;
 use ContextVault\Exception\NotFoundError;
+use ContextVault\Exception\AuthError;
 use ContextVault\Exception\ValidationError;
 use ContextVault\Exception\NetworkError;
-use ContextVault\Exception\ContextVaultException;
 
 try {
-    $workspace = $cv->workspaces()->get('nonexistent-id');
+    $workspace = $client->workspaces()->get('nonexistent-id');
 } catch (NotFoundError $e) {
-    // 404 - Resource not found
-    echo "Not found: " . $e->getMessage();
+    echo "Workspace not found: " . $e->getMessage();
+    echo "Status: " . $e->getStatusCode();
 } catch (AuthError $e) {
-    // 401/403 - Authentication or authorization failure
-    echo "Auth error: " . $e->getMessage();
+    echo "Authentication failed: " . $e->getMessage();
 } catch (ValidationError $e) {
-    // 400/422 - Invalid request data
     echo "Validation error: " . $e->getMessage();
 } catch (NetworkError $e) {
-    // Connection failures (after retries exhausted)
     echo "Network error: " . $e->getMessage();
-} catch (ContextVaultException $e) {
-    // Any other API error
-    echo "Error ({$e->getStatusCode()}): " . $e->getMessage();
 }
 ```
 
-## Configuration
+## Response Shapes
 
-```php
-// Custom base URL and retry count
-$cv = new Client(
-    apiKey: 'your-api-key',
-    baseUrl: 'https://api.contextvault.io',
-    maxRetries: 5
-);
+### Workspace
+```json
+{
+  "id": "ws_xxx",
+  "customerId": "cust_xxx",
+  "name": "my-workspace",
+  "latestCommitId": "commit_xxx",
+  "createdAt": "2025-01-15T10:00:00Z",
+  "updatedAt": "2025-01-15T10:00:00Z",
+  "deletedAt": null
+}
 ```
 
-## Features
+### Sandbox
+```json
+{
+  "sandboxId": "sb_xxx",
+  "workspaceId": "ws_xxx",
+  "sandboxPath": "/path/to/sandbox",
+  "createdAt": "2025-01-15T10:00:00Z"
+}
+```
 
-- **Auto-retry**: Exponential backoff on network errors (default: 3 retries)
-- **Typed exceptions**: Clear error classes mapped from HTTP status codes
-- **PSR-4 autoloading**: Standard Composer autoloading
-- **PHP 8.0+**: Typed properties, named arguments, match expressions
+### CommitEntry
+```json
+{
+  "commitId": "commit_xxx",
+  "workspaceId": "ws_xxx",
+  "parentId": "commit_yyy",
+  "metadata": { "agentId": "agent_001" },
+  "sizeBytes": 1234,
+  "createdAt": "2025-01-15T10:00:00Z"
+}
+```
+
+### PullResult
+```json
+{
+  "commitId": "commit_xxx",
+  "workspaceId": "ws_xxx",
+  "parentId": "commit_yyy",
+  "files": [
+    { "path": "README.md", "content": "# Hello World" }
+  ],
+  "metadata": { "agentId": "agent_001" },
+  "sizeBytes": 1234,
+  "createdAt": "2025-01-15T10:00:00Z"
+}
+```
+
+### HistoryResult
+```json
+{
+  "commits": [/* CommitEntry[] */],
+  "count": 42
+}
+```
 
 ## License
 
