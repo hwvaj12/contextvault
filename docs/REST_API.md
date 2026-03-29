@@ -5,7 +5,7 @@ REST API for ContextVault — HTTP interface for managing workspaces and sandbox
 ## Base URL
 
 ```
-http://localhost:3000/api/v1
+http://localhost:3000
 ```
 
 ## Authentication
@@ -462,22 +462,22 @@ All errors follow this format:
 
 ```bash
 # 1. Create workspace
-curl -X POST http://localhost:3000/api/v1/workspaces \
+curl -X POST http://localhost:3000/workspaces \
   -H "X-API-Key: your-key" \
   -d '{"customerId":"meta-profile","name":"LeBron James"}'
 
 # 2. Checkout to sandbox
-curl -X POST http://localhost:3000/api/v1/workspaces/ws_01HXXXXXXXX/sandbox \
+curl -X POST http://localhost:3000/workspaces/ws_01HXXXXXXXX/sandbox \
   -H "X-API-Key: your-key"
 
 # 3. Agent works in sandbox at /tmp/contextvault-sandbox/ws_01HXXXXXXXX/
 
 # 4. Commit sandbox changes
-curl -X POST http://localhost:3000/api/v1/workspaces/ws_01HXXXXXXXX/sandbox/commit \
+curl -X POST http://localhost:3000/workspaces/ws_01HXXXXXXXX/sandbox/commit \
   -H "X-API-Key: your-key" \
   -d '{"agentId":"meta-profile","taskId":"analysis-001"}'
 
 # 5. Destroy sandbox
-curl -X DELETE http://localhost:3000/api/v1/workspaces/ws_01HXXXXXXXX/sandbox \
+curl -X DELETE http://localhost:3000/workspaces/ws_01HXXXXXXXX/sandbox \
   -H "X-API-Key: your-key"
 ```

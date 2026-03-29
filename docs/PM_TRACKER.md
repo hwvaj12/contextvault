@@ -37,12 +37,12 @@ ContextVault is a multi-tenant, versioned workspace storage layer for AI agents.
   - [x] Build passes
   - [x] Integration test passes (all 8 endpoints verified)
 
-- [ ] **Python SDK** (🔄 IN PROGRESS - agent running)
-  - [ ] Fix wrong API paths
-  - [ ] Match TypeScript SDK signatures
-  - [ ] Complete pyproject.toml
-  - [ ] README with quickstart
-  - [ ] Integration test
+- [x] **Python SDK** ✅ COMPLETE (2026-03-29)
+  - [x] Fix wrong API paths
+  - [x] Match TypeScript SDK signatures
+  - [x] Complete pyproject.toml
+  - [x] README with quickstart
+  - [x] Integration test (test_sdk.py)
 
 - [x] **PHP SDK** ✅ COMPLETE (2026-03-29)
   - [x] Fix wrong API paths

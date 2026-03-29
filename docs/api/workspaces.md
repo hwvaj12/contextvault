@@ -23,7 +23,7 @@ Workspaces are versioned, Git-backed storage containers scoped to a customer. Al
 
 Create a new workspace for a customer.
 
-**Endpoint:** `POST /api/workspaces`
+**Endpoint:** `POST /workspaces`
 
 ### Parameters
 
@@ -75,7 +75,7 @@ $workspace = $cv->workspaces()->create('customer-123', 'agent-memory');
 
 List all workspaces, optionally filtered by customer ID.
 
-**Endpoint:** `GET /api/workspaces?customerId=...`
+**Endpoint:** `GET /workspaces?customerId=...`
 
 ### Parameters
 
@@ -122,7 +122,7 @@ $workspaces = $cv->workspaces()->list('customer-123');
 
 Get a single workspace by ID.
 
-**Endpoint:** `GET /api/workspaces/:workspaceId`
+**Endpoint:** `GET /workspaces/:workspaceId`
 
 ### Parameters
 
@@ -163,7 +163,7 @@ Same shape as [create response](#response).
 
 Delete a workspace (soft delete).
 
-**Endpoint:** `DELETE /api/workspaces/:workspaceId`
+**Endpoint:** `DELETE /workspaces/:workspaceId`
 
 ### Parameters
 
@@ -200,7 +200,7 @@ $cv->workspaces()->delete('ws_abc123');
 
 Create a writable sandbox for a workspace. The sandbox provides a filesystem path where your agent can read and write files.
 
-**Endpoint:** `POST /api/workspaces/:workspaceId/checkout`
+**Endpoint:** `POST /workspaces/:workspaceId/sandbox`
 
 ### Parameters
 
@@ -246,7 +246,7 @@ echo $sandbox['path']; // write files here
 
 Commit all changes in the sandbox to the workspace history.
 
-**Endpoint:** `POST /api/workspaces/:workspaceId/commit`
+**Endpoint:** `POST /workspaces/:workspaceId/sandbox/commit`
 
 ### Parameters
 
@@ -312,7 +312,7 @@ $commit = $cv->workspaces()->commit('ws_abc123', 'Updated user profile', 'my-age
 
 Destroy a sandbox without committing. Discards all uncommitted changes.
 
-**Endpoint:** `POST /api/workspaces/:workspaceId/destroy`
+**Endpoint:** `POST /workspaces/:workspaceId/sandbox`
 
 ### Parameters
 
@@ -344,7 +344,7 @@ $cv->workspaces()->destroy('ws_abc123');
 
 Get all files from the latest committed state of a workspace.
 
-**Endpoint:** `GET /api/workspaces/:workspaceId/files`
+**Endpoint:** `GET /workspaces/:workspaceId/pull`
 
 ### Parameters
 
@@ -405,7 +405,7 @@ Returns the file array directly.
 
 Get a single file by path from the latest commit.
 
-**Endpoint:** `GET /api/workspaces/:workspaceId/files/:filePath`
+**Endpoint:** `GET /workspaces/:workspaceId/pull?path=:filePath`
 
 ### Parameters
 
@@ -455,7 +455,7 @@ echo $file['content'];
 
 Get the commit history for a workspace.
 
-**Endpoint:** `GET /api/workspaces/:workspaceId/history`
+**Endpoint:** `GET /workspaces/:workspaceId/history`
 
 ### Parameters
 
