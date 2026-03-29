@@ -176,3 +176,21 @@ export interface BulkDeleteResult {
 export interface ApiErrorResponse {
   error: string | { code: string; message: string };
 }
+
+/** A registered webhook. */
+export interface WebhookRegistration {
+  id: string;
+  customerId: string;
+  url: string;
+  events: string[];
+  active: boolean;
+  createdAt: string;
+}
+
+/** Options for registering a webhook. */
+export interface RegisterWebhookOptions {
+  customerId: string;
+  url: string;
+  events: string[];
+  secret?: string;
+}

@@ -8,6 +8,7 @@ import { commitRoutes } from "./routes/commits";
 import { gitRemoteRoutes } from "./routes/git-remote";
 import { sandboxRoutes } from "./routes/sandbox";
 import { runRoutes } from "./routes/runs";
+import { webhookRoutes } from "./routes/webhooks";
 import { getDb, closeDb } from "./db";
 
 async function main() {
@@ -75,6 +76,7 @@ async function main() {
   await app.register(commitRoutes);
   await app.register(sandboxRoutes);
   await app.register(runRoutes);
+  await app.register(webhookRoutes);
 
   const port = parseInt(process.env.PORT || "3000", 10);
   await app.listen({ port, host: "0.0.0.0" });

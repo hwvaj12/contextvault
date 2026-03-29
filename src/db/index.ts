@@ -104,5 +104,17 @@ function initSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_audit_workspace ON audit_events(workspace_id);
     CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_events(event_type);
     CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at);
+
+    CREATE TABLE IF NOT EXISTS webhooks (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      events TEXT NOT NULL DEFAULT '[]',
+      secret_hash TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_webhooks_customer ON webhooks(customer_id);
   `);
 }

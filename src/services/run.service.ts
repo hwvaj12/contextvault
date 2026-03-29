@@ -1,6 +1,7 @@
 import { getDb } from "../db";
 import { ulid } from "ulid";
 import { logAuditEvent } from "./audit.service";
+import { deliver } from "./webhook.service";
 
 export type RunStatus =
   | "created"
@@ -192,6 +193,15 @@ export function transitionRun(
     eventType: `run.${newStatus}`,
     payload: { from: run.status, to: newStatus, ...updates },
   });
+
+  // Emit webhooks for key run lifecycle events
+  if (newStatus === "running") {
+    deliver("run.started", { runId, workspaceId: run.workspaceId, agentId: run.agentId });
+  } else if (newStatus === "merged") {
+    deliver("run.completed", { runId, workspaceId: run.workspaceId, agentId: run.agentId });
+  } else if (newStatus === "failed") {
+    deliver("run.failed", { runId, workspaceId: run.workspaceId, agentId: run.agentId, reason: updates?.failureReason });
+  }
 
   return getRun(runId)!;
 }

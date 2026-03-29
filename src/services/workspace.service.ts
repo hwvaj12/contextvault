@@ -2,6 +2,7 @@ import { getDb } from "../db";
 import { getStorage } from "../storage";
 import { Workspace } from "../storage/interfaces";
 import { logAuditEvent } from "./audit.service";
+import { deliver } from "./webhook.service";
 import * as path from "path";
 import * as fs from "fs/promises";
 import * as fsSync from "fs";
@@ -48,6 +49,8 @@ export async function createWorkspace(
     eventType: "workspace.created",
     payload: { name, customerId },
   });
+
+  deliver("workspace.created", { workspaceId: id, customerId, name });
 
   return {
     ...ws,
@@ -139,6 +142,8 @@ export async function softDeleteWorkspace(id: string): Promise<void> {
     actorId: "system",
     eventType: "workspace.deleted",
   });
+
+  deliver("workspace.deleted", { workspaceId: id });
 }
 
 export async function deleteWorkspace(id: string): Promise<void> {

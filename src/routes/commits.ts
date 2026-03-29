@@ -2,6 +2,7 @@ import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getWorkspace } from "../services/workspace.service";
 import { getCommitHistory } from "../services/commit.service";
+import { deliver } from "../services/webhook.service";
 import { getStorage } from "../storage";
 
 const PushSchema = z.object({
@@ -74,7 +75,7 @@ export async function commitRoutes(app: FastifyInstance) {
       const storage = getStorage();
       const result = await storage.pushCommit(id, body.files, body.metadata);
 
-      reply.code(201).send({
+      const commitResponse = {
         commitId: result.commitId,
         workspaceId: id,
         parentId: result.parentId,
@@ -82,7 +83,11 @@ export async function commitRoutes(app: FastifyInstance) {
         metadata: body.metadata,
         sizeBytes: result.sizeBytes,
         createdAt: result.createdAt,
-      });
+      };
+
+      deliver("commit.created", { workspaceId: id, commitId: result.commitId });
+
+      reply.code(201).send(commitResponse);
     }
   );
 

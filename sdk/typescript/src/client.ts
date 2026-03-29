@@ -1,5 +1,6 @@
 import { ClientOptions } from "./types";
 import { Workspaces } from "./workspaces";
+import { Webhooks } from "./webhooks";
 
 const DEFAULT_BASE_URL = "http://localhost:3000";
 const DEFAULT_MAX_RETRIES = 3;
@@ -17,6 +18,9 @@ export class ContextVaultClient {
   /** Workspace, sandbox, and file operations. */
   public readonly workspaces: Workspaces;
 
+  /** Webhook registration and management. */
+  public readonly webhooks: Webhooks;
+
   /** The resolved base URL for the API. */
   public readonly baseUrl: string;
 
@@ -29,6 +33,12 @@ export class ContextVaultClient {
     const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
 
     this.workspaces = new Workspaces({
+      baseUrl: this.baseUrl,
+      apiKey: options.apiKey,
+      maxRetries,
+    });
+
+    this.webhooks = new Webhooks({
       baseUrl: this.baseUrl,
       apiKey: options.apiKey,
       maxRetries,

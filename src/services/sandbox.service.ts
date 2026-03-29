@@ -3,6 +3,7 @@ import * as fs from "fs/promises";
 import * as fsSync from "fs";
 import * as path from "path";
 import { ulid } from "ulid";
+import { deliver } from "./webhook.service";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const WORKSPACES_DIR = path.join(DATA_DIR, "workspaces");
@@ -73,6 +74,8 @@ export async function checkoutSandbox(workspaceId: string): Promise<SandboxMeta>
     createdAt: new Date().toISOString(),
   };
   writeSandboxMeta(meta);
+
+  deliver("sandbox.checked_out", { workspaceId, sandboxId: meta.sandboxId });
 
   return meta;
 }
@@ -187,6 +190,8 @@ export async function commitSandbox(
 
   const createdAt = new Date().toISOString();
 
+  deliver("commit.created", { workspaceId, commitId });
+
   return {
     workspaceId,
     sandboxId: meta.sandboxId,
@@ -213,6 +218,8 @@ export async function destroySandbox(workspaceId: string): Promise<{
   // Remove sandbox directory
   await fs.rm(sbPath, { recursive: true, force: true });
   removeSandboxMeta(workspaceId);
+
+  deliver("sandbox.destroyed", { workspaceId });
 
   return {
     success: true,

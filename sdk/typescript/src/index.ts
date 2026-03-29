@@ -3,6 +3,7 @@ export { ContextVaultClient } from "./client";
 
 // Resource classes
 export { Workspaces } from "./workspaces";
+export { Webhooks } from "./webhooks";
 
 // Types
 export type {
@@ -28,6 +29,8 @@ export type {
   DestroyResult,
   BulkDeleteResult,
   ApiErrorResponse,
+  WebhookRegistration,
+  RegisterWebhookOptions,
 } from "./types";
 
 // Errors
