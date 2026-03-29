@@ -50,15 +50,16 @@ ContextVault is a multi-tenant, versioned workspace storage layer for AI agents.
   - [x] Add ConflictError exception
   - [x] README with quickstart
 
-### 🟡 Phase 6: DX & Documentation
-**Priority: HIGH** — Docs are the product experience for SDK users.
+### 🟡 Phase 6: DX & Documentation (ALMOST DONE)
+**Priority: HIGH**
 
-- [ ] Complete quickstart guides (scaffolded in docs/quickstart/)
-- [ ] LangChain integration examples (started in docs/examples/)
-- [ ] Interactive API docs (Swagger UI live at /docs)
-- [ ] Postman/Insomnia collection
+- [x] Complete quickstart guides (scaffolded) — ✅ All 3 done
+- [x] LangChain integration examples (started) — ✅ Verified complete
+- [x] Interactive API docs — ✅ Swagger UI live at /docs
+- [x] Postman collection — ✅ Created ContextVault-API.postman_collection.json
+- [ ] Publish quickstart to clawhub.ai (need account)
 
-### 🟡 Phase 7: E2E + Observability
+### 🟡 Phase 7: E2E + Observability (IN PROGRESS)
 **Priority: MEDIUM**
 
 - [ ] End-to-end lifecycle test (create ws → run → commit → verify)

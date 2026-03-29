@@ -1,0 +1,271 @@
+{
+  "info": {
+    "name": "ContextVault API",
+    "description": "Multi-tenant, versioned workspace layer for AI agents",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "apiKey",
+      "value": "cv-test-api-key-123"
+    },
+    {
+      "key": "workspaceId",
+      "value": ""
+    },
+    {
+      "key": "runId",
+      "value": ""
+    }
+  ],
+  "auth": {
+    "type": "apiKey",
+    "apiKey": [
+      {
+        "key": "value",
+        "value": "{{apiKey}}",
+        "type": "string"
+      },
+      {
+        "key": "key",
+        "value": "X-API-Key",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/health",
+        "description": "Check API health"
+      }
+    },
+    {
+      "name": "Workspaces",
+      "item": [
+        {
+          "name": "Create Workspace",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/workspaces",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"test-customer\",\n  \"name\": \"My Agent Workspace\"\n}"
+            },
+            "description": "Create a new workspace",
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "exec": [
+                    "var jsonData = pm.response.json();",
+                    "pm.collectionVariables.set('workspaceId', jsonData.id);"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "List Workspaces",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/workspaces?customerId={{customerId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["workspaces"],
+              "query": [
+                {
+                  "key": "customerId",
+                  "value": "test-customer"
+                }
+              ]
+            },
+            "description": "List all workspaces"
+          }
+        },
+        {
+          "name": "Get Workspace",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}",
+            "description": "Get a workspace by ID"
+          }
+        },
+        {
+          "name": "Delete Workspace",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}",
+            "description": "Soft-delete a workspace"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sandbox",
+      "item": [
+        {
+          "name": "Checkout Sandbox",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/sandbox",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "description": "Create a sandbox (checkout workspace)"
+          }
+        },
+        {
+          "name": "Get Sandbox Status",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/sandbox",
+            "description": "Get sandbox status"
+          }
+        },
+        {
+          "name": "Destroy Sandbox",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/sandbox",
+            "description": "Destroy sandbox without committing"
+          }
+        },
+        {
+          "name": "Commit Sandbox",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/sandbox/commit",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Agent session commit\",\n  \"author\": \"test-agent\",\n  \"agentId\": \"agent-001\",\n  \"taskId\": \"task-001\"\n}"
+            },
+            "description": "Commit sandbox changes"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Runs",
+      "item": [
+        {
+          "name": "Create Run",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/runs",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"agentId\": \"test-agent\"\n}"
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "exec": [
+                    "var jsonData = pm.response.json();",
+                    "pm.collectionVariables.set('runId', jsonData.id);"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "Get Run",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/runs/{{runId}}",
+            "description": "Get run status"
+          }
+        },
+        {
+          "name": "Finalize Run",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/runs/{{runId}}/finalize",
+            "description": "Finalize run (commit changes)"
+          }
+        },
+        {
+          "name": "Abort Run",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/runs/{{runId}}/abort",
+            "description": "Abort a run"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Version Control",
+      "item": [
+        {
+          "name": "Pull (get files)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/pull",
+            "description": "Pull latest committed files"
+          }
+        },
+        {
+          "name": "Get File",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/workspaces/{{workspaceId}}/pull?path=notes/test.md",
+              "host": ["{{baseUrl}}"],
+              "path": ["workspaces", "{{workspaceId}}", "pull"],
+              "query": [
+                {
+                  "key": "path",
+                  "value": "notes/test.md"
+                }
+              ]
+            },
+            "description": "Get a single file by path"
+          }
+        },
+        {
+          "name": "History",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/history",
+            "description": "Get commit history"
+          }
+        }
+      ]
+    }
+  ]
+}
