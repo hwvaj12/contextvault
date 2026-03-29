@@ -1,168 +1,411 @@
 # ContextVault — Architecture
 
-> **Versioned storage for AI agents with sandboxed execution.**
+> **Durable, Git-backed workspace memory for AI agents with ephemeral execution sandboxes.**
 
 ## Overview
 
-ContextVault is a Git-native, multi-tenant workspace storage layer. It provides versioned, persistent storage for AI agents without bloating agent context.
+ContextVault solves the problem of stateless AI agents. Every session starts from scratch, losing context, artifacts, and work history.
 
-## Core Insight
+ContextVault provides:
+- **Durable workspace memory** — Each workspace is a Git repository that persists forever
+- **Ephemeral sandboxes** — Agents materialize workspaces into temporary directories
+- **Version history** — Every change is a Git commit. Full audit trail, diff, rollback
+- **Concurrency control** — Multiple agents can work safely with conflict detection
+- **Multi-tenant** — Customer-scoped workspaces with API key isolation
 
-**Don't put workspace in context — put workspace in a sandbox.**
+## Core Design Principles
 
-```
-Agent needs context → pull workspace to sandbox → agent works in filesystem → commit changes → destroy sandbox
-```
+### 1. Durable repo state != ephemeral execution state
 
-This avoids:
-- **Context bloat** — full workspace in context = expensive
-- **Disk pollution** — agent leaves files everywhere
-- **State leakage** — next agent sees previous agent's work
+Three distinct concepts that must never be conflated:
+
+| Concept | Description | Durability |
+|---------|-------------|------------|
+| **Canonical workspace repo** | Source of truth, Git repo | Permanent |
+| **Ephemeral sandbox** | Temp working tree for one run | Destroyed after run |
+| **Agent context** | What's in the model's context window | Ephemeral |
+
+### 2. Git is the durable state engine
+
+Git is used as the source of truth because it provides:
+- Version history
+- Diffs
+- Rollback
+- Branching
+- Content-addressable storage
+- Battle-tested concurrency semantics
+
+### 3. Agents operate on files, not Git internals
+
+Agents should interact with normal filesystem trees:
+- read/write/create/delete files
+- Agents should NOT understand branch management, rebases, or repository plumbing
+
+### 4. Sandboxes must be disposable
+
+Sandboxes exist only for the duration of one run. After finalization:
+- Sandbox is destroyed
+- Changes are committed to canonical repo
+- Next run starts fresh
+
+### 5. Concurrency must be explicit
+
+Multiple agents can touch the same workspace. The system must:
+- Record base commit at run start
+- Detect conflicts at finalize time
+- Never silently overwrite concurrent changes
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Consumer (e.g., MetaProfile)                              │
-│                                                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────┐ │
-│  │  Sandbox    │    │   Agent     │    │   MCP Client    │ │
-│  │  Manager    │◄──►│  (Claude,   │◄──►│   (connects to  │ │
-│  │             │    │  Codex...)  │    │   ContextVault)  │ │
-│  └──────┬──────┘    └─────────────┘    └────────┬────────┘ │
-│         │                                        │          │
-│         │ file ops                   MCP protocol │          │
-└─────────┼────────────────────────────────────────┼──────────┘
-          │                                        ▼
-          │                         ┌────────────────────────┐
-          │                         │  ContextVault MCP      │
-          │                         │  Server                │
-          │                         │                        │
-          │                         │  • create_workspace    │
-          │                         │  • checkout_workspace  │
-          │                         │  • commit_workspace   │
-          │                         │  • destroy_workspace  │
-          │                         │  • pull / push        │
-          │                         └───────────┬────────────┘
-          │                                     │
-          │         ┌───────────────────────────┘
-          │         │
-          ▼         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  ContextVault Storage (Git-native)                          │
-│                                                             │
-│  data/                                                      │
-│  └── workspaces/                                            │
-│      └── {workspaceId}/                                     │
-│          └── .git/ (persistent, versioned)                  │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                         ContextVault                             │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │                    Control Plane                            │ │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  │ │
+│  │  │Workspace │  │   Run    │  │   Lock   │  │  Audit   │  │ │
+│  │  │ Service  │  │ Service  │  │ Service  │  │  Event   │  │ │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘  │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                              │                                   │
+│  ┌───────────────────────────┼───────────────────────────────┐ │
+│  │                    Commit Gateway                            │ │
+│  │  • Change detection  • Branch management  • Merge policy   │ │
+│  └───────────────────────────┼───────────────────────────────┘ │
+│                              │                                   │
+│  ┌───────────────────────────┼───────────────────────────────┐ │
+│  │              Canonical Repo Store                            │ │
+│  │         (Bare Git repos per workspace)                       │ │
+│  │         data/workspaces/{workspaceId}.git                   │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              │ Git clone/fetch/push
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Ephemeral Sandbox                             │
+│  /tmp/contextvault/runs/{run_id}/workspace/                     │
+│                                                                  │
+│  • Materialized from canonical repo at base commit              │
+│  • Agent reads/writes files normally                            │
+│  • Destroyed after run finalization                              │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-## Sandbox Model
+---
 
-### Lifecycle
+## Data Model
 
-```
-1. CREATE SANDBOX
-   Consumer → checkout_workspace(workspaceId)
-              → clones workspace to temp directory
-              → returns sandbox path
+### Workspace
 
-2. AGENT WORKS
-   Agent reads/writes files in sandbox
-   (normal filesystem operations)
-
-3. COMMIT CHANGES
-   Consumer → commit_workspace(workspaceId)
-              → git add + commit in sandbox
-              → push to persistent storage
-              → returns new commit hash
-
-4. DESTROY SANDBOX
-   Consumer → destroy_workspace(workspaceId)
-              → rm -rf temp directory
-              → workspace persists in ContextVault
+```typescript
+interface Workspace {
+  id: string;              // ws_01HXXXXXXXX
+  customerId: string;      // "meta-profile"
+  name: string;            // "LeBron James"
+  repoLocation: string;    // Path to bare repo
+  defaultBranch: string;   // "main"
+  currentHead: string;     // Latest commit hash
+  status: 'active' | 'suspended' | 'deleted';
+  storageClass: string;    // "standard" | "archive"
+  createdAt: string;
+  updatedAt: string;
+  lastAccessedAt: string;
+}
 ```
 
-### Sandbox Location
+### Run
+
+One agent job operating against one workspace at a specific base commit.
+
+```typescript
+interface Run {
+  id: string;              // run_01HXXXXXXXX
+  workspaceId: string;
+  agentId: string;         // "meta-profile-agent"
+  baseCommit: string;      // Commit used to materialize sandbox
+  finalCommit: string | null;
+  status: RunStatus;
+  sandboxPath: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  failureReason: string | null;
+  executionSummary: string | null;
+  mergeStatus: 'pending' | 'merged' | 'conflicted' | 'failed';
+}
+
+type RunStatus = 
+  | 'created'      // Run record created
+  | 'provisioning' // Sandbox being created
+  | 'ready'        // Sandbox ready, agent can start
+  | 'running'      // Agent actively working
+  | 'finalizing'   // Detecting changes, creating commit
+  | 'merged'       // Successfully committed to canonical
+  | 'conflicted'   // Merge conflict detected
+  | 'failed'       // Execution failed
+  | 'aborted'      // Manually aborted
+  | 'cleaned_up';  // Sandbox destroyed
+```
+
+### Lock
+
+```typescript
+interface Lock {
+  id: string;
+  workspaceId: string;
+  lockType: 'exclusive' | 'shared';
+  ownerRunId: string;
+  acquiredAt: string;
+  expiresAt: string;
+}
+```
+
+### Audit Event
+
+```typescript
+interface AuditEvent {
+  id: string;
+  workspaceId: string;
+  runId: string | null;
+  actorType: 'agent' | 'user' | 'system';
+  actorId: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+```
+
+---
+
+## Run Lifecycle
 
 ```
-/tmp/contextvault-sandbox/{workspaceId}/
+┌──────────┐
+│ created  │ ← Run record created
+└────┬─────┘
+     ▼
+┌────────────┐
+│ provisioning│ ← Sandbox being materialized
+└────┬───────┘
+     ▼
+┌──────────┐
+│  ready   │ ← Sandbox ready
+└────┬─────┘
+     ▼
+┌──────────┐
+│ running  │ ← Agent working in sandbox
+└────┬─────┘
+     ▼
+┌─────────────┐
+│ finalizing  │ ← Detecting changes, committing
+└──────┬──────┘
+       │
+       ├──────────────────┬──────────────────┐
+       ▼                  ▼                  ▼
+┌──────────┐       ┌────────────┐     ┌──────────┐
+│ merged   │       │ conflicted │     │  failed  │
+└────┬─────┘       └─────┬──────┘     └────┬─────┘
+     │                   │                  │
+     └───────────────────┴──────────────────┘
+                       │
+                       ▼
+               ┌──────────────┐
+               │ cleaned_up   │ ← Sandbox destroyed
+               └──────────────┘
 ```
 
-Sandboxes are:
-- **Temporary** — destroyed after commit
-- **Isolated** — each workspace gets its own directory
-- **Clean** — always start fresh from latest commit
+---
 
-## MCP Tools
+## Concurrency Model
 
-### Workspace Management
-| Tool | Description |
-|------|-------------|
-| `create_workspace` | Create new workspace |
-| `list_workspaces` | List all workspaces |
-| `get_workspace` | Get workspace metadata |
-| `delete_workspace` | Soft-delete workspace |
+### How It Works
 
-### Sandbox Operations
-| Tool | Description |
-|------|-------------|
-| `checkout_workspace` | Pull workspace to sandbox, return path |
-| `commit_workspace` | Commit sandbox changes to ContextVault |
-| `destroy_workspace` | Destroy sandbox, keep persistent storage |
-| `get_sandbox_status` | Check if sandbox exists |
+1. **Run starts** → System records:
+   - `baseCommit` — the commit sandbox was created from
+   - `workspaceHead` — the HEAD of canonical repo at start
+
+2. **Run finalizes** → System checks:
+   - Has canonical HEAD changed since run started?
+   - If no → fast-forward or normal merge
+   - If yes but clean → merge commit
+   - If conflict → mark `conflicted`, preserve for resolution
+
+3. **Conflict resolution** (future):
+   - Human or agent reviews
+   - Decides: accept ours/theirs/rebase
+
+### Lock Types
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| **Exclusive** | One mutable run per workspace at a time | Safer, simpler |
+| **Optimistic** | Parallel runs, detect divergence at merge | Higher throughput |
+
+**v1 default:** Exclusive locking (simpler, less risk)
+
+---
+
+## Default Workspace Layout
+
+When a workspace is created, it seeds this structure:
+
+```
+/
+├── profile/
+│   ├── summary.md          # Human-readable summary
+│   └── facts.json          # Structured key facts
+├── memory/
+│   ├── timeline.md         # Chronological events
+│   └── known_entities.json # Known people, places, things
+├── state/
+│   ├── current.json         # Current state snapshot
+│   └── preferences.json    # Preferences/settings
+├── tasks/
+│   ├── open.yaml           # Pending tasks
+│   └── completed.yaml      # Completed tasks
+├── decisions/
+│   └── {date}-{slug}.md    # Decision records
+├── artifacts/
+│   ├── reports/
+│   ├── drafts/
+│   └── outputs/
+├── logs/
+│   └── run_summaries/     # Past run summaries
+└── system/
+    └── workspace_manifest.yaml  # Workspace metadata
+```
+
+**Principles:**
+- Many small, coherent files
+- Predictable directories
+- Text-first formats (Markdown, JSON, YAML)
+- Easy to diff
+
+---
+
+## API Endpoints
+
+### Workspaces
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/workspaces` | Create workspace (seeds layout) |
+| GET | `/workspaces` | List workspaces (filter by customer) |
+| GET | `/workspaces/:id` | Get workspace metadata |
+| DELETE | `/workspaces/:id` | Soft-delete workspace |
+
+### Runs
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/workspaces/:id/runs` | Create and start a run |
+| GET | `/runs/:id` | Get run status |
+| POST | `/runs/:id/finalize` | Finalize run (commit changes) |
+| POST | `/runs/:id/abort` | Abort run |
+
+### Sandboxes
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/workspaces/:id/sandbox` | Create sandbox (checkout) |
+| GET | `/workspaces/:id/sandbox` | Get sandbox status |
+| DELETE | `/workspaces/:id/sandbox` | Destroy sandbox |
 
 ### Version Control
-| Tool | Description |
-|------|-------------|
-| `push_to_workspace` | Direct push (skip sandbox) |
-| `pull_from_workspace` | Direct pull (skip sandbox) |
-| `get_workspace_history` | Get commit history |
-| `diff_workspace` | Compare two versions |
-| `rollback_workspace` | Rollback to previous version |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/workspaces/:id/push` | Push files (git add + commit) |
+| GET | `/workspaces/:id/pull` | Pull latest or specific version |
+| GET | `/workspaces/:id/history` | Commit history |
+| GET | `/workspaces/:id/diff` | Compare versions |
+| POST | `/workspaces/:id/rollback` | Rollback to version |
 
-## Workspace Structure
+---
 
-Each workspace is a Git repository:
+## Storage Layout
+
+### Current (Local Filesystem)
 
 ```
-workspace/
-├── .git/
-├── profile/
-│   └── summary.md
-├── games/
-│   ├── 2024_001.json
-│   └── 2024_001.md
-└── ...
+data/
+├── workspace-meta/           # JSON metadata
+│   └── {id}.json
+├── workspaces/              # Bare Git repos
+│   └── {id}.git/
+└── sandboxes/               # Ephemeral sandboxes
+    └── {id}/               # git clone targets
 ```
+
+### Future (S3)
+
+```
+s3://{bucket}/{customerId}/workspaces/{workspaceId}.git/
+```
+
+---
+
+## Build Phases
+
+### Phase 1: Foundation
+- [ ] SQLite database layer
+- [ ] Workspace, Run, Lock, Audit tables
+- [ ] Run service with state machine
+- [ ] Default workspace layout seeding
+
+### Phase 2: Concurrency & Safety
+- [ ] Lock service
+- [ ] Concurrency control (base commit tracking)
+- [ ] Conflict detection
+- [ ] Path safety validation
+
+### Phase 3: Commit Gateway
+- [ ] Run branches (`run/{run_id}`)
+- [ ] Structured commit messages
+- [ ] Proper change detection (add/modify/delete)
+- [ ] Merge policy enforcement
+
+### Phase 4: Polish
+- [ ] Unit tests
+- [ ] Integration tests
+- [ ] E2E test scenario
+- [ ] Structured logging
+- [ ] Metrics
+
+---
 
 ## Commit Message Format
 
-```
-agent: {agentId} | task: {taskId} | tags: {tag1,tag2}
+```text
+contextvault: workspace={id} run={id} agent={id}
+
+Summary:
+- updated profile/summary.md
+- added games/2024_001.json
+
 ---
-{"agentId":"...","taskId":"...","files":["summary.md"],"sizeBytes":1024}
+{"workspaceId":"ws_01HXXX","runId":"run_01HXXX","agentId":"meta-profile","files":["profile/summary.md","games/2024_001.json"],"sizeBytes":2048}
 ```
 
-## Storage Backend
+---
 
-Currently: Local filesystem Git repos
-```
-data/workspaces/{workspaceId}/.git
-```
+## Security
 
-Future: S3-backed, GitHub-backed, etc.
+- **Isolation** — Each sandbox is a separate directory
+- **Path safety** — Validation prevents traversal outside sandbox
+- **Access control** — API key per customer, IAM-style policies
+- **No repo corruption** — Transactions ensure atomic commits
 
-## Authentication
-
-API Key via `X-API-Key` header or MCP configuration.
+---
 
 ## Environment Variables
 
 ```bash
-CONTEXTVAULT_DATA_DIR=./data          # Where workspaces are stored
-CONTEXTVAULT_SANDBOX_DIR=/tmp/contextvault-sandbox  # Where sandboxes live
-CONTEXTVAULT_API_PORT=3000            # HTTP API port
+CONTEXTVAULT_DATA_DIR=./data
+CONTEXTVAULT_API_PORT=3000
+CONTEXTVAULT_API_KEY=cv-test-api-key-123
+CONTEXTVAULT_LOCK_MODE=exclusive  # or "optimistic"
 ```
+
+---
+
+_Last updated: 2026-03-28_

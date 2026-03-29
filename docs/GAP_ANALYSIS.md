@@ -275,13 +275,20 @@ Plus metrics:
 
 ---
 
+## Decisions Confirmed
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| **Locking policy** | Exclusive by default | Simpler, safer for v1 |
+| **Database** | SQLite | Simple, no external deps |
+| **Concurrency** | Optimistic with base commit tracking | Detect conflicts at merge |
+| **Repo format** | Working repos (not bare) | Simpler for agents to understand |
+
 ## Open Questions
 
-1. **Database:** SQLite (simple, no deps) or PostgreSQL (production)?
-2. **Bare vs working repos:** Change canonical storage to bare format?
-3. **Locking policy:** Exclusive by default, or optimistic?
-4. **S3:** When to implement remote storage?
-5. **File deletion:** Allowed? When?
+1. **S3:** When to implement remote storage?
+2. **File deletion:** Allowed? When?
+3. **Failed sandbox retention:** How long to keep for debugging?
 
 ---
 
@@ -301,3 +308,5 @@ Plus metrics:
 | S3 backend | ❌ Not started |
 
 **Verdict:** Core sandbox mechanic works. Need: run management, concurrency, DB layer, tests.
+
+**Plan:** Spawn coding agent to implement all 4 phases in sequence.

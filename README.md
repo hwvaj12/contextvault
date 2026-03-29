@@ -1,69 +1,95 @@
 # ContextVault
 
-**Git-native virtual filesystem for AI agents.** Every workspace is a Git repository. Agents work in sandboxes, committing changes that persist forever.
+**Durable Git-backed workspace memory for AI agents.**
+
+Every AI agent session starts from scratch. ContextVault gives agents persistent memory — versioned, diffable, and rollback-capable — without bloating context windows.
 
 ## The Problem
 
-AI agents are stateless. Every conversation starts from scratch. Memory, context, and work history — gone.
+AI agents are stateless. They can't remember what happened in previous sessions. Prompt context is expensive and limited.
 
-**ContextVault gives agents a persistent memory layer built on Git.**
+**ContextVault solution:**
+```
+Agent needs context → materialize workspace into sandbox → agent works → commit → destroy sandbox
+```
 
-## Why Git?
+Memory that persists. Context that travels. Git that scales.
 
-Git is the perfect storage layer for AI agents:
+## Core Concepts
 
-- **Versioned** — Every change is a commit. Full history, instant rollback.
-- **Distributed** — Each workspace is a full Git repo. No single point of failure.
-- **Delta-efficient** — Only changes are stored, not full copies.
-- **Battle-tested** — Git handles billions of commits. Your data is safe.
-- **Agent-native** — Agents already understand files and Git. No new mental models.
+| Concept | Description |
+|---------|-------------|
+| **Workspace** | Durable Git repository representing persistent memory |
+| **Sandbox** | Ephemeral working directory for one agent run |
+| **Run** | One agent execution with full lifecycle tracking |
+| **Commit** | Versioned snapshot with audit metadata |
 
 ## How It Works
 
 ```
-You → ContextVault → Workspace (Git repo)
-                    ↘ Sandbox (temp clone)
+┌─────────────────────────────────────────────────────────────────┐
+│  1. Create workspace (durable Git repo)                         │
+│     → data/workspaces/{id}.git/                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  2. Start run (agent execution)                                 │
+│     → Checkout workspace to sandbox                              │
+│     → Record base commit + workspace HEAD                        │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  3. Agent works in sandbox                                      │
+│     → Normal file operations (read, write, create, delete)       │
+│     → No Git knowledge required                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  4. Finalize run (commit changes)                               │
+│     → Detect file changes (added, modified, deleted)              │
+│     → Create structured commit with metadata                     │
+│     → Merge to canonical workspace                              │
+│     → Detect conflicts if concurrent                            │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  5. Cleanup                                                     │
+│     → Destroy sandbox                                           │
+│     → Release locks                                             │
+│     → Update workspace metadata                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Create a workspace** — A new Git repository, customer-scoped
-2. **Checkout to sandbox** — Clone the workspace to a temp directory
-3. **Agent works** — Reads and writes files normally
-4. **Commit changes** — Changes are committed back to the workspace
-5. **Destroy sandbox** — Temp directory is cleaned up
+## Features
 
-The workspace persists forever. The sandbox is ephemeral.
-
-## Virtual Filesystem Model
-
-**Don't push workspace into agent context — pull workspace into a sandbox.**
-
-Agents don't need to understand Git or serialization. They just work with files:
-
-```
-Agent sees:    /sandbox/ws_01HXXXXXXXX/profile/summary.md
-               /sandbox/ws_01HXXXXXXXX/games/2024_001.json
-               /sandbox/ws_01HXXXXXXXX/analysis/shooting.md
-
-Behind scenes: Git commits in data/workspaces/ws_01HXXXXXXXX/.git/
-```
-
-No context bloat. No serialization overhead. Pure filesystem semantics.
+- **Multi-tenant** — Customer-scoped with API key isolation
+- **Git-native storage** — Every change is a commit. Full history, diff, rollback
+- **Ephemeral sandboxes** — Agents work in temp directories, not persistent storage
+- **Concurrency control** — Multiple agents safe with conflict detection
+- **Run lifecycle** — Full tracking from created → merged/conflicted/failed
+- **Structured commits** — Machine-readable metadata for audit trails
+- **Default workspace layout** — Pre-seeded directories for organization
 
 ## Two Interfaces
 
 | Interface | Purpose | Best For |
 |-----------|---------|----------|
-| **MCP Server** | AI agent tool | Claude, Codex, any MCP client |
-| **REST API** | Developer access | Webhooks, CLI, integrations |
-
-Both use the same Git storage underneath.
+| **MCP Server** | AI agents (Claude, Codex) | Tool-use by agents |
+| **REST API** | Developers, webhooks | Building integrations |
 
 ## Quick Start
 
 ```bash
+# API server
 npm install
-npm run dev        # API at localhost:3000
-cd mcp && npm install && npm run dev  # MCP on stdio
+npm run dev
+
+# MCP server (separate terminal)
+cd mcp && npm install && npm run dev
 ```
 
 ## API Example
@@ -74,87 +100,75 @@ curl -X POST http://localhost:3000/workspaces \
   -H "X-API-Key: your-key" \
   -d '{"customerId":"meta-profile","name":"LeBron James"}'
 
-# Checkout to sandbox (get a temp directory to work in)
-curl -X POST http://localhost:3000/workspaces/{id}/sandbox \
-  -H "X-API-Key: your-key"
+# Start run (checkout to sandbox)
+curl -X POST http://localhost:3000/workspaces/{id}/runs
 
-# Agent works in /tmp/contextvault-sandbox/{id}/...
+# Agent works in /tmp/contextvault/runs/{run_id}/workspace/...
 
-# Commit changes (persist to Git)
-curl -X POST http://localhost:3000/workspaces/{id}/sandbox/commit \
-  -H "X-API-Key: your-key"
+# Finalize (commit changes)
+curl -X POST http://localhost:3000/runs/{run_id}/finalize
 
-# Destroy sandbox (cleanup)
-curl -X DELETE http://localhost:3000/workspaces/{id}/sandbox \
-  -H "X-API-Key: your-key"
-```
-
-## MCP Tools
-
-```typescript
-// Agent workflow
-await checkout_workspace({ workspaceId: "ws_01HXXXXXXXX" })
-// → { sandboxPath: "/tmp/contextvault-sandbox/ws_01HXXXXXXXX" }
-
-// Agent reads/writes files in sandboxPath...
-
-await commit_workspace({ 
-  workspaceId: "ws_01HXXXXXXXX",
-  agentId: "my-agent",
-  taskId: "analysis-001"
-})
-// → { commitId: "abc123", filesChanged: ["profile/summary.md"] }
-
-await destroy_workspace({ workspaceId: "ws_01HXXXXXXXX" })
-// → { success: true }
+# Sandbox auto-destroyed, workspace has new commit
 ```
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  ContextVault                                                │
-│                                                              │
-│  ┌─────────────┐         ┌─────────────┐                   │
-│  │  Sandboxes  │◄──────►│   Agents    │                   │
-│  │  (temp)     │         │  (ephemeral)│                   │
-│  └──────┬──────┘         └─────────────┘                   │
-│         │ commit                                          │
-│         ▼                                                   │
-│  ┌─────────────┐                                            │
-│  │ Workspaces  │  Persistent Git repos                      │
-│  └─────────────┘  (forever)                                │
+│  Control Plane                                             │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐ │
+│  │Workspace │  │   Run    │  │   Lock   │  │  Audit   │ │
+│  │ Service  │  │ Service  │  │ Service  │  │  Event   │ │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘ │
+│                           │                               │
+│                    Commit Gateway                           │
+│                           │                               │
+│              ┌────────────┴────────────┐                  │
+│              │  Canonical Repo Store   │                  │
+│              │  (Bare Git repos)       │                  │
+│              └─────────────────────────┘                  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Storage layout:
-```
-data/
-├── workspace-meta/              # JSON metadata
-├── workspaces/                  # Persistent Git repos
-│   └── {workspaceId}/.git/
-└── sandboxes/                  # Temp sandboxes
-    └── {workspaceId}/          # git clone target
-```
+## Default Workspace Layout
 
-## Use Cases
-
-- **Agent Memory** — Give agents persistent context across sessions
-- **Athlete Profiles** — Store game history, stats, recaps per athlete
-- **Team Workspaces** — Shared context for team AI assistants
-- **Research** — Versioned research artifacts and findings
-- **Any AI Workflow** — Anywhere you need memory that persists
+```
+/
+├── profile/
+│   ├── summary.md          # Human-readable summary
+│   └── facts.json          # Structured facts
+├── memory/
+│   ├── timeline.md         # Chronological events
+│   └── known_entities.json
+├── state/
+│   ├── current.json
+│   └── preferences.json
+├── tasks/
+│   ├── open.yaml
+│   └── completed.yaml
+├── decisions/
+├── artifacts/
+├── logs/
+└── system/
+    └── workspace_manifest.yaml
+```
 
 ## Status
 
-v0.1 — MVP complete ✅
+**v0.1** — MVP with sandbox workflow
+**v0.2** (in progress) — Full run lifecycle, concurrency, SQLite DB
 
-- ✅ Git-native storage with full version control
-- ✅ Workspace CRUD with customer scoping
-- ✅ Sandbox workflow (checkout → work → commit → destroy)
-- ✅ MCP server for AI agents
-- ✅ REST API for developers
-- ✅ Push/Pull/History/Diff/Rollback
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md) — System design
+- [REST API](docs/REST_API.md) — API reference
+- [Storage Layer](docs/STORAGE_LAYER.md) — Git storage details
+- [Multi-Tenant Storage](docs/MULTITENANT_STORAGE.md) — S3 design
+- [Gap Analysis](docs/GAP_ANALYSIS.md) — Implementation roadmap
+
+## GitHub
+
+https://github.com/hwvaj12/contextvault
 
 ---
 
