@@ -7,9 +7,15 @@ import { workspaceRoutes } from "./routes/workspaces";
 import { commitRoutes } from "./routes/commits";
 import { gitRemoteRoutes } from "./routes/git-remote";
 import { sandboxRoutes } from "./routes/sandbox";
+import { runRoutes } from "./routes/runs";
+import { getDb, closeDb } from "./db";
 
 async function main() {
   const app = Fastify({ logger: true });
+
+  // Initialize database
+  getDb();
+  app.addHook("onClose", () => closeDb());
 
   // CORS
   await app.register(cors, { origin: true });
@@ -68,6 +74,7 @@ async function main() {
   await app.register(workspaceRoutes);
   await app.register(commitRoutes);
   await app.register(sandboxRoutes);
+  await app.register(runRoutes);
 
   const port = parseInt(process.env.PORT || "3000", 10);
   await app.listen({ port, host: "0.0.0.0" });
