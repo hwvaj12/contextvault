@@ -14,7 +14,7 @@ class Client:
 
     Usage::
 
-        from src import Client
+        from contextvault import Client
 
         cv = Client(api_key="cv_key_xxx")
         workspaces = cv.workspaces.list(customer_id="cust_123")
