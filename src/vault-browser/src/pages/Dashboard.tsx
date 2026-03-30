@@ -4,9 +4,11 @@ import type { Workspace } from "../types";
 
 interface DashboardProps {
   onSelect: (id: string) => void;
+  onUsage?: () => void;
+  onWebhooks?: () => void;
 }
 
-export default function Dashboard({ onSelect }: DashboardProps) {
+export default function Dashboard({ onSelect, onUsage, onWebhooks }: DashboardProps) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,9 +40,29 @@ export default function Dashboard({ onSelect }: DashboardProps) {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-white">Workspaces</h1>
-        <p className="text-gray-400 text-sm mt-1">{workspaces.length} workspace{workspaces.length !== 1 ? "s" : ""}</p>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Workspaces</h1>
+          <p className="text-gray-400 text-sm mt-1">{workspaces.length} workspace{workspaces.length !== 1 ? "s" : ""}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {onWebhooks && (
+            <button
+              onClick={onWebhooks}
+              className="bg-gray-900 border border-gray-800 hover:border-gray-700 text-gray-300 hover:text-white px-4 py-2 rounded-lg text-sm transition-colors"
+            >
+              Webhooks
+            </button>
+          )}
+          {onUsage && (
+            <button
+              onClick={onUsage}
+              className="bg-gray-900 border border-gray-800 hover:border-gray-700 text-gray-300 hover:text-white px-4 py-2 rounded-lg text-sm transition-colors"
+            >
+              Usage Dashboard
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

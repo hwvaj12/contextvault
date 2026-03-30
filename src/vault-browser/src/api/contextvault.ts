@@ -1,4 +1,4 @@
-import type { Workspace, WorkspaceFile, Commit, DiffResult } from "../types";
+import type { Workspace, WorkspaceFile, Commit, DiffResult, Webhook } from "../types";
 
 let apiKey = localStorage.getItem("cv-api-key") || "";
 const BASE_URL = window.location.origin;
@@ -69,4 +69,32 @@ export async function searchFiles(
   query: string
 ): Promise<{ query: string; results: SearchResult[]; count: number }> {
   return request(`/workspaces/${workspaceId}/search?q=${encodeURIComponent(query)}`);
+}
+
+export interface UsageStats {
+  totalRequests: number;
+  uniqueWorkspaces: number;
+  totalStorageBytes: number;
+  activeApiKeys: number;
+  requestsByDay: { date: string; count: number }[];
+}
+
+export async function getUsageStats(period: string = "7d"): Promise<UsageStats> {
+  return request<UsageStats>(`/analytics/usage?period=${period}`);
+}
+
+export async function listWebhooksApi(customerId: string): Promise<Webhook[]> {
+  const data = await request<{ data: Webhook[] }>(`/webhooks?customerId=${encodeURIComponent(customerId)}`);
+  return data.data;
+}
+
+export async function createWebhook(customerId: string, url: string, events: string[]): Promise<Webhook> {
+  return request<Webhook>("/webhooks", {
+    method: "POST",
+    body: JSON.stringify({ customerId, url, events }),
+  });
+}
+
+export async function deleteWebhookApi(id: string): Promise<void> {
+  await request<void>(`/webhooks/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

@@ -184,3 +184,20 @@ MIT License — see [LICENSE](LICENSE) file.
 ---
 
 **ContextVault: Memory that persists. Context that travels. Git that scales.**
+
+## ContextVault (PM)
+
+**Role:** PM + Technical Lead
+**Rule: Execution must go through Claude Code (`runtime="acp"`, `mode="run"`)**
+
+**Active:** Phase 10 — Vault Browser Enhancements (syntax highlighting ✅, file search ✅)
+**PM Plan:** `docs/PHASE_10_PLAN.md`
+
+**Next tasks:**
+- Commit filtering — filter timeline by tag/date
+- Usage dashboard — per-customer metrics
+- Webhook management UI
+
+
+**Completed:** Syntax Highlighting (d52cda1), File Search (8f1352f)
+**Next:** Commit filtering, Usage dashboard, Webhook management

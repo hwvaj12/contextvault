@@ -3,15 +3,21 @@ import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import Workspace from "./pages/Workspace";
 import Diff from "./pages/Diff";
+import Usage from "./pages/Usage";
+import Webhooks from "./pages/Webhooks";
 import { getApiKey, setApiKey } from "./api/contextvault";
 
 type Route =
   | { page: "dashboard" }
   | { page: "workspace"; id: string }
-  | { page: "diff"; id: string };
+  | { page: "diff"; id: string }
+  | { page: "usage" }
+  | { page: "webhooks" };
 
 function parseHash(): Route {
   const hash = window.location.hash.slice(1) || "/";
+  if (hash === "/webhooks") return { page: "webhooks" };
+  if (hash === "/usage") return { page: "usage" };
   const diffMatch = hash.match(/^\/workspace\/([^/]+)\/diff$/);
   if (diffMatch) return { page: "diff", id: diffMatch[1] };
   const wsMatch = hash.match(/^\/workspace\/([^/]+)$/);
@@ -111,7 +117,9 @@ export default function App() {
         setHasKey(false);
       }}
     >
-      {route.page === "dashboard" && <Dashboard onSelect={(id) => navigate(`/workspace/${id}`)} />}
+      {route.page === "dashboard" && <Dashboard onSelect={(id) => navigate(`/workspace/${id}`)} onUsage={() => navigate("/usage")} onWebhooks={() => navigate("/webhooks")} />}
+      {route.page === "usage" && <Usage onBack={() => navigate("/")} />}
+      {route.page === "webhooks" && <Webhooks onBack={() => navigate("/")} />}
       {route.page === "workspace" && (
         <Workspace
           workspaceId={route.id}

@@ -11,6 +11,7 @@ import { sandboxRoutes } from "./routes/sandbox";
 import { runRoutes } from "./routes/runs";
 import { webhookRoutes } from "./routes/webhooks";
 import { apiKeyRoutes } from "./routes/apikeys";
+import { analyticsRoutes } from "./routes/analytics";
 import { vaultBrowserRoutes } from "./routes/vault-browser";
 import { getDb, closeDb } from "./db";
 
@@ -89,6 +90,7 @@ async function main() {
   await app.register(runRoutes);
   await app.register(webhookRoutes);
   await app.register(apiKeyRoutes);
+  await app.register(analyticsRoutes);
 
   const port = parseInt(process.env.PORT || "3000", 10);
   await app.listen({ port, host: "0.0.0.0" });

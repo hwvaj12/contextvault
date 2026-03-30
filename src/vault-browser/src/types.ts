@@ -65,3 +65,12 @@ export interface ListWorkspacesResponse {
     hasMore: boolean;
   };
 }
+
+export interface Webhook {
+  id: string;
+  customerId: string;
+  url: string;
+  events: string[];
+  active: boolean;
+  createdAt: string;
+}
