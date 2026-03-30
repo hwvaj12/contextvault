@@ -190,16 +190,16 @@ function UnifiedDiff({ hunks }: { hunks: DiffResult["files"][0]["hunks"] }) {
   return (
     <table className="w-full border-collapse">
       <tbody>
-        {hunks.flatMap((hunk) => {
-          const lines = hunk.lines;
+        {hunks.flatMap((hunk, hi) => {
+          const lines = hunk.content.split("\n");
           return lines.map((line, i) => {
-            lineNum++;
+            if (!line.startsWith("@@")) lineNum++;
             const isAdd = line.startsWith("+") && !line.startsWith("+++");
             const isDel = line.startsWith("-") && !line.startsWith("---");
             const isHeader = line.startsWith("@@");
             return (
               <tr
-                key={`${hunk.header}-${i}`}
+                key={`${hi}-${i}`}
                 className={
                   isAdd ? "bg-green-900/10" : isDel ? "bg-red-900/10" : isHeader ? "bg-blue-900/10" : ""
                 }
@@ -227,7 +227,8 @@ function SplitDiff({ hunks }: { hunks: DiffResult["files"][0]["hunks"] }) {
   const right: Array<{ text: string; type: "add" | "del" | "header" | "ctx" | "empty" }> = [];
 
   for (const hunk of hunks) {
-    for (const line of hunk.lines) {
+    const lines = hunk.content.split("\n");
+    for (const line of lines) {
       if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++")) {
         left.push({ text: line, type: "header" });
         right.push({ text: line, type: "header" });

@@ -35,7 +35,7 @@ export interface DiffFile {
 
 export interface DiffHunk {
   header: string;
-  lines: string[];
+  content: string; // full unified diff string with \n separated lines
 }
 
 export interface DiffResult {
