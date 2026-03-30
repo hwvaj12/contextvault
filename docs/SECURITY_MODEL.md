@@ -311,6 +311,74 @@ If secrets are detected:
 
 ---
 
+## TMK Auto-Provisioning (Phase 13)
+
+### Secrets Abstraction
+
+TMKs are managed through a pluggable secrets abstraction:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ SecretsService Interface                                     │
+│                                                             │
+│   getSecret(tenantId, key) → string | null                │
+│   setSecret(tenantId, key, value) → void                  │
+│   generateTmk(tenantId) → TMK                             │
+│   getTmk(tenantId) → TMK | null                           │
+└─────────────────────────────────────────────────────────────┘
+                           ↑
+                           │
+         ┌─────────────────┼─────────────────┐
+         ↓                 ↓                 ↓
+┌────────────────┐ ┌───────────────┐ ┌──────────────┐
+│LocalJsonProvider│ │DopplerProvider│ │ Future:aws/gcp│
+│ (data/secrets/) │ │   (Doppler)   │ │              │
+└────────────────┘ └───────────────┘ └──────────────┘
+```
+
+**Local JSON Provider (v1):**
+```json
+// data/secrets/tenant-keys.json
+{
+  "tenant_001": {
+    "tmk": "base64_encoded_256bit_key",
+    "keyId": "v1_1711833600000",
+    "createdAt": "2026-03-30T18:00:00Z"
+  }
+}
+```
+
+**Environment config:**
+```bash
+CONTEXTVAULT_SECRETS_BACKEND=local          # local | doppler | aws | gcp
+CONTEXTVAULT_SECRETS_PATH=./data/secrets    # for local backend
+```
+
+### Auto-Provisioning Flow
+
+```
+Tenant onboards:
+1. Tenant record created in DB
+2. System auto-generates TMK: crypto.randomBytes(32)
+3. TMK stored in secrets provider (local/Doppler/Vault)
+4. DB updated with tmk_key_id reference
+5. Tenant gets "ready" — zero friction, zero complexity
+
+On first workspace access:
+1. Check if tenant has TMK
+2. If missing → generate + store (lazy migration)
+3. Existing tenants migrate transparently
+```
+
+### Migration: Existing Tenants
+
+Existing tenants (pre-Phase 13) get TMKs automatically:
+- **Lazy migration:** TMK generated on first write operation
+- **Audit logged:** `tenant.tmk_lazy_migration` event
+- **No breaking changes:** Existing vaults work as-is
+
+---
+
 ## Threat Model
 
 ### Protected Against
@@ -343,16 +411,28 @@ If secrets are detected:
 
 ## Implementation Checklist
 
-- [ ] Add Ed25519 signing service (`src/services/signing.service.ts`)
-- [ ] Add secrets scanner utility (`src/utils/secrets-scanner.ts`)
-- [ ] Add workspace manifest builder (`src/services/manifest.service.ts`)
-- [ ] Update workspace export to include signing
-- [ ] Update workspace import to verify signatures
-- [ ] Add TMK configuration to config service
-- [ ] Add SQLCipher encryption to storage layer (future)
-- [ ] Update SECURITY.md with this model
-- [ ] Add signing key rotation documentation
-- [ ] Add verification examples to SDK
+### Phase 12 — Complete ✅
+- [x] Add Ed25519 signing service (`src/services/signing.service.ts`)
+- [x] Add secrets scanner utility (`src/utils/secrets-scanner.ts`)
+- [x] Add workspace manifest builder (`src/services/manifest.service.ts`)
+- [x] Update workspace export to include signing
+- [x] Update workspace import to verify signatures
+- [x] Add TMK configuration to config service
+- [x] Add signing key rotation documentation
+- [x] Add verification examples to SDK
+
+### Phase 13 — In Progress
+- [ ] Add SecretsService interface + LocalJsonProvider
+- [ ] Update TenantService to auto-provision TMK
+- [ ] Database schema update (tmk columns)
+- [ ] Migration script for existing tenants
+- [ ] Internal API endpoints for TMK management
+- [ ] Documentation updates
+
+### Future
+- [ ] Add SQLCipher encryption to storage layer
+- [ ] Add Doppler/Vault providers for production
+- [ ] Key rotation documentation
 
 ---
 
