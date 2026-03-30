@@ -134,11 +134,11 @@ tests/
 - [x] Step 2: Implement secrets scanner
 - [x] Step 3: Implement manifest builder
 - [x] Step 4: Write tests (33 passing)
-- [ ] Step 5: Update config service (pending — TMK env vars)
-- [ ] Step 6: Integrate with workspace export flow
-- [ ] Step 7: Integrate with workspace import flow
-- [ ] Step 8: SDK types for bundle verification
-- [ ] Update existing documentation
+- [x] Step 5: Update config service (TMK env vars)
+- [x] Step 6: Integrate with workspace export flow
+- [x] Step 7: Integrate with workspace import flow
+- [x] Step 8: SDK types for bundle verification
+- [x] Update existing documentation
 
 ---
 
