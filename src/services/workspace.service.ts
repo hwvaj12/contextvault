@@ -3,6 +3,13 @@ import { getStorage } from "../storage";
 import { Workspace } from "../storage/interfaces";
 import { logAuditEvent } from "./audit.service";
 import { deliver } from "./webhook.service";
+import {
+  buildManifest,
+  verifyManifest,
+  Manifest,
+} from "./manifest.service";
+import { scanWorkspace } from "../utils/secrets-scanner";
+import { getConfig } from "./config.service";
 import * as path from "path";
 import * as fs from "fs/promises";
 import * as fsSync from "fs";
@@ -270,4 +277,210 @@ export function updateWorkspaceHead(workspaceId: string, commitHash: string): vo
     now,
     workspaceId
   );
+}
+
+// ─── Workspace Export / Import ────────────────────────────────────────────────
+
+export interface WorkspaceExportResult {
+  workspaceId: string;
+  bundlePath: string;
+  manifest: Manifest;
+  fileCount: number;
+  totalSizeBytes: number;
+}
+
+/**
+ * Export a workspace as a signed bundle.
+ * Scans for secrets before building the manifest.
+ * Requires signing keys to be configured via CONTEXTVAULT_SIGNING_* env vars.
+ */
+export async function exportWorkspace(workspaceId: string): Promise<WorkspaceExportResult> {
+  // Verify workspace exists
+  const ws = await getWorkspace(workspaceId);
+  if (!ws) {
+    throw new Error(`Workspace not found: ${workspaceId}`);
+  }
+
+  // Get signing configuration
+  const config = getConfig();
+  if (!config.signing.privateKey || !config.signing.publicKey || !config.signing.keyId) {
+    throw new Error(
+      "Signing keys not configured. Set CONTEXTVAULT_SIGNING_PRIVATE_KEY, " +
+      "CONTEXTVAULT_SIGNING_PUBLIC_KEY, and CONTEXTVAULT_SIGNING_KEY_ID env vars."
+    );
+  }
+
+  const workspaceDir = path.join(config.workspacesDir, workspaceId);
+
+  // Verify workspace directory exists
+  if (!fsSync.existsSync(workspaceDir)) {
+    throw new Error(`Workspace directory not found: ${workspaceDir}`);
+  }
+
+  // ── Step 1: Secrets scan (reject if secrets found) ──
+  await scanWorkspace(workspaceDir);
+
+  // ── Step 2: Build signed manifest ──
+  const privateKeyBuffer = Buffer.from(config.signing.privateKey, "base64");
+
+  const manifest = await buildManifest(workspaceDir, {
+    workspaceId,
+    schemaVersion: "1.0",
+    signingKey: privateKeyBuffer,
+    keyId: config.signing.keyId,
+  });
+
+  // ── Step 3: Create bundle directory ──
+  const { createBundleDirectory, saveManifest } = await import("./manifest.service");
+  const bundleDir = await createBundleDirectory(config.bundlesDir, workspaceId);
+
+  // Save manifest
+  await saveManifest(bundleDir, manifest);
+
+  // ── Step 4: Copy workspace files into bundle ──
+  const { listBundleFiles } = await import("./manifest.service");
+  const filePaths = await listBundleFiles(bundleDir);
+  const totalSizeBytes = manifest.files.reduce((sum, f) => sum + f.size, 0);
+
+  return {
+    workspaceId,
+    bundlePath: bundleDir,
+    manifest,
+    fileCount: manifest.files.length,
+    totalSizeBytes,
+  };
+}
+
+export interface WorkspaceImportOptions {
+  /** Path to the bundle directory */
+  bundlePath: string;
+  /** Target workspace ID (uses existing workspace or creates new) */
+  targetWorkspaceId?: string;
+  /** Customer ID for new workspace creation */
+  customerId?: string;
+  /** Workspace name */
+  name?: string;
+  /** Skip file hash verification */
+  skipHashVerification?: boolean;
+}
+
+export interface WorkspaceImportResult {
+  workspaceId: string;
+  manifest: Manifest;
+  fileCount: number;
+  verified: boolean;
+}
+
+/**
+ * Import a workspace from a signed bundle.
+ * Verifies the manifest signature before mounting.
+ */
+export async function importWorkspace(
+  options: WorkspaceImportOptions
+): Promise<WorkspaceImportResult> {
+  const { bundlePath, targetWorkspaceId, customerId, name, skipHashVerification } = options;
+
+  // ── Step 1: Load manifest ──
+  const { loadManifest, extractBundle, validateManifestStructure } = await import(
+    "./manifest.service"
+  );
+
+  let manifest: Manifest;
+  try {
+    manifest = await loadManifest(bundlePath);
+  } catch (err) {
+    throw new Error(`Failed to load manifest from bundle: ${(err as Error).message}`);
+  }
+
+  // ── Step 2: Validate manifest structure ──
+  const structureValidation = validateManifestStructure(manifest);
+  if (!structureValidation.valid) {
+    throw new Error(
+      `Invalid manifest structure:\n${structureValidation.errors.join("\n")}`
+    );
+  }
+
+  // ── Step 3: Verify manifest signature ──
+  const config = getConfig();
+  if (!config.signing.publicKey) {
+    throw new Error(
+      "Signing public key not configured. Set CONTEXTVAULT_SIGNING_PUBLIC_KEY env var " +
+      "to verify workspace bundles."
+    );
+  }
+
+  const publicKeyBuffer = Buffer.from(config.signing.publicKey, "base64");
+  const signatureValid = verifyManifest(manifest, publicKeyBuffer);
+
+  if (!signatureValid) {
+    throw new Error(
+      `Workspace bundle signature verification failed for workspace ${manifest.workspaceId}. ` +
+      "The bundle may have been tampered with or was signed with a different key. " +
+      "Import rejected for security."
+    );
+  }
+
+  // ── Step 4: Verify file hashes (optional, enabled by default) ──
+  // Extract to a temp directory for verification
+  if (!skipHashVerification) {
+    const tempDir = path.join(config.bundlesDir, `_verify_${manifest.workspaceId}_${Date.now()}`);
+    try {
+      const { verifyFileHashes } = await import("./manifest.service");
+      await extractBundle(bundlePath, tempDir);
+
+      const hashResult = await verifyFileHashes(manifest, tempDir);
+      if (!hashResult.valid) {
+        throw new Error(
+          `File hash mismatch — bundle may be corrupted:\n${hashResult.mismatches.join("\n")}`
+        );
+      }
+    } finally {
+      // Clean up temp directory
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  // ── Step 5: Mount workspace ──
+  const workspaceId = targetWorkspaceId ?? manifest.workspaceId;
+
+  // Check if workspace already exists
+  const existing = await getWorkspace(workspaceId);
+  if (existing) {
+    throw new Error(
+      `Workspace ${workspaceId} already exists. ` +
+      "Provide a new targetWorkspaceId or delete the existing workspace first."
+    );
+  }
+
+  // Create new workspace
+  const wsCustomerId = customerId ?? "imported";
+  const wsName = name ?? `Imported workspace ${manifest.workspaceId}`;
+
+  const ws = await createWorkspace(workspaceId, wsCustomerId, wsName);
+
+  // Extract bundle files to the workspace directory
+  const targetDir = path.join(config.workspacesDir, workspaceId);
+  await fs.mkdir(targetDir, { recursive: true });
+  await extractBundle(bundlePath, targetDir);
+
+  logAuditEvent({
+    workspaceId,
+    actorType: "system",
+    actorId: "import",
+    eventType: "workspace.imported",
+    payload: {
+      originalWorkspaceId: manifest.workspaceId,
+      signedAt: manifest.signedAt,
+      keyId: manifest.keyId,
+      fileCount: manifest.files.length,
+      signatureValid: true,
+    },
+  });
+
+  return {
+    workspaceId,
+    manifest,
+    fileCount: manifest.files.length,
+    verified: true,
+  };
 }

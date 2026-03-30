@@ -32,6 +32,12 @@ export type {
   ApiErrorResponse,
   WebhookRegistration,
   RegisterWebhookOptions,
+  WorkspaceBundleManifest,
+  BundleFile,
+  ExportResult,
+  ImportResult,
+  BundleVerificationResult,
+  ImportWorkspaceOptions,
 } from "./types";
 
 export type {
@@ -49,3 +55,14 @@ export {
   ValidationError,
   ConflictError,
 } from "./errors";
+
+// Bundle verification
+export {
+  verifyWorkspaceBundle,
+  verifyWorkspaceBundleSignature,
+  CONTEXTVAULT_PUBLIC_KEY_CURRENT,
+  ContextVaultPublicKeys,
+  type ContextVaultPublicKey,
+  type BundleVerificationResult,
+  type ImportVerificationResult,
+} from "./bundles";

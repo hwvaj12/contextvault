@@ -25,6 +25,7 @@ export interface ManifestFile {
 
 export interface Manifest extends ManifestContent {
   signature: string;
+  signedAt: string; // ISO timestamp from SignatureResult
 }
 
 export interface WorkspaceBundle {
@@ -77,6 +78,7 @@ export async function buildManifest(
   return {
     ...manifestContent,
     signature: signatureResult.signature,
+    signedAt: signatureResult.signedAt,
   };
 }
 

@@ -1,5 +1,6 @@
 import { FastifyRequest, FastifyReply } from "fastify";
 import { verifyKey } from "../services/apikey.service";
+import { ensureTenantTMK } from "../services/tenant.service";
 
 const MASTER_KEY = process.env.CONTEXTVAULT_API_KEY || "cv-test-api-key-123";
 
@@ -23,7 +24,7 @@ function extractBasicAuthKey(authHeader: string | undefined): string | null {
   return password || username;
 }
 
-function authenticateKey(key: string, request: FastifyRequest): boolean {
+async function authenticateKey(key: string, request: FastifyRequest): Promise<boolean> {
   // Master key = admin bypass (no customer scoping)
   if (key === MASTER_KEY) {
     request.isAdmin = true;
@@ -35,6 +36,16 @@ function authenticateKey(key: string, request: FastifyRequest): boolean {
   if (verified) {
     request.customerId = verified.customerId;
     request.isAdmin = false;
+    
+    // Auto-provision TMK for new customers on first authentication
+    // This ensures TMK exists before any workspace operations
+    try {
+      await ensureTenantTMK(verified.customerId);
+    } catch (error) {
+      // Don't fail auth if TMK provisioning fails, but log it
+      console.error('TMK provisioning failed for customer:', verified.customerId, error);
+    }
+    
     return true;
   }
 
@@ -54,11 +65,11 @@ export async function authMiddleware(
 
   // Check X-API-Key header first
   const apiKey = request.headers["x-api-key"] as string | undefined;
-  if (apiKey && authenticateKey(apiKey, request)) return;
+  if (apiKey && (await authenticateKey(apiKey, request))) return;
 
   // Fall back to HTTP Basic Auth (used by git clone/push)
   const basicKey = extractBasicAuthKey(request.headers.authorization);
-  if (basicKey && authenticateKey(basicKey, request)) return;
+  if (basicKey && (await authenticateKey(basicKey, request))) return;
 
   // For git requests, send WWW-Authenticate to trigger credential prompt
   if (request.url.startsWith("/repos/")) {

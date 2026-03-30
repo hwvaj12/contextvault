@@ -194,3 +194,60 @@ export interface RegisterWebhookOptions {
   events: string[];
   secret?: string;
 }
+
+// ─── Workspace Bundle / Export-Import ────────────────────────────────────────
+
+/** A file entry in a workspace bundle manifest. */
+export interface BundleFile {
+  path: string;
+  size: number;
+  hash: string; // sha256:hex...
+}
+
+/** Workspace bundle manifest — signed metadata about a portable workspace. */
+export interface WorkspaceBundleManifest {
+  version: string;         // Manifest schema version (e.g., "1.0")
+  workspaceId: string;     // Original workspace ID
+  createdAt: string;       // ISO timestamp of manifest creation
+  schemaVersion: string;    // Workspace schema version
+  signatureAlgorithm: "Ed25519";
+  signedBy: string;        // Always "contextvault"
+  keyId: string;            // Signing key ID (for rotation support)
+  files: BundleFile[];      // File entries with hashes
+  signature: string;        // Ed25519 signature (base64)
+}
+
+/** Result of exporting a workspace. */
+export interface ExportResult {
+  workspaceId: string;
+  bundlePath: string;
+  manifest: WorkspaceBundleManifest;
+  fileCount: number;
+  totalSizeBytes: number;
+}
+
+/** Result of importing a workspace. */
+export interface ImportResult {
+  workspaceId: string;
+  manifest: WorkspaceBundleManifest;
+  fileCount: number;
+  verified: boolean;
+}
+
+/** Verification result for a workspace bundle. */
+export interface BundleVerificationResult {
+  valid: boolean;
+  manifest: WorkspaceBundleManifest | null;
+  signatureValid: boolean;
+  fileHashesValid: boolean;
+  errors: string[];
+}
+
+/** Options for importing a workspace. */
+export interface ImportWorkspaceOptions {
+  bundlePath: string;
+  targetWorkspaceId?: string;
+  customerId?: string;
+  name?: string;
+  skipHashVerification?: boolean;
+}
