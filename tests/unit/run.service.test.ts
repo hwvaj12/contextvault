@@ -58,6 +58,23 @@ function initTestDb(): Database.Database {
       payload TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS webhooks (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      events TEXT NOT NULL DEFAULT '[]',
+      secret_hash TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT NOT NULL,
+      key_hash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_used_at TEXT
+    );
   `);
   return db;
 }
