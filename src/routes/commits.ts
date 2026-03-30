@@ -279,4 +279,44 @@ export async function commitRoutes(app: FastifyInstance) {
       }
     }
   );
+
+  // GET /workspaces/:id/search
+  app.get(
+    "/workspaces/:id/search",
+    {
+      schema: {
+        description: "Search files within a workspace",
+        tags: ["Search"],
+        params: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"],
+        },
+        querystring: {
+          type: "object",
+          required: ["q"],
+          properties: {
+            q: { type: "string", minLength: 1 },
+            limit: { type: "integer", default: 50 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const { q, limit } = request.query as { q: string; limit?: number };
+
+      if (!verifyWorkspaceOwnership(request, reply, id)) return;
+
+      const workspace = await getWorkspace(id);
+      if (!workspace) {
+        return reply.code(404).send({ error: "Workspace not found" });
+      }
+
+      const storage = getStorage();
+      const results = await storage.searchFiles(id, q, { limit: limit || 50 });
+
+      reply.send({ query: q, results, count: results.length });
+    }
+  );
 }

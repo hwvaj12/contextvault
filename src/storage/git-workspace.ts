@@ -549,4 +549,71 @@ export class GitStorage implements IStorage {
     await walk(dir, "");
     return results;
   }
+
+  async searchFiles(
+    workspaceId: string,
+    query: string,
+    options?: { limit?: number; filePattern?: string }
+  ): Promise<{ path: string; snippet: string; lineNumber: number }[]> {
+    const git = gitFor(workspaceId);
+    const limit = options?.limit ?? 50;
+
+    try {
+      // Use git grep for fast search
+      // -i: case insensitive, -n: line numbers
+      const raw = await git.raw(["grep", "-n", "-i", query]);
+
+      if (!raw.trim()) return [];
+
+      const results: { path: string; snippet: string; lineNumber: number }[] = [];
+      const lines = raw.trim().split("\n").filter(Boolean);
+
+      for (const line of lines) {
+        // Format: "path:lineNumber:content" or "path:content" (no line number)
+        // Examples:
+        //   "readme.md:1:# Hello"      → path=readme.md, line=1, content=# Hello
+        //   "docs/readme:42:foo bar"  → path=docs/readme, line=42, content=foo bar
+
+        const firstColon = line.indexOf(":");
+        if (firstColon === -1) continue;
+
+        const before = line.slice(0, firstColon);
+        const after = line.slice(firstColon + 1);
+
+        // Check if after first colon looks like a line number (digits only)
+        const lineNumMatch = after.match(/^(\d+)(.*)/);
+        let filePath: string;
+        let content: string;
+        let lineNum: number;
+
+        if (lineNumMatch && lineNumMatch[1]) {
+          // Has line number: "path:123:content"
+          filePath = before;
+          lineNum = parseInt(lineNumMatch[1], 10);
+          content = lineNumMatch[2].slice(1); // remove leading :
+        } else {
+          // No line number: "path:content"
+          filePath = before;
+          lineNum = 0;
+          content = after;
+        }
+
+        // Skip binary files or empty content
+        if (!content) continue;
+
+        // Build snippet
+        const snippet = content.length > 200
+          ? content.slice(0, 200) + "..."
+          : content;
+
+        results.push({ path: filePath, snippet, lineNumber: lineNum });
+
+        if (results.length >= limit) break;
+      }
+
+      return results;
+    } catch {
+      return [];
+    }
+  }
 }

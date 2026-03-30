@@ -57,3 +57,16 @@ export async function getDiff(workspaceId: string, from: string, to: string): Pr
     `/workspaces/${workspaceId}/diff?from=${from}&to=${to}`
   );
 }
+
+export interface SearchResult {
+  path: string;
+  snippet: string;
+  lineNumber: number;
+}
+
+export async function searchFiles(
+  workspaceId: string,
+  query: string
+): Promise<{ query: string; results: SearchResult[]; count: number }> {
+  return request(`/workspaces/${workspaceId}/search?q=${encodeURIComponent(query)}`);
+}

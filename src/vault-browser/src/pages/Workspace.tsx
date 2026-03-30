@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
-import { getWorkspace, getFiles, getHistory } from "../api/contextvault";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { getWorkspace, getFiles, getHistory, searchFiles, type SearchResult } from "../api/contextvault";
 import type { Workspace as WorkspaceType, WorkspaceFile, Commit } from "../types";
 import FileTree from "../components/FileTree";
 import FileViewer from "../components/FileViewer";
@@ -19,6 +19,13 @@ export default function Workspace({ workspaceId, onBack, onDiff }: WorkspaceProp
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Search state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -43,6 +50,22 @@ export default function Workspace({ workspaceId, onBack, onDiff }: WorkspaceProp
     load();
   }, [load]);
 
+  // Keyboard shortcut: Ctrl+K or Cmd+K to focus search
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+      if (e.key === "Escape" && showSearch) {
+        setShowSearch(false);
+        setSearchQuery("");
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [showSearch]);
+
   const handleCommitSelect = useCallback(
     async (hash: string) => {
       setSelectedCommit(hash);
@@ -56,6 +79,40 @@ export default function Workspace({ workspaceId, onBack, onDiff }: WorkspaceProp
     },
     [workspaceId]
   );
+
+  const handleSearch = useCallback(
+    async (query: string) => {
+      setSearchQuery(query);
+      if (!query.trim()) {
+        setSearchResults([]);
+        setShowSearch(false);
+        return;
+      }
+      setSearching(true);
+      setShowSearch(true);
+      try {
+        const res = await searchFiles(workspaceId, query);
+        setSearchResults(res.results);
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setSearching(false);
+      }
+    },
+    [workspaceId]
+  );
+
+  const handleResultClick = (result: SearchResult) => {
+    setSelectedPath(result.path);
+    // Load the correct version if viewing a specific commit
+    if (selectedCommit) {
+      getFiles(workspaceId, selectedCommit).then((f) => {
+        setFiles(f);
+      });
+    }
+    setShowSearch(false);
+    setSearchQuery("");
+  };
 
   const selectedFile = files.find((f) => f.path === selectedPath);
 
@@ -93,6 +150,60 @@ export default function Workspace({ workspaceId, onBack, onDiff }: WorkspaceProp
         <div className="h-4 w-px bg-gray-700" />
         <h2 className="text-white font-semibold">{workspace?.name}</h2>
         <span className="text-gray-500 text-xs font-mono">{workspaceId}</span>
+
+        {/* Search */}
+        <div className="flex-1 max-w-md ml-4">
+          <div className="relative">
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => handleSearch(e.target.value)}
+              onFocus={() => searchQuery && setShowSearch(true)}
+              placeholder="Search files... (Ctrl+K)"
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+            />
+            {searching && (
+              <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                <div className="w-3 h-3 border border-blue-500 border-t-transparent rounded-full animate-spin" />
+              </div>
+            )}
+            {showSearch && searchQuery && !searching && (
+              <button
+                onClick={() => { setShowSearch(false); setSearchQuery(""); }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-lg leading-none"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          {showSearch && searchQuery && (
+            <div className="absolute z-50 mt-1 w-[28rem] bg-gray-900 border border-gray-700 rounded-lg shadow-xl max-h-64 overflow-auto">
+              {searchResults.length === 0 ? (
+                <div className="px-4 py-3 text-gray-500 text-sm">
+                  No matches found
+                </div>
+              ) : (
+                searchResults.map((result, i) => (
+                  <button
+                    key={`${result.path}-${result.lineNumber}-${i}`}
+                    onClick={() => handleResultClick(result)}
+                    className="w-full text-left px-4 py-2 hover:bg-gray-800 border-b border-gray-800/50 last:border-0"
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-blue-400 text-xs font-mono">{result.path}</span>
+                      {result.lineNumber > 0 && (
+                        <span className="text-gray-600 text-xs">:{result.lineNumber}</span>
+                      )}
+                    </div>
+                    <p className="text-gray-400 text-xs truncate">{result.snippet}</p>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+
         <div className="flex-1" />
         <button
           onClick={load}
