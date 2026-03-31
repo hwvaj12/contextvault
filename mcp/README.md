@@ -36,6 +36,187 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
+---
+
+## Patterns
+
+### Pattern 1: Single-Agent Session
+
+A single agent uses a workspace as its memory for one task or conversation.
+
+```
+Agent → create_workspace (if needed)
+       → push_to_workspace (save initial context)
+       → [later] pull_from_workspace (restore context)
+       → push_to_workspace (save updated context)
+```
+
+**When to use:** One agent handling a standalone task. No other agent needs this workspace.
+
+**Example:**
+```typescript
+// Start: pull latest context
+const state = await pull_from_workspace({ workspaceId });
+
+// Agent works, modifies state
+
+// Done: push updated context
+await push_to_workspace({
+  workspaceId,
+  files: updatedFiles,
+  tags: ["completed"]
+});
+```
+
+---
+
+### Pattern 2: Multi-Agent Handoff
+
+Agent A creates and populates a workspace. Agent B later pulls that workspace and continues from where A left off.
+
+```
+Agent A → create_workspace → push_to_workspace (commits work)
+                                                         ↓
+Agent B → pull_from_workspace → [resumes from A's commit]
+```
+
+**When to use:** Sequential handoffs. Agent A does research, Agent B acts on it. Different shifts on the same project.
+
+**Key behavior:**
+- `pull_from_workspace` with no `version` → pulls HEAD (latest commit)
+- Each commit is immutable — Agent B always sees a complete snapshot
+- Agent B's commits stack on top — Agent A's history is preserved
+
+**Example:**
+```typescript
+// Agent B resuming — gets everything Agent A committed
+const { files, commitId } = await pull_from_workspace({
+  workspaceId: "ws_..."
+});
+// files contains all of Agent A's work
+```
+
+---
+
+### Pattern 3: Resumable Session
+
+An agent works intermittently. Each interaction pushes state. The next interaction resumes from the last commit.
+
+```
+Interaction 1 → push_to_workspace (commit "in-progress-1")
+Interaction 2 → pull_from_workspace → push_to_workspace (commit "in-progress-2")
+Interaction 3 → pull_from_workspace → push_to_workspace (commit "done")
+```
+
+**When to use:** Long-running tasks that span multiple conversations or sessions. Chatbots, code assistants, research agents.
+
+**Key behavior:**
+- Each `push_to_workspace` is a new commit on top of previous
+- `pull_from_workspace` (no version) always gets the latest state
+- Commit messages/tags let you track progress: `in-progress`, `review-needed`, `complete`
+
+**Example:**
+```typescript
+// On every interaction:
+async function saveProgress(workspaceId: string, files: File[]) {
+  await push_to_workspace({
+    workspaceId,
+    files,
+    tags: ["in-progress", `session-${sessionId}`]
+  });
+}
+
+async function loadProgress(workspaceId: string) {
+  const { files } = await pull_from_workspace({ workspaceId });
+  return files;
+}
+```
+
+---
+
+### Pattern 4: Error Recovery
+
+Agents encounter errors. Workspaces and sandboxes persist. Here are common recovery patterns.
+
+#### Workspace not found
+```typescript
+// If pull fails because workspace doesn't exist, create it
+try {
+  await pull_from_workspace({ workspaceId });
+} catch (e) {
+  if (e.message.includes("not found")) {
+    await create_workspace({ customerId, name: workspaceId });
+    // Then retry pull (will get empty workspace)
+  } else {
+    throw e; // Unknown error, surface it
+  }
+}
+```
+
+#### Sandbox already exists
+```typescript
+// If checkout fails because sandbox exists, destroy it first
+const status = await get_sandbox_status({ workspaceId });
+if (status.exists) {
+  await destroy_workspace({ workspaceId }); // Destroys sandbox, keeps workspace
+}
+await checkout_workspace({ workspaceId });
+```
+
+#### Agent crashes mid-session
+```typescript
+// On restart, check for orphaned sandboxes
+const status = await get_sandbox_status({ workspaceId });
+if (status.exists && status.hasChanges) {
+  // Agent was mid-work — commit or discard
+  // Option A: commit what exists
+  await commit_workspace({ workspaceId, tags: ["crash-recovery"] });
+  // Option B: destroy and start fresh
+  await destroy_workspace({ workspaceId });
+}
+```
+
+#### Commit fails (no changes)
+```typescript
+// commit_workspace succeeds but with empty files array if nothing changed
+const result = await commit_workspace({ workspaceId });
+if (result.files.length === 0) {
+  // Nothing to commit — expected for read-only sessions
+}
+```
+
+---
+
+### Pattern 5: Workspace Per Conversation
+
+Each conversation/session gets its own workspace. Clean separation, no cross-contamination.
+
+```
+Session 1 → create_workspace → push → ... → push → archive
+Session 2 → create_workspace → push → ... → push → archive
+```
+
+**When to use:** Customer-facing chatbots, per-user memory, per-task workspaces.
+
+**Key behavior:**
+- Customer A's workspace is fully isolated from Customer B's
+- Workspace ID maps to conversation/session/user in your app
+- Archive by deleting (soft-delete) old workspaces
+
+**Example:**
+```typescript
+// Start new conversation
+const workspace = await create_workspace({
+  customerId: user.id,
+  name: `chat-${conversationId}`
+});
+// Workspace persists for lifetime of conversation
+
+// End conversation — workspace is preserved, available for audit
+```
+
+---
+
 ## MCP Tools
 
 ### Workspace Management
@@ -211,6 +392,7 @@ Common errors:
 - `Workspace not found` — Workspace doesn't exist
 - `Sandbox not found` — No sandbox for this workspace
 - `No commits found` — Workspace has no commits
+- `receive.denyCurrentBranch` — Workspace is locked by another agent
 
 ---
 
