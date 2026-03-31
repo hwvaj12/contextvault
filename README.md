@@ -18,58 +18,14 @@ AI agents are stateless. They can't remember what happened in previous sessions.
 
 Memory that persists. Context that travels. Git that scales.
 
-## Use Cases
-
-**Persistent customer context** — Store dynamically loadable customer profiles, project state, and user preferences. When an agent picks up a ticket or resumes a conversation, it pulls the full context — past decisions, preferences, history — and continues where it left off.
-
-**Replayable agent runs** — Each agent run is its own workspace with a full Git history. Inspect what happened in a specific run. Resume an interrupted task from the exact checkpoint. Roll back to a previous run if something went wrong. Audit every decision across time.
-
-## Core Concepts
-
-| Concept | Description |
-|---------|-------------|
-| **Workspace** | Durable Git repository representing persistent memory |
-| **Sandbox** | Ephemeral working directory for one agent run |
-| **Run** | One agent execution with full lifecycle tracking |
-| **Commit** | Versioned snapshot with audit metadata |
-
-## How It Works
-
-**1. Create workspace** — A durable Git repo is created at `data/workspaces/{id}.git/`
-
-**2. Start run** — Agent checks out the workspace into an ephemeral sandbox, recording the base commit and workspace HEAD
-
-**3. Agent works** — Agent operates on normal files in the sandbox (read, write, create, delete). No Git knowledge required.
-
-**4. Finalize** — ContextVault detects all changes, creates a structured commit, merges to the canonical workspace, and detects any conflicts
-
-**5. Cleanup** — Sandbox is destroyed, locks are released, workspace metadata is updated
-
-## Features
-
-- **Multi-tenant** — Customer-scoped with API key isolation
-- **Git-native storage** — Every change is a commit. Full history, diff, rollback
-- **Ephemeral sandboxes** — Agents work in temp directories, not persistent storage
-- **Concurrency control** — Multiple agents safe with conflict detection
-- **Run lifecycle** — Full tracking from created → merged/conflicted/failed
-- **Structured commits** — Machine-readable metadata for audit trails
-- **MCP server** — AI agents can use ContextVault as a tool
-- **REST API** — Full API for integrations and webhooks
-- **SDKs** — TypeScript, Python, and PHP official SDKs
-- **Blank workspaces** — Agents decide their own file structure (no forced layout)
-
-## Two Interfaces
-
-| Interface | Purpose | Best For |
-|-----------|---------|----------|
-| **MCP Server** | AI agents (Claude, Codex) | Tool-use by agents |
-| **REST API** | Developers, webhooks | Building integrations |
-
 ## Quick Start
 
 ```bash
 # Install dependencies
 npm install
+
+# Copy and configure environment
+cp .env.example .env
 
 # Start the API server
 npm run dev
@@ -77,6 +33,79 @@ npm run dev
 # In another terminal, start the MCP server
 cd mcp && npm install && npm run dev
 ```
+
+## Configuration
+
+All configuration is via environment variables. Copy `.env.example` to `.env` for local development.
+
+### Core Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3000` | HTTP server port |
+| `CONTEXTVAULT_API_KEY` | `cv-test-api-key-123` | Master API key for admin access (override in production) |
+| `CONTEXTVAULT_DATA_DIR` | `./data` | Directory for workspaces, sandboxes, and secrets |
+
+### Secrets Configuration (Phase 13)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONTEXTVAULT_SECRETS_BACKEND` | `local` | Secrets backend: `local`, `doppler`, `aws`, `gcp` |
+| `CONTEXTVAULT_SECRETS_PATH` | `./data/secrets` | Path for local secrets storage (when backend=`local`) |
+
+**Local secrets storage** saves tenant TMKs to `data/secrets/tenant-keys.json`.
+
+### Signing Keys (Phase 12)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONTEXTVAULT_SIGNING_PRIVATE_KEY` | _(none)_ | Ed25519 private key for signing workspace bundles (base64-encoded) |
+| `CONTEXTVAULT_SIGNING_PUBLIC_KEY` | _(none)_ | Ed25519 public key for verifying bundles (base64-encoded) |
+| `CONTEXTVAULT_SIGNING_KEY_ID` | _(none)_ | Key identifier for signature manifests (e.g., `v1`) |
+
+**For local development**, generate a key pair:
+```bash
+# Generate Ed25519 key pair
+openssl genpkey -algorithm ED25519 -out private_key.pem
+openssl pkey -in private_key.pem -pubout -out public_key.pem
+
+# Convert to base64
+cat private_key.pem | base64 | tr -d '\n'
+cat public_key.pem | base64 | tr -d '\n'
+```
+
+### Tenant Master Key (Future - Phase 13+)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONTEXTVAULT_TENANT_KEY` | _(none)_ | Master key for SQLCipher tenant encryption (base64-encoded 256-bit) |
+
+### Complete `.env.example`
+
+```bash
+# Core
+PORT=3000
+CONTEXTVAULT_API_KEY=cv-test-api-key-123
+CONTEXTVAULT_DATA_DIR=./data
+
+# Secrets (Phase 13)
+CONTEXTVAULT_SECRETS_BACKEND=local
+CONTEXTVAULT_SECRETS_PATH=./data/secrets
+
+# Signing Keys (Phase 12)
+CONTEXTVAULT_SIGNING_PRIVATE_KEY=
+CONTEXTVAULT_SIGNING_PUBLIC_KEY=
+CONTEXTVAULT_SIGNING_KEY_ID=v1
+
+# Encryption (Future)
+CONTEXTVAULT_TENANT_KEY=
+```
+
+## Use Cases
+
+**Persistent customer context** — Store dynamically loadable customer profiles, project state, and user preferences. When an agent picks up a ticket or resumes a conversation, it pulls the full context — past decisions, preferences, history — and continues where it left off.
+
+**Replayable agent runs** — Each agent run is its own workspace with a full Git history. Inspect what happened in a specific run. Resume an interrupted task from the exact checkpoint. Roll back to a previous run if something went wrong. Audit every decision across time.
 
 ## API Example
 
@@ -184,20 +213,3 @@ MIT License — see [LICENSE](LICENSE) file.
 ---
 
 **ContextVault: Memory that persists. Context that travels. Git that scales.**
-
-## ContextVault (PM)
-
-**Role:** PM + Technical Lead
-**Rule: Execution must go through Claude Code (`runtime="acp"`, `mode="run"`)**
-
-**Active:** Phase 10 — Vault Browser Enhancements (syntax highlighting ✅, file search ✅)
-**PM Plan:** `docs/PHASE_10_PLAN.md`
-
-**Next tasks:**
-- Commit filtering — filter timeline by tag/date
-- Usage dashboard — per-customer metrics
-- Webhook management UI
-
-
-**Completed:** Syntax Highlighting (d52cda1), File Search (8f1352f)
-**Next:** Commit filtering, Usage dashboard, Webhook management
