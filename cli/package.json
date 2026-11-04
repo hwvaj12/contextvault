@@ -1,0 +1,10 @@
+{
+  "name": "@contextvault/cli",
+  "version": "0.1.0",
+  "description": "Client-local workspaces for independently launched agents",
+  "license": "MIT",
+  "bin": { "contextvault": "bin/contextvault.cjs" },
+  "files": ["bin", "lib", "README.md"],
+  "engines": { "node": ">=18.0.0" },
+  "dependencies": { "@contextvault/sdk": "0.1.0" }
+}
