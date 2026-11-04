@@ -445,7 +445,7 @@ Do not mix bypassing legacy writers with catalog-owned workspaces.
 
 ## 9. Team work items and dependency waves
 
-The machine-readable work items are `docs/items/CV-10.md` through `CV-28.md`, plus the discovered security prerequisite `CV-29.md`.
+The machine-readable work items are `docs/items/CV-10.md` through `CV-31.md`, including three discovered security prerequisites.
 They contain exact dependencies, provided/consumed contracts, allowed paths, acceptance, and checks.
 Their states remain `planned` until implementation begins.
 Planning items CV-1 through CV-4 describe this planning effort only.
@@ -453,8 +453,8 @@ Planning items CV-1 through CV-4 describe this planning effort only.
 | Dependency wave | Items |
 |---|---|
 | 0 | CV-10 |
-| 1 | CV-11, CV-12, CV-13, CV-29 |
-| 2 | CV-14 |
+| 1 | CV-11, CV-12, CV-13, CV-29, CV-31 |
+| 2 | CV-14, CV-30 |
 | 3 | CV-15 |
 | 4 | CV-17 |
 | 5 | CV-16 |
@@ -479,7 +479,7 @@ The helper computes readiness from dependency closure, rather than the suggested
 | CV-13 | Implement immutable Git revision storage | CV-10 | A07 |
 | CV-14 | Implement S3 revision and submission storage | CV-10, CV-11, CV-12, CV-13, CV-29 | A06, A07 |
 | CV-15 | Implement workspace open, finalize, abort, and expiry use cases | CV-11, CV-12, CV-13, CV-14 | A01, A02, A03, A04, A05 |
-| CV-16 | Expose authenticated lifecycle and binary transfer over HTTP | CV-15, CV-17 | A01, A05, A06, A08 |
+| CV-16 | Expose authenticated lifecycle and binary transfer over HTTP | CV-15, CV-17, CV-31 | A01, A05, A06, A08 |
 | CV-17 | Implement fenced recovery, tenant outbox, and controlled cleanup | CV-15 | A02, A05, A12 |
 | CV-18 | Add TypeScript run resources and local workspace materialization | CV-16 | A08, A09, A10 |
 | CV-19 | Add Python run resources and local workspace materialization | CV-16 | A08, A09, A10 |
@@ -493,6 +493,8 @@ The helper computes readiness from dependency closure, rather than the suggested
 | CV-27 | Prove backend parity, host access, packaging, and failure recovery | CV-17, CV-18, CV-19, CV-20, CV-21, CV-22, CV-24, CV-25, CV-26 | A01, A02, A03, A04, A05, A06, A07, A08, A09, A10, A11, A12 |
 | CV-28 | Independently review and close the workspace milestone | CV-26, CV-27 | A01, A02, A03, A04, A05, A06, A07, A08, A09, A10, A11, A12 |
 | CV-29 | Repair affected runtime dependency advisories | CV-10 | A05, A12 |
+| CV-30 | Authorize local submission retries against current grants | CV-11, CV-12 | A05 |
+| CV-31 | Isolate tenant secret dictionary keys | CV-10 | A05 |
 
 ### CV-10: Freeze domain, transfer, compatibility, and acceptance contracts
 
@@ -871,6 +873,13 @@ CV-14 owns the launcher and Vitest selection changes needed for explicit provide
 CV-14 consumes the closed catalog, shared file helpers, and backend-neutral Git contract fixtures.
 CV-17 owns the additional catalog/submission cleanup seams required by actual byte collection.
 CV-16 synchronizes configured administrator authority before automatic recovery starts.
+
+### CV-30: Authorize local submission retries against current grants
+
+The S3 review confirmed an equivalent local-adapter authorization gap on successful upload and seal retries.
+The repair rechecks current catalog authority without consuming replacement bytes or changing the original durable result.
+Scope: src/adapters/submissions/local/index.ts and tests/submissions/replay-authorization.test.ts.
+Independent SQLite and local-byte verification closed this prerequisite.
 
 ### CV-31: Isolate tenant secret dictionary keys
 
