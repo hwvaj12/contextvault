@@ -25,6 +25,7 @@ function optionsFor(suite, args) {
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];
     if (argument === "--backend" && backendSuites.has(suite)) options.backend = args[++index];
+    else if (argument === "--s3-provider" && (backendSuites.has(suite) || suite === "release")) options.s3Provider = args[++index];
     else if (argument === "--language" && suite === "sdk") options.language = args[++index];
     else if (argument === "--require-real-s3" && (backendSuites.has(suite) || suite === "release")) options.realS3 = true;
     else if (argument === "--require-all-hosts" && suite === "release") options.allHosts = true;
@@ -34,12 +35,38 @@ function optionsFor(suite, args) {
   if (backendSuites.has(suite) && !["git", "s3"].includes(options.backend)) throw new Error("--backend git or s3 is required");
   if (suite === "sdk" && !["typescript", "python", "php"].includes(options.language)) throw new Error("--language typescript, python, or php is required");
   if (options.realS3 && suite !== "release" && options.backend !== "s3") throw new Error("--require-real-s3 requires --backend s3");
+  if (options.s3Provider && suite !== "release" && options.backend !== "s3") throw new Error("--s3-provider requires --backend s3");
+  if (options.s3Provider && !["localstack", "aws"].includes(options.s3Provider)) throw new Error("--s3-provider localstack or aws is required");
+  if (options.realS3 && options.s3Provider === "localstack") throw new Error("--require-real-s3 requires AWS");
+  if (options.realS3 && !options.s3Provider) options.s3Provider = "aws";
   return options;
 }
-function requireS3(env) {
-  for (const name of ["CV_TEST_S3_BUCKET", "CV_TEST_S3_REGION", "CV_TEST_S3_PREFIX"]) if (!env[name]?.trim()) throw new Error(`Real S3 verification requires ${name}`);
+function requireS3(env, options) {
+  const provider = options.s3Provider;
+  if (!provider) throw new Error("--s3-provider localstack or aws is required");
+  if (env.CV_TEST_S3_PROVIDER && env.CV_TEST_S3_PROVIDER !== provider) throw new Error("S3 provider conflicts with CV_TEST_S3_PROVIDER");
+  if ((options.realS3 || env.CV_REQUIRE_REAL_S3 === "1") && provider !== "aws") throw new Error("--require-real-s3 requires AWS");
+  for (const name of ["CV_TEST_S3_BUCKET", "CV_TEST_S3_REGION", "CV_TEST_S3_PREFIX"]) if (!env[name]?.trim()) throw new Error(`S3 verification requires ${name}`);
   const prefix = env.CV_TEST_S3_PREFIX;
   if (!/^contextvault-tests\/[A-Za-z0-9][A-Za-z0-9._-]*\/$/.test(prefix) || prefix.includes("..")) throw new Error("CV_TEST_S3_PREFIX must be a unique nonproduction contextvault-tests/<run-id>/ prefix");
+  if (provider === "localstack" && !env.CV_TEST_S3_ENDPOINT?.trim()) throw new Error("LocalStack verification requires CV_TEST_S3_ENDPOINT");
+  const endpoints = [env.CV_TEST_S3_ENDPOINT, ...(provider === "aws" ? [env.AWS_ENDPOINT_URL, env.AWS_ENDPOINT_URL_S3] : [])].filter(Boolean);
+  for (const value of endpoints) {
+    let endpoint;
+    try { endpoint = new URL(value); } catch { throw new Error("Invalid CV_TEST_S3_ENDPOINT"); }
+    if (!["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") throw new Error("Invalid CV_TEST_S3_ENDPOINT");
+    const awsEndpoint = endpoint.protocol === "https:" && /(?:^|\.)amazonaws\.com(?:\.cn)?$/.test(endpoint.hostname);
+    if (provider === "aws" && !awsEndpoint) throw new Error("AWS verification requires an AWS service endpoint");
+    if (provider === "localstack" && /(?:^|\.)amazonaws\.com(?:\.cn)?$/.test(endpoint.hostname)) throw new Error("LocalStack requires an emulator endpoint");
+  }
+  env.CV_TEST_S3_PROVIDER = provider;
+  if (provider === "aws") env.AWS_IGNORE_CONFIGURED_ENDPOINT_URLS = "true";
+  if (provider === "localstack") {
+    // Explicit dummy credentials prevent inherited profiles, role tokens, or metadata providers from being selected.
+    for (const key of Object.keys(env)) if (key.startsWith("AWS_")) delete env[key];
+    env.AWS_ACCESS_KEY_ID = "test"; env.AWS_SECRET_ACCESS_KEY = "test";
+    env.AWS_EC2_METADATA_DISABLED = "true";
+  }
 }
 
 /** Build one explicit gate. An absent suite can never run unrelated baseline tests. */
@@ -54,6 +81,7 @@ export async function planTestRun(suite, args, { root = projectRoot, env = proce
   if (suite === "release") {
     const runner = path.join(root, "scripts/verify-workspace-release.mjs");
     if (!await exists(runner)) throw new Error("Required release runner is missing: scripts/verify-workspace-release.mjs (CV-27)");
+    if (options.s3Provider || options.realS3) requireS3(childEnv, options);
     return { command: process.execPath, args: [runner, ...args], env: childEnv, cwd: root };
   }
   let directory = `tests/${{ legacy: "compat", migration: "migrations" }[suite] ?? suite}`;
@@ -61,7 +89,7 @@ export async function planTestRun(suite, args, { root = projectRoot, env = proce
   if (suite === "sdk") directory += `/${options.language}`;
   const suffix = suite === "sdk" && options.language === "python" ? ".py" : suite === "sdk" && options.language === "php" ? "Test.php" : suite === "e2e" ? ".test.mjs" : ".test.ts";
   if (!await hasTests(path.join(root, directory), suffix)) throw new Error(`Required test suite is missing: ${directory}`);
-  if (options.backend === "s3") requireS3(childEnv);
+  if (options.backend === "s3") requireS3(childEnv, options);
   if (suite === "e2e") {
     if (!env.CV_TEST_API_URL || !env.CV_TEST_API_KEY) throw new Error("Legacy HTTP tests require explicit CV_TEST_API_URL and CV_TEST_API_KEY");
     const origin = new URL(env.CV_TEST_API_URL);
@@ -99,6 +127,7 @@ async function run(command, args, plan) {
 async function main() {
   const [suite, ...args] = process.argv.slice(2);
   const plan = await planTestRun(suite, args);
+  if (plan.env.CV_TEST_S3_PROVIDER) console.log(`S3 verification provider: ${plan.env.CV_TEST_S3_PROVIDER}`);
   for (const command of plan.commands ?? [plan]) if (await run(command.command, command.args, plan) !== 0) break;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) main().catch((error) => { console.error(error.message); process.exitCode = 1; });
