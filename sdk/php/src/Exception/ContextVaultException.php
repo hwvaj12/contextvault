@@ -10,6 +10,7 @@ class ContextVaultException extends RuntimeException
 {
     protected int $statusCode;
     protected ?array $responseBody;
+    protected ?string $localRecoveryPath = null;
 
     public function __construct(
         string $message = '',
@@ -31,4 +32,12 @@ class ContextVaultException extends RuntimeException
     {
         return $this->responseBody;
     }
+
+    public function getErrorCode(): string
+    {
+        return $this->responseBody['error']['code'] ?? ($this->statusCode === 0 ? 'NETWORK_ERROR' : 'HTTP_ERROR');
+    }
+
+    public function withRecoveryPath(string $path): self { $this->localRecoveryPath = $path; return $this; }
+    public function getRecoveryPath(): ?string { return $this->localRecoveryPath; }
 }
