@@ -445,7 +445,7 @@ Do not mix bypassing legacy writers with catalog-owned workspaces.
 
 ## 9. Team work items and dependency waves
 
-The machine-readable work items are `docs/items/CV-10.md` through `CV-31.md`, including three discovered security prerequisites.
+The machine-readable work items are `docs/items/CV-10.md` through `CV-32.md`, including four discovered security prerequisites.
 They contain exact dependencies, provided/consumed contracts, allowed paths, acceptance, and checks.
 Their states remain `planned` until implementation begins.
 Planning items CV-1 through CV-4 describe this planning effort only.
@@ -454,7 +454,7 @@ Planning items CV-1 through CV-4 describe this planning effort only.
 |---|---|
 | 0 | CV-10 |
 | 1 | CV-11, CV-12, CV-13, CV-29, CV-31 |
-| 2 | CV-14, CV-30 |
+| 2 | CV-14, CV-30, CV-32 |
 | 3 | CV-15 |
 | 4 | CV-17 |
 | 5 | CV-16 |
@@ -495,6 +495,7 @@ The helper computes readiness from dependency closure, rather than the suggested
 | CV-29 | Repair affected runtime dependency advisories | CV-10 | A05, A12 |
 | CV-30 | Authorize local submission retries against current grants | CV-11, CV-12 | A05 |
 | CV-31 | Isolate tenant secret dictionary keys | CV-10 | A05 |
+| CV-32 | Repair browser build dependency advisories | CV-29 | A05, A12 |
 
 ### CV-10: Freeze domain, transfer, compatibility, and acceptance contracts
 
@@ -888,3 +889,11 @@ This narrowly scoped security prerequisite uses the existing provider API and pr
 Scope: src/services/secrets.service.ts and tests/security/tenant-secrets-isolation.test.ts.
 CV-31 consumes the closed contracts; CV-16 waits for independently verified provider isolation before closure.
 No customer data, key rotation, persistence redesign, deployment, or global configuration change is authorized by this repair.
+
+### CV-32: Repair browser build dependency advisories
+
+The implementation security pass found High advisories in both retained browser build trees.
+Update the affected lockfile dependencies within existing declared ranges and preserve both application contracts.
+Verify fresh locked installs, production builds, and complete dependency audits.
+CV-27 waits for this prerequisite before the final release matrix.
+Report residual Moderate lint-tool findings separately from the High/Critical gate.
