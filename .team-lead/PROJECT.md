@@ -61,9 +61,11 @@ The lead relies on read-only briefs and independent source audits, and avoids du
 
 ## Execution checkout
 
-Integration: /Users/hwvaj/Documents/ChatGPT/ContextVault/worktrees/integration.
-Branch: codex/contextvault-ports, based on origin/main bd8e448d46077a4a102460fdb413c5f886a0e04e.
-Worker worktrees live under /Users/hwvaj/Documents/ChatGPT/ContextVault/worktrees/.
+Integration: /private/tmp/contextvault-01a1a255/integration.
+Branch: codex/contextvault-completion, continuing verified commit 4df9b9360391fdd9013537b5a673dce367053f9a.
+Worker worktrees live under /private/tmp/contextvault-01a1a255/.
+macOS offloaded files in the Documents checkout. Preserve that checkout and all original changes.
+The lead recovered committed source through Git and verified recovered PHP source against recorded hashes.
 The original checkout and its Python packaging edit remain untouched.
 CV-19 must preserve and carry the setuptools.build_meta correction into its isolated changes.
 

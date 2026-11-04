@@ -10,7 +10,7 @@ status: docs/status.md
 lead: .lead
 
 # The branch finished items merge into during a milestone.
-branch: codex/contextvault-ports
+branch: codex/contextvault-completion
 
 # Compatibility field retained from Claude; the Codex helper does not auto-detect test runs.
 runners: []

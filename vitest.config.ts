@@ -8,8 +8,8 @@ export default defineConfig({
   test: {
     globals: true,
     testTimeout: 30000,
-    // Installed consumers share Docker and packaging resources; keep explicit SDK files serial.
-    maxWorkers: sdk ? 1 : 4,
+    // Installed consumers and S3 fixtures share external resources; keep their test files serial.
+    maxWorkers: sdk || s3 ? 1 : 4,
     include: acceptance ? ["tests/acceptance/**/*.test.ts"] : ["tests/**/*.test.ts"],
     exclude: acceptance ? [] : ["tests/acceptance/**", ...(s3 ? [] : ["tests/adapters/s3/**"]), ...(sdk ? [] : ["tests/sdk/**"])],
     passWithNoTests: false,
