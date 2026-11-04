@@ -1,11 +1,10 @@
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
 import { promisify } from 'node:util';
 import { access, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-// @ts-ignore normal-server test controller
-import { startWorkspaceServer } from '../helpers/workspace-server.mjs';
+import { startContainerWorkspaceServer } from './server';
 
 export const root = resolve(import.meta.dirname, '../..');
 export const backend = process.env.CV_TEST_BACKEND ?? 'git';
@@ -16,8 +15,8 @@ const ownerLabel = 'io.contextvault.host-test.owner';
 const execute = promisify(execFile);
 const allowedEnvironment = ['PATH', 'LANG', 'LC_ALL', 'TMPDIR', 'TMP', 'TEMP', 'HOME'];
 const hostEnvironment = () => Object.fromEntries(allowedEnvironment.filter(name => process.env[name]).map(name => [name, process.env[name]!]));
-export async function run(command: string, args: string[], options: any = {}) {
-  try { return await execute(command, args, { timeout: 120000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024, env: hostEnvironment(), ...options }); }
+export async function run(command: string, args: string[], options: any = {}): Promise<{ stdout: string; stderr: string }> {
+  try { return await execute(command, args, { timeout: 120000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024, env: hostEnvironment(), ...options, encoding: 'utf8' } as ExecFileOptionsWithStringEncoding); }
   catch (error: any) { throw new Error(`${basename(command)} failed (${error.code}): ${(error.stderr ?? error.message).split('\n').filter((line: string) => !line.includes('Deprecat')).slice(-30).join('\n')}\n${(error.stdout ?? '').slice(-4000)}`); }
 }
 let toolsPromise: Promise<any> | undefined;
@@ -94,19 +93,54 @@ export async function removeOwnedContainer(name: string, owner: string) {
   if (inspected.stdout.trim() !== owner) throw new Error('Refused another container owner');
   await run('docker', ['rm', '--force', name], { timeout: 10000 });
 }
+export interface RelayStartupInspection {
+  id: string; name: string; owner: string;
+  state: { Running: boolean; Status: string; ExitCode: number; OOMKilled: boolean };
+  ports: Record<string, { HostIp: string; HostPort: string }[] | null>;
+}
+async function inspectRelayStartup(relay: string, timeout: number): Promise<RelayStartupInspection> {
+  const format = `{"id":{{json .Id}},"name":{{json .Name}},"owner":{{json (index .Config.Labels "${ownerLabel}")}},"state":{"Running":{{json .State.Running}},"Status":{{json .State.Status}},"ExitCode":{{json .State.ExitCode}},"OOMKilled":{{json .State.OOMKilled}}},"ports":{{json .NetworkSettings.Ports}}}`;
+  return JSON.parse((await run('docker', ['inspect', '--format', format, relay], { timeout, maxBuffer: 16384 })).stdout);
+}
+export async function waitForRelayOrigin(relay: string, owner: string, inspectRelay = (timeout: number) => inspectRelayStartup(relay, timeout)) {
+  const deadline = Date.now() + 5000; let view: RelayStartupInspection | undefined;
+  const failure = (reason: string) => new Error(reason + ': ' + JSON.stringify({ relay, owner, observed: view }).slice(0, 2048));
+  while (Date.now() < deadline) {
+    try { view = await inspectRelay(Math.max(1, deadline - Date.now())); }
+    catch { throw failure('Owned API relay inspection failed during startup'); }
+    if (!view.id || view.name !== '/' + relay || view.owner !== owner) throw failure('Owned API relay identity changed during startup');
+    if (!view.state.Running || view.state.Status !== 'running') throw failure('Owned API relay stopped during startup');
+    const bindings = view.ports['8080/tcp'];
+    if (bindings?.length) {
+      if (bindings.length !== 1 || bindings[0].HostIp !== '127.0.0.1' || !/^[1-9]\d{0,4}$/.test(bindings[0].HostPort) || Number(bindings[0].HostPort) > 65535) throw failure('Owned API relay has unsafe published mapping');
+      const origin = 'http://127.0.0.1:' + bindings[0].HostPort;
+      const remaining = deadline - Date.now(); if (remaining <= 0) break;
+      try {
+        const response = await fetch(origin + '/health', { signal: AbortSignal.timeout(Math.max(1, Math.min(500, remaining))) });
+        const healthy = response.ok; await response.body?.cancel(); if (healthy) return origin;
+      } catch { /* Await only fixture listener readiness inside the original startup bound. */ }
+    }
+    const remaining = deadline - Date.now(); if (remaining <= 0) break;
+    await new Promise(resolve => setTimeout(resolve, Math.min(50, remaining)));
+  }
+  throw failure('Owned API relay did not become ready within 5000ms');
+}
 export async function fixture() {
   const artifact = await packages(); const id = randomUUID(); const network = 'cv-host-api-' + id; const relay = 'cv-host-relay-' + id; const control = randomUUID();
-  const server = await startWorkspaceServer({ backend, serverEnv: { CV_LEASE_TTL_MS: '60000' } });
   const boundaryDirectory = await mkdtemp(join(await realpath(tmpdir()), 'cv-host-private-'));
-  const hostOnlyFile = join(boundaryDirectory, 'not-mounted'); await writeFile(hostOnlyFile, id, { mode: 0o600 });
+  const hostOnlyFile = join(boundaryDirectory, 'not-mounted');
+  let server: Awaited<ReturnType<typeof startContainerWorkspaceServer>> | undefined;
   let networkCreated = false; let relayCreated = false;
   try {
+    await writeFile(hostOnlyFile, id, { mode: 0o600 });
+    server = await startContainerWorkspaceServer(backend); const api = server;
     await run('docker', ['network', 'create', '--internal', '--label', `${ownerLabel}=${id}`, network]); networkCreated = true;
-    await run('docker', ['create', '--name', relay, '--label', `${ownerLabel}=${id}`, '--network', network, '--network-alias', 'contextvault-api', '-p', '127.0.0.1::8080', '--mount', `type=bind,src=${join(root, 'tests/hosts/relay.cjs')},dst=/relay.cjs,readonly`, '-e', `UPSTREAM=${server.client.baseUrl.replace('127.0.0.1', 'host.docker.internal')}`, '-e', `CONTROL_TOKEN=${control}`, images.typescript, 'node', '/relay.cjs']); relayCreated = true;
-    await run('docker', ['network', 'connect', 'bridge', relay]); await run('docker', ['start', relay]);
-    const ports = JSON.parse((await run('docker', ['inspect', '--format', '{{json .NetworkSettings.Ports}}', relay])).stdout);
-    const origin = 'http://127.0.0.1:' + ports['8080/tcp'][0].HostPort;
-    for (let index = 0; index < 100; index++) { try { if ((await fetch(origin + '/health')).ok) break; } catch {} if (index === 99) throw new Error('API relay did not start'); await new Promise(resolve => setTimeout(resolve, 50)); }
+    await run('docker', ['create', '--name', relay, '--label', `${ownerLabel}=${id}`, '--network', network, '--network-alias', 'contextvault-api', '-p', '127.0.0.1::8080', '--mount', `type=bind,src=${join(root, 'tests/hosts/relay.cjs')},dst=/relay.cjs,readonly`, '-e', `UPSTREAM=${api.proof.upstream}`, '-e', `CONTROL_TOKEN=${control}`, images.typescript, 'node', '/relay.cjs']); relayCreated = true;
+    await run('docker', ['network', 'connect', api.proof.network, relay]); await run('docker', ['start', relay]);
+    const origin = await waitForRelayOrigin(relay, id).catch(async error => {
+      await writeFile(join(root, 'tests/hosts/server/relay-startup-' + id + '.log'), JSON.stringify({ recordedAt: new Date().toISOString(), error: (error as Error).message }) + '\n', { mode: 0o600 });
+      throw error;
+    });
     const hostAddress = (await run('docker', ['exec', relay, 'node', '-e', 'require("node:dns").lookup("host.docker.internal",(e,a)=>{if(e)throw e;console.log(a)})'])).stdout.trim();
     let storageIp = '127.0.0.1'; let storagePort = '0';
     if (backend === 's3') {
@@ -120,14 +154,17 @@ export async function fixture() {
       storageIp = addresses[0] as string; storagePort = endpoint.port;
     }
     if (!hostAddress) throw new Error('An actual host gateway address is required');
-    const environment = { CV_API_URL: origin, CV_API_KEY: server.client.keyA, CV_CUSTOMER_ID: server.client.customerA, CV_HOST_ONLY_FILE: hostOnlyFile, CV_STORAGE_PROBE_IP: storageIp, CV_STORAGE_PROBE_HOST_IP: hostAddress, CV_STORAGE_PROBE_HOST_PORT: storagePort, CV_STORAGE_PROBE_REQUIRED: backend === 's3' ? '1' : '0' };
+    const environment = { CV_API_URL: origin, CV_API_KEY: api.client.keyA, CV_CUSTOMER_ID: api.client.customerA, CV_HOST_ONLY_FILE: hostOnlyFile, CV_STORAGE_PROBE_IP: storageIp, CV_STORAGE_PROBE_HOST_IP: hostAddress, CV_STORAGE_PROBE_HOST_PORT: storagePort, CV_STORAGE_PROBE_REQUIRED: backend === 's3' ? '1' : '0' };
+    const relayInspection = JSON.parse((await run('docker', ['inspect', relay])).stdout)[0];
+    const serverProof = { ...api.proof, relayContainerName: relay, relayNetworks: Object.keys(relayInspection.NetworkSettings.Networks).sort(), clientNetwork: network };
+    await recordEvidence('server-' + id, serverProof);
     return {
-      artifact, id, network, origin, client: server.client, environment,
+      artifact, id, network, origin, client: api.client, environment, server: serverProof,
       async arm(drop = true, pause: string | null = null) { const response = await fetch(origin + '/__control', { method: 'POST', headers: { 'content-type': 'application/json', 'x-control-token': control }, body: JSON.stringify({ drop, pause }) }); if (!response.ok) throw new Error('Cannot arm owned API relay'); },
       async evidence() { const response = await fetch(origin + '/__control', { headers: { 'x-control-token': control } }); if (!response.ok) throw new Error('Cannot read owned API relay evidence'); return response.json(); },
-      async dispose() { try { if (relayCreated) await removeOwnedContainer(relay, id); } finally { try { if (networkCreated) await run('docker', ['network', 'rm', network], { timeout: 10000 }); } finally { await server.dispose(); await rm(boundaryDirectory, { recursive: true }); } } },
+      async dispose() { try { if (relayCreated) await removeOwnedContainer(relay, id); } finally { try { if (networkCreated) await run('docker', ['network', 'rm', network], { timeout: 10000 }); } finally { try { await api.dispose(); } finally { await rm(boundaryDirectory, { recursive: true }); } } } },
     };
-  } catch (error) { try { if (relayCreated) await removeOwnedContainer(relay, id); } finally { try { if (networkCreated) await run('docker', ['network', 'rm', network]); } finally { await server.dispose(); await rm(boundaryDirectory, { recursive: true }); } } throw error; }
+  } catch (error) { try { if (relayCreated) await removeOwnedContainer(relay, id); } finally { try { if (networkCreated) await run('docker', ['network', 'rm', network]); } finally { try { await server?.dispose(); } finally { await rm(boundaryDirectory, { recursive: true }); } } } throw error; }
 }
 export type HostFixture = Awaited<ReturnType<typeof fixture>>;
 export function cliPath(artifact: any) { return join(artifact.directory, 'typescript/node_modules/@contextvault/cli/bin/contextvault.cjs'); }
