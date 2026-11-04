@@ -1,4 +1,4 @@
-import simpleGit from "simple-git";
+import { simpleGit } from "simple-git";
 import * as path from "path";
 import { getDb } from "../db";
 

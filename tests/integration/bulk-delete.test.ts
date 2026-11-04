@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { vi } from "vitest";
-import simpleGit from "simple-git";
+import { simpleGit } from "simple-git";
 import * as fs from "fs/promises";
 import * as fsSync from "fs";
 import * as path from "path";

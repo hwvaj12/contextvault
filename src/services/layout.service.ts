@@ -1,4 +1,4 @@
-import simpleGit from "simple-git";
+import { simpleGit } from "simple-git";
 import * as fs from "fs/promises";
 import * as path from "path";
 

@@ -1,4 +1,4 @@
-import simpleGit, { SimpleGit } from "simple-git";
+import { simpleGit, SimpleGit } from "simple-git";
 import * as fs from "fs/promises";
 import * as fsSync from "fs";
 import * as path from "path";
