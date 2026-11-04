@@ -109,7 +109,26 @@ export interface CredentialAuthority {
 }
 
 /** One transactional authority. Tenant operations use explicit scope; maintenance scans return tenant-scoped records. */
+export interface LegacyInventorySource {
+  inspect(limits?: Partial<import('../domain').WorkspaceLimits>): Promise<import('../domain').LegacyInventory>;
+}
+export interface LegacyAdoptionSource extends LegacyInventorySource {
+  openRevision(workspace: import('../domain').LegacyWorkspaceInventory, revision: import('../domain').LegacyRevisionInventory, limits: import('../domain').WorkspaceLimits): Promise<import('./streams').SnapshotSource>;
+  backup(inventory: import('../domain').LegacyInventory, workspace: import('../domain').LegacyWorkspaceInventory, directory: string): Promise<Sha256>;
+}
 export interface ControlStore {
+  getLegacyAdoption(scope: WorkspaceScope, id: MigrationId): Promise<import('../domain').LegacyAdoption | null>;
+  claimLegacyAdoption(input: { principal: Principal; authorization: AuthorizationPrecondition; migrationAuthorization: AuthorizationPrecondition; adoption: import('../domain').LegacyAdoption; now: Timestamp }): Promise<import('../domain').LegacyAdoption>;
+  claimLegacyAdoptionRecovery(input: { scope: WorkspaceScope; adoptionId: MigrationId; expectedVersion: Version; ownerId: string; now: Timestamp; expiresAt: Timestamp }): Promise<import('../domain').LegacyAdoption>;
+  renewLegacyAdoptionClaim(input: { scope: WorkspaceScope; adoptionId: MigrationId; expectedVersion: Version; fence: Fence; now: Timestamp; expiresAt: Timestamp }): Promise<import('../domain').LegacyAdoption>;
+  releaseLegacyAdoptionClaim(input: { scope: WorkspaceScope; adoptionId: MigrationId; expectedVersion: Version; fence: Fence; ownerId: string; now: Timestamp }): Promise<import('../domain').LegacyAdoption>;
+  recordLegacyAdoptionBackup(input: { scope: WorkspaceScope; adoptionId: MigrationId; expectedVersion: Version; fence: Fence; receiptDigest: Sha256; now: Timestamp }): Promise<import('../domain').LegacyAdoption>;
+  recordLegacyAdoptionCopy(input: { scope: WorkspaceScope; adoptionId: MigrationId; expectedVersion: Version; fence: Fence; candidate: PreparedRevision; now: Timestamp }): Promise<import('../domain').LegacyAdoption>;
+  acceptLegacyAdoption(input: { scope: WorkspaceScope; adoptionId: MigrationId; expectedVersion: Version; fence: Fence; principal: Principal; authorization: AuthorizationPrecondition; migrationAuthorization: AuthorizationPrecondition; sourceFingerprint: Sha256; backupDigest: Sha256; verifiedCopyDigest: Sha256; events: PublicationEvents; now: Timestamp }): Promise<import('../domain').LegacyAdoption>;
+  claimCopySourcePin(input: { scope: WorkspaceScope; principal: Principal; authorization: AuthorizationPrecondition; destinationAuthorization: AuthorizationPrecondition; idempotencyKey: string; request: unknown; source: import('../domain').CopySourcePin['source']; target: import('../domain').CopySourcePin['target']; now: Timestamp }): Promise<import('../domain').CopySourcePin>;
+  listCopySourcePins(scope: WorkspaceScope): Promise<readonly import('../domain').CopySourcePin[]>;
+  /** Release only after the exact destination restore command records a terminal outcome. Unknown outcomes retain ownership. */
+  completeCopySourcePin(input: { scope: WorkspaceScope; pinId: string; operationId: OperationId; now: Timestamp }): Promise<import('../domain').CopySourcePin>;
   claimRestore(input: { scope: WorkspaceScope; principal: Principal; authorization: AuthorizationPrecondition; command: CommandIdentity<"restore">; intent: import("../domain").RestoreIntent; claim: ProcessingClaim; now: Timestamp }): Promise<{ operation: import("../domain").RestoreOperation; replayed: boolean }>;
   acceptRestore(input: ProcessingCAS & { authorization: AuthorizationPrecondition; candidate: PreparedRevision; events: PublicationEvents }): Promise<import("../domain").RestoreOperation>;
   failRestore(input: ProcessingCAS & { code: ErrorCode; message: string; events: PublicationEvents }): Promise<import("../domain").RestoreOperation>;
@@ -222,12 +241,22 @@ export interface ControlStore {
     expectedWorkspaceVersion: Version; aliases: readonly LegacyRevisionAlias[]; events: PublicationEvents; now: Timestamp;
   }): Promise<CommandResult<readonly LegacyRevisionAlias[]>>;
   getStorageMigration(scope: WorkspaceScope, migrationId: MigrationId): Promise<StorageMigration | null>;
+  claimMigrationBackup(input: { scope: WorkspaceScope; migrationId: MigrationId; expectedMigrationVersion: Version; migrationFence: Fence; directory: string; now: Timestamp }): Promise<StorageMigration>;
+  captureMigrationCatalog(input: { scope: WorkspaceScope; migrationId: MigrationId; expectedMigrationVersion: Version; migrationFence: Fence; now: Timestamp }): Promise<{ sha256: Sha256 }>;
+  completeMigrationBackup(input: { scope: WorkspaceScope; migrationId: MigrationId; expectedMigrationVersion: Version; migrationFence: Fence; receiptDigest: Sha256; now: Timestamp }): Promise<StorageMigration>;
   /** Claim admission drain atomically. New mutable runs are rejected while this migration remains recoverable. */
   claimStorageMigration(input: {
     scope: WorkspaceScope; principal: Principal; authorization: AuthorizationPrecondition; command: CommandIdentity;
     migrationId: MigrationId; expectedWorkspaceVersion: Version; expectedHeadRevisionId: RevisionId;
     expectedSourceBindingGeneration: number; retainedRevisionSetDigest: Sha256; targetBinding: StorageBinding;
+    request?: import('../domain').StorageMigrationRequest;
     claim: ProcessingClaim; now: Timestamp;
+  }): Promise<StorageMigration>;
+  /** Own the exact retained source and target identity before any target storage preparation. */
+  claimMigrationCandidate(input: {
+    scope: WorkspaceScope; principal: Principal; authorization: AuthorizationPrecondition;
+    migrationId: MigrationId; expectedMigrationVersion: Version; migrationFence: Fence;
+    revisionId: RevisionId; identity: CandidateIdentity; now: Timestamp;
   }): Promise<StorageMigration>;
   /** Persist resumable, immutable verified copies under the migration fence; protect every source and target from GC. */
   recordVerifiedRevisionCopy(input: {
@@ -241,6 +270,8 @@ export interface ControlStore {
   renewStorageMigrationClaim(input: {
     scope: WorkspaceScope; migrationId: MigrationId; expectedMigrationVersion: Version; migrationFence: Fence; now: Timestamp; expiresAt: Timestamp;
   }): Promise<StorageMigration>;
+  /** A finished controller can yield its claim only after all of its tracked candidate writes stopped. */
+  releaseStorageMigrationClaim(input: { scope: WorkspaceScope; migrationId: MigrationId; expectedMigrationVersion: Version; migrationFence: Fence; ownerId: string; now: Timestamp }): Promise<StorageMigration>;
   /**
    * Recheck authorization, source generation/head/versions, drained mutable runs, and the exact retained/copy sets.
    * Atomically switch every retained reference and binding; preserve revision IDs/history/aliases and record the operation/events.

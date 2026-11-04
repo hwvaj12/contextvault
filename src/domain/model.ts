@@ -1,4 +1,6 @@
 import type { ErrorCode } from "./errors";
+import { createHash } from 'node:crypto';
+import { canonicalJson } from './idempotency';
 import type { CleanupState, MaterializationState, RunState, TerminalRunState } from "./lifecycle";
 import type { Manifest } from "./manifest";
 import type {
@@ -244,6 +246,13 @@ export interface BundleRecord {
 export type RestoreSource =
   | { kind: "revision"; revision: Revision; binding: StorageBinding; principal: Principal }
   | { kind: "bundle"; bundle: BundleRecord };
+/** A clone command owns its first source and destination before journal or target storage I/O. */
+export interface CopySourcePin {
+  id: string; scope: WorkspaceScope; principal: Principal; idempotencyKey: string; requestDigest: Sha256; request: unknown;
+  source: Extract<RestoreSource, { kind: 'revision' }>;
+  target: { customerId: CustomerId; workspaceId: WorkspaceId; name: string; principal: Principal; createIdempotencyKey: string; restoreIdempotencyKey: string };
+  state: 'held' | 'released'; terminalOperationId: OperationId | null; createdAt: Timestamp; releasedAt: Timestamp | null;
+}
 /** Exact request, immutable source and candidate identity precede storage I/O. */
 export interface RestoreIntent {
   schemaVersion: 1; kind: "restore"; request: JsonRequestSnapshot<RestoreRequest>;
@@ -371,6 +380,35 @@ export interface CleanupTargets {
 }
 export interface SubmissionCollectionTarget { submission: Submission; binding: StorageBinding | null; collection: SubmissionCollectionPermit | null }
 export interface LegacyRevisionAlias { alias: string; revisionId: RevisionId }
+export interface LegacyInventoryIssue { code: string; message: string; revision?: string; path?: string; rule?: string }
+export interface LegacyWorkInventory {
+  runs: readonly { id: string; workspaceId: string; status: string; sandboxPath: string | null; baseCommit: string | null; workspaceHeadAtStart: string | null; finalCommit: string | null; updatedAt: string }[];
+  locks: readonly { id: string; workspaceId: string; ownerRunId: string; lockType: string; acquiredAt: string; expiresAt: string; lastHeartbeatAt: string }[];
+  sandboxes: readonly { path: string; runId: string | null; exists: boolean | null; kind: string }[];
+}
+export interface LegacyRevisionInventory {
+  alias: string; parentAlias: string | null; manifest: import('./manifest').Manifest; manifestDigest: Sha256;
+}
+export interface LegacyWorkspaceInventory {
+  workspaceId: string; customerId: string | null; name: string; status: string;
+  repository: string | null; selectedHead: string | null;
+  /** Conflicting sources remain evidence; no source becomes the selected authority. */
+  authorityHeads: readonly { source: 'sqlite' | 'json' | 'catalog' | 'repository' | 'git'; head: string | null }[];
+  legacyWork: LegacyWorkInventory;
+  revisions: readonly LegacyRevisionInventory[]; issues: readonly LegacyInventoryIssue[]; eligible: boolean;
+}
+export interface LegacyInventory {
+  schemaVersion: 1; sourceRoot: string; databasePath: string; sourceFingerprint: Sha256;
+  workspaces: readonly LegacyWorkspaceInventory[];
+}
+/** Offline legacy adoption owns all candidates before bytes, without exposing a runtime workspace. */
+export interface LegacyAdoption {
+  id: MigrationId; scope: WorkspaceScope; command: CommandIdentity<'storage:migrate'>;
+  sourceFingerprint: Sha256; sourceRoot: string; databasePath: string; inventory: LegacyWorkspaceInventory;
+  workspace: Workspace; binding: StorageBinding; candidates: readonly { source: LegacyRevisionInventory; identity: CandidateIdentity }[];
+  backup: MigrationBackup; copies: readonly PreparedRevision[]; state: 'preparing' | 'complete';
+  version: Version; claim: ProcessingClaim; createdAt: Timestamp; updatedAt: Timestamp;
+}
 export interface VerifiedRevisionCopy {
   revisionId: RevisionId;
   sourceManifestDigest: Sha256;
@@ -378,6 +416,15 @@ export interface VerifiedRevisionCopy {
   /** Recorded only after exact source/target file bytes and manifests match. */
   verifiedAt: Timestamp;
 }
+export interface MigrationCandidate {
+  revisionId: RevisionId;
+  source: Revision;
+  identity: CandidateIdentity;
+}
+export interface MigrationBackup {
+  directory: string; state: 'preparing' | 'ready'; receiptDigest: Sha256 | null;
+}
+export interface StorageMigrationRequest { targetConfigurationRef: string; backupRoot: string; reason: string }
 /** Admission drain and copy checkpoints are catalog state, never an adapter-local current pointer. */
 export interface StorageMigration {
   id: MigrationId;
@@ -392,11 +439,18 @@ export interface StorageMigration {
   version: Version;
   claim: ProcessingClaim;
   copies: readonly VerifiedRevisionCopy[];
+  /** Older completed migrations may predate typed pre-copy ownership. */
+  candidates?: readonly MigrationCandidate[];
+  backup?: MigrationBackup;
+  request?: StorageMigrationRequest;
   lastError: string | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
   switchedAt: Timestamp | null;
 }
+/** Shared portable proof recipes for the application and transactional adapter. */
+export const retainedRevisionSetDigest = (revisions: readonly Revision[]): Sha256 => createHash('sha256').update(canonicalJson([...revisions].sort((a, b) => Buffer.compare(Buffer.from(a.id), Buffer.from(b.id))).map(revision => ({ revisionId: revision.id, manifestDigest: revision.manifestDigest })))).digest('hex');
+export const verifiedCopySetDigest = (copies: readonly VerifiedRevisionCopy[]): Sha256 => createHash('sha256').update(canonicalJson([...copies].sort((a, b) => Buffer.compare(Buffer.from(a.revisionId), Buffer.from(b.revisionId))))).digest('hex');
 /** Client identity is constructible directly from RunView, without catalog binding data. */
 export type ClientRunIdentity = Pick<RunView, "id" | "workspaceId" | "baseRevisionId" | "version" | "mode">;
 export interface ClientSealedSubmissionSelection { submissionId: string; manifestDigest: Sha256 }

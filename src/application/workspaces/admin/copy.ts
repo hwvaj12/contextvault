@@ -44,22 +44,42 @@ export async function copyWorkspace(runtime: WorkspaceRuntime, input: { kind: 'c
   return serialize(file, runtime.control, input.sourceScope, async () => {
     let journal = await loadJournal<CopyJournal>(file);
     if (journal && canonicalJson(journal.request) !== canonicalJson(input.request)) throw new WorkspaceError('IDEMPOTENCY_KEY_REUSED', 'Copy key belongs to another exact request');
-    if (!journal) {
-      const source = await input.source(); await authorizeSource(runtime, source, input.principal);
-      await runtime.lifecycle.runtime.authorize(input.destination, 'workspace:create', { customerId: input.targetCustomerId });
-      journal = { request: input.request, source, destinationPrincipal: input.destination, destinationCustomerId: input.targetCustomerId, workspaceId: (input.targetWorkspaceId ?? runtime.lifecycle.runtime.id('workspace')) as Workspace['id'], creation: null, operationId: null, completed: null };
-      // Source and target ownership are durable before workspace creation or copy storage I/O.
+    let pinId: string | null = null; let targetName = input.name;
+    if (!journal?.completed) {
+      const source = journal?.source ?? await input.source(); await authorizeSource(runtime, source, input.principal);
+      const destination = journal?.destinationPrincipal ?? input.destination;
+      const targetCustomerId = journal?.destinationCustomerId ?? input.targetCustomerId;
+      const targetWorkspaceId = journal?.workspaceId ?? (input.targetWorkspaceId ?? runtime.lifecycle.runtime.id('workspace')) as Workspace['id'];
+      const destinationAuthorization = await runtime.lifecycle.runtime.authorize(destination, 'workspace:create', { customerId: targetCustomerId });
+      if (source.kind === 'revision') {
+        const pin = await runtime.control.claimCopySourcePin({ scope: input.sourceScope, principal: input.principal,
+          authorization: await runtime.lifecycle.runtime.authorize(input.principal, 'workspace:read', input.sourceScope), destinationAuthorization,
+          idempotencyKey: input.key, request: input.request, source,
+          target: { customerId: targetCustomerId, workspaceId: targetWorkspaceId, name: targetName, principal: destination, createIdempotencyKey: `copy-create-${hash(file)}`, restoreIdempotencyKey: `copy-restore-${hash(file)}` }, now: runtime.now() });
+        pinId = pin.id; targetName = pin.target.name;
+        if (journal && (canonicalJson(journal.source) !== canonicalJson(pin.source) || journal.workspaceId !== pin.target.workspaceId || journal.destinationCustomerId !== pin.target.customerId)) throw new WorkspaceError('RECEIPT_MISMATCH', 'Private copy journal differs from its catalog-owned intent');
+        if (!journal) journal = { request: input.request, source: pin.source, destinationPrincipal: pin.target.principal, destinationCustomerId: pin.target.customerId, workspaceId: pin.target.workspaceId, creation: null, operationId: null, completed: null };
+      } else if (!journal) journal = { request: input.request, source, destinationPrincipal: destination, destinationCustomerId: targetCustomerId, workspaceId: targetWorkspaceId, creation: null, operationId: null, completed: null };
+      // A revision copy owns its exact source and target in the catalog before this private journal write.
       await saveJournal(file, journal);
     }
+    if (!journal) throw new WorkspaceError('STORAGE_UNAVAILABLE', 'Copy ownership is unavailable');
     await authorizeSource(runtime, journal.source, input.principal);
     await runtime.lifecycle.runtime.authorize(journal.destinationPrincipal, 'workspace:create', { customerId: journal.destinationCustomerId });
     if (journal.completed) return { workspace: journal.completed, operation: null, source: journal.source };
-    if (!journal.creation) { journal.creation = await createTarget(runtime, journal.destinationPrincipal, journal.destinationCustomerId, journal.workspaceId, input.name, `copy-create-${hash(file)}`); await saveJournal(file, journal); }
+    if (!journal.creation) {
+      try { journal.creation = await createTarget(runtime, journal.destinationPrincipal, journal.destinationCustomerId, journal.workspaceId, targetName, `copy-create-${hash(file)}`); await saveJournal(file, journal); }
+      catch (error) {
+        if (pinId && error instanceof WorkspaceError && error.details.operationId) await runtime.control.completeCopySourcePin({ scope: input.sourceScope, pinId, operationId: error.details.operationId as any, now: runtime.now() }).catch(() => { /* Only exact terminal catalog proof can release the source. */ });
+        throw error;
+      }
+    }
     const scope: WorkspaceScope = { customerId: journal.destinationCustomerId, workspaceId: journal.workspaceId };
     const request = { revisionId: journal.source.kind === 'revision' ? journal.source.revision.id : journal.source.bundle.id, expectedRevisionId: journal.creation.currentRevisionId, expectedWorkspaceVersion: journal.creation.version, reason: `${input.kind} the exact authorized context` };
     const claimed = await runtime.restore.claimSource({ scope, principal: journal.destinationPrincipal, idempotencyKey: `copy-restore-${hash(file)}`, request }, journal.source, 'workspace:create');
     journal.operationId = claimed.operation.id; await saveJournal(file, journal); let operation = claimed.operation;
     if (!claimed.replayed && operation.state === 'processing') operation = await runtime.restore.process({ scope, operationId: operation.id, processingFence: operation.claim!.fence });
+    if (pinId && ['succeeded', 'failed'].includes(operation.state)) await runtime.control.completeCopySourcePin({ scope: input.sourceScope, pinId, operationId: operation.id, now: runtime.now() });
     if (operation.state === 'failed') throw new WorkspaceError(operation.error?.code ?? 'STORAGE_UNAVAILABLE', 'Copy publication has a recorded failure', { operationId: operation.id });
     if (operation.state !== 'succeeded' || !operation.result) return { workspace: journal.creation, operation, source: journal.source };
     journal.completed = { ...journal.creation, currentRevisionId: operation.result.revisionId, version: journal.creation.version + (operation.result.changed ? 1 : 0), updatedAt: operation.updatedAt }; await saveJournal(file, journal);

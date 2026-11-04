@@ -1,6 +1,13 @@
 import { acquireCompatibilityLock } from "../../storage/compatibility-lock";
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
+import { randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
+import { chmod, link, open, unlink } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
+import { createSafeDirectory, descriptorBytes, openRegularFile, syncDirectory } from '../../application/files';
+import SqliteDatabase from 'better-sqlite3';
+import { openImmutableBackupFile } from '../../application/migrations/archive';
 import * as D from "../../domain";
 import type { ControlStore, CredentialAuthority, CatalogSubscription, CollectionWork, CommandResult, PublicationEvents, ResourceLookupContext, ProcessingCAS } from "../../ports/control-store";
 import { initSchema } from "../../db";
@@ -31,8 +38,8 @@ const bindingOf = (workspace: D.Workspace): D.BindingScope => ({ ...scopeOf(work
 const identityOf = (principal: D.Principal) => ({ kind: principal.kind, actorId: principal.actorId, credential: principal.credential, permissionEpoch: principal.permissionEpoch, ...(principal.kind === "administrator" ? {} : { customerId: principal.customerId }) });
 const digest = (value: unknown) => createHash("sha256").update(D.canonicalJson(value)).digest("hex");
 /** Migration digests cover sorted immutable revision IDs/digests and sorted complete verified-copy records. */
-export const retainedRevisionSetDigest = (revisions: readonly D.Revision[]) => digest([...revisions].sort((a, b) => Buffer.compare(Buffer.from(a.id), Buffer.from(b.id))).map(r => ({ revisionId: r.id, manifestDigest: r.manifestDigest })));
-export const verifiedCopySetDigest = (copies: readonly D.VerifiedRevisionCopy[]) => digest([...copies].sort((a, b) => Buffer.compare(Buffer.from(a.revisionId), Buffer.from(b.revisionId))));
+export const retainedRevisionSetDigest = D.retainedRevisionSetDigest;
+export const verifiedCopySetDigest = D.verifiedCopySetDigest;
 function bindCredentialSource(db: Database.Database, authority: CredentialAuthority, kind?: D.CredentialIdentity["kind"]): void {
     if (db.prepare("SELECT id FROM catalog_records WHERE kind='credential-source' AND id=?").get(authority.credentialId))
         return;
@@ -59,6 +66,53 @@ export function bootstrapAuthority(db: Database.Database, authority: CredentialA
 /** All mutations take SQLite's writer reservation before reading their CAS predicates. No backend bytes live here. */
 export class SqliteControlStore implements ControlStore {
     constructor(readonly database: Database.Database) { initSchema(database); }
+    private migrating(scope: D.WorkspaceScope): boolean { return this.all<D.StorageMigration>("migration", scope).some(migration => !["complete", "failed"].includes(migration.state)); }
+    async claimCopySourcePin(input: Input<"claimCopySourcePin">) {
+        return this.transaction(() => {
+            this.permit(input.principal, 'workspace:read', input.scope, input.authorization);
+            if (!input.idempotencyKey || input.idempotencyKey.length > 256) fail('INVALID_REQUEST', 'Copy command identity is required');
+            const id = `copy-pin-${digest([input.scope, input.principal.actorId, input.principal.credential.id, input.idempotencyKey])}`;
+            const requestDigest = digest(input.request); const previous = this.load<D.CopySourcePin>('copy-source-pin', id, input.scope);
+            if (previous) {
+                if (previous.requestDigest !== requestDigest || !same(identityOf(previous.principal), identityOf(input.principal))) fail('IDEMPOTENCY_KEY_REUSED', 'Copy pin belongs to another exact command');
+                this.permit(previous.target.principal, 'workspace:create', { customerId: previous.target.customerId });
+                if (previous.state === 'held') this.restoreSource({ source: previous.source, sourceManifestDigest: previous.source.revision.manifestDigest } as D.RestoreIntent, previous.principal, previous.scope);
+                return previous;
+            }
+            if (this.migrating(input.scope)) fail('FINALIZATION_IN_PROGRESS', 'Storage migration is draining new source copies');
+            const { source, target } = input;
+            if (source.kind !== 'revision' || !same(scopeOf(this.workspace(input.scope)), input.scope) || !same(source.revision.scope.customerId, input.scope.customerId) || source.revision.scope.workspaceId !== input.scope.workspaceId || !same(identityOf(source.principal), identityOf(input.principal))) fail('FORBIDDEN', 'Copy source belongs to another workspace or identity');
+            if (!target.customerId || !target.workspaceId || !target.name?.trim() || target.name.length > 255 || !target.createIdempotencyKey || target.createIdempotencyKey.length > 256 || !target.restoreIdempotencyKey || target.restoreIdempotencyKey.length > 256 || target.principal.actorId !== input.principal.actorId || target.principal.kind !== input.principal.kind) fail('INVALID_REQUEST', 'Copy destination ownership is invalid');
+            this.permit(target.principal, 'workspace:create', { customerId: target.customerId }, input.destinationAuthorization);
+            if (this.load('workspace', target.workspaceId)) fail('VERSION_CONFLICT', 'Copy target identity already exists');
+            this.restoreSource({ source, sourceManifestDigest: source.revision.manifestDigest } as D.RestoreIntent, input.principal, input.scope);
+            const pin: D.CopySourcePin = { id, scope: input.scope, principal: input.principal, idempotencyKey: input.idempotencyKey, request: input.request, requestDigest, source, target, state: 'held', terminalOperationId: null, createdAt: input.now, releasedAt: null };
+            this.write('copy-source-pin', id, input.scope, pin, true); return pin;
+        });
+    }
+    async listCopySourcePins(scope: D.WorkspaceScope) { return this.all<D.CopySourcePin>('copy-source-pin', scope); }
+    private terminalCopy(pin: D.CopySourcePin, operationId?: D.OperationId): D.Operation | null {
+        const scope: D.WorkspaceScope = { customerId: pin.target.customerId, workspaceId: pin.target.workspaceId };
+        const commandScope = { customerId: scope.customerId, actorId: pin.target.principal.actorId, kind: 'restore', workspaceId: scope.workspaceId, runId: null };
+        const row = this.database.prepare('SELECT operation_id FROM catalog_commands WHERE scope=? AND key=?').get(D.canonicalJson(commandScope), pin.target.restoreIdempotencyKey) as { operation_id: string } | undefined;
+        const operation = row ? this.load<D.Operation>('operation', row.operation_id, scope) : null;
+        if (operation?.kind === 'restore' && (!operationId || operation.id === operationId) && ['succeeded', 'failed'].includes(operation.state) && operation.intent.destinationAction === 'workspace:create' && same(operation.intent.source, pin.source) && same(identityOf(operation.principal), identityOf(pin.target.principal))) return operation;
+        // A failed target creation cannot consume source bytes. Unknown or successful creations still require their restore outcome.
+        if (!pin.target.createIdempotencyKey || this.all<D.Operation>('operation', scope).some(value => value.kind === 'restore') || this.load('workspace', scope.workspaceId)) return null;
+        const createScope = { customerId: scope.customerId, actorId: pin.target.principal.actorId, kind: 'workspace:create', workspaceId: null, runId: null };
+        const created = this.database.prepare('SELECT operation_id FROM catalog_commands WHERE scope=? AND key=?').get(D.canonicalJson(createScope), pin.target.createIdempotencyKey) as { operation_id: string } | undefined;
+        const creation = created ? this.load<D.Operation>('operation', created.operation_id, scope) : null;
+        if (creation?.kind !== 'workspace:create' || creation.state !== 'failed' || (operationId && creation.id !== operationId) || !same(identityOf(creation.principal), identityOf(pin.target.principal)) || !same(creation.scope, scope) || !same(creation.command.idempotencyScope, createScope) || creation.command.idempotencyKey !== pin.target.createIdempotencyKey || creation.intent.workspace.id !== scope.workspaceId || creation.intent.workspace.customerId !== scope.customerId || creation.intent.workspace.name !== pin.target.name || !same(creation.intent.request, { method: 'POST', path: '/v1/workspaces', body: { customerId: scope.customerId, name: pin.target.name } })) return null;
+        return creation;
+    }
+    async completeCopySourcePin(input: Input<'completeCopySourcePin'>) {
+        return this.transaction(() => {
+            const pin = this.load<D.CopySourcePin>('copy-source-pin', input.pinId, input.scope); if (!pin) fail('OPERATION_NOT_FOUND', 'Copy source ownership is unavailable');
+            const operation = this.terminalCopy(pin, input.operationId); if (!operation) fail('PUBLICATION_OUTCOME_UNKNOWN', 'Copy source remains pinned until its exact terminal outcome is known');
+            if (pin.state === 'released') { if (pin.terminalOperationId !== operation.id) fail('IDEMPOTENCY_KEY_REUSED', 'Copy terminal identity changed'); return pin; }
+            pin.state = 'released'; pin.terminalOperationId = operation.id; pin.releasedAt = input.now; this.write('copy-source-pin', pin.id, pin.scope, pin); return pin;
+        });
+    }
     acquireCompatibilityLock(scope: D.WorkspaceScope, resource: string) { return acquireCompatibilityLock(this.database, scope, resource); }
     private bundlePermit(bundle: D.BundleRecord, principal: D.Principal): void {
         const customer = { customerId: bundle.customerId };
@@ -84,6 +138,7 @@ export class SqliteControlStore implements ControlStore {
                 this.bundlePermit(retained, input.principal); return retained;
             }
             if (bundle.kind === "export" && !same(this.load("revision", bundle.source!.id, bundle.source!.scope), bundle.source)) fail("REVISION_NOT_FOUND", "Export source is not an accepted revision");
+            if (bundle.kind === "export" && this.migrating(bundle.source!.scope)) fail("FINALIZATION_IN_PROGRESS", "Storage migration is draining new exports");
             this.write("bundle", bundle.id, input.scope, bundle, true);
             this.write("bundle-command", key, input.scope, { id: bundle.id, digest: bundle.requestDigest }, true); return bundle;
         });
@@ -139,6 +194,7 @@ export class SqliteControlStore implements ControlStore {
                 this.restoreSource(replay.operation.intent, principal, scope, ["pending", "processing"].includes(replay.operation.state)); return { operation: replay.operation, replayed: true };
             }
             const workspace = this.workspace(scope); const identity = intent.candidateIdentity; const request = intent.request.body;
+            if (this.migrating(scope)) fail("FINALIZATION_IN_PROGRESS", "Storage migration is draining new restores");
             if (intent.schemaVersion !== 1 || intent.kind !== "restore" || intent.request.method !== "POST" || intent.request.path !== `/v1/workspaces/${encodeURIComponent(scope.workspaceId)}/restore` || !["workspace:restore", "workspace:create"].includes(intent.destinationAction) || !request.reason || !same(identity.scope, bindingOf(workspace)) || identity.operationId !== command.operationId || identity.parentRevisionId !== request.expectedRevisionId) fail("INVALID_REQUEST", "Restore intent does not match its exact command and candidate");
             if (workspace.currentRevisionId !== request.expectedRevisionId || workspace.version !== request.expectedWorkspaceVersion) fail("REVISION_CONFLICT", "Workspace changed before restore claim");
             this.restoreSource(intent, principal, scope); this.validClaim(input.claim, input.now);
@@ -478,7 +534,7 @@ export class SqliteControlStore implements ControlStore {
             }
             if (intent.schemaVersion !== 1 || intent.kind !== "workspace:create" || intent.request.method !== "POST" || intent.request.path !== "/v1/workspaces" || intent.request.body.customerId !== scope.customerId || intent.request.body.name !== intent.workspace.name || intent.workspace.status !== "active" || intent.workspace.version !== 1 || !same(intent.binding.scope, scope) || intent.binding.id !== intent.workspace.storageBindingId || intent.binding.generation !== intent.workspace.bindingGeneration || intent.binding.status !== "active" || !same(intent.candidateIdentity.scope, bindingOf(intent.workspace)) || intent.candidateIdentity.parentRevisionId !== null || intent.candidateIdentity.revisionId !== intent.workspace.currentRevisionId || intent.candidateIdentity.operationId !== command.operationId || intent.initialManifest.entries.length !== 0 || D.manifestDigest(intent.initialManifest) !== intent.initialManifestDigest)
                 fail("INVALID_REQUEST", "Creation intent does not match request, draft binding, and empty candidate");
-            if (this.load("workspace", scope.workspaceId) || this.all<D.WorkspaceCreationOperation>("operation", scope).some(o => o.kind === "workspace:create" && o.state === "processing"))
+            if (this.load("workspace", scope.workspaceId) || this.all<D.LegacyAdoption>('legacy-adoption', scope).some(adoption => adoption.state !== 'complete') || this.all<D.WorkspaceCreationOperation>("operation", scope).some(o => o.kind === "workspace:create" && o.state === "processing"))
                 fail("VERSION_CONFLICT", "Workspace identity is already claimed");
             this.validClaim(input.claim, input.now);
             const operation = { ...this.operation(command, principal, scope, null), kind: "workspace:create", runId: null, intent, claim: input.claim } as D.WorkspaceCreationOperation;
@@ -561,8 +617,8 @@ export class SqliteControlStore implements ControlStore {
             const workspace = this.workspace(input.scope);
             if (input.expiresAt <= input.createdAt)
                 fail("INVALID_REQUEST", "Run lease must expire in the future");
-            if (input.mode === "read-write" && this.all<D.StorageMigration>("migration", input.scope).some(m => !["complete", "failed"].includes(m.state)))
-                fail("FINALIZATION_IN_PROGRESS", "Storage migration is draining mutable runs");
+            if (this.migrating(input.scope))
+                fail("FINALIZATION_IN_PROGRESS", "Storage migration is draining workspace runs");
             const run: D.Run = { id: input.runId, scope: bindingOf(workspace), principal: input.principal, agentLabel: input.agentLabel, task: input.task, reason: input.reason, mode: input.mode, baseRevisionId: workspace.currentRevisionId, workspaceVersionAtOpen: workspace.version, version: 1, state: "active", lease: { version: 1, expiresAt: input.expiresAt, lastHeartbeatAt: input.createdAt }, operationId: null, outcome: null, cleanupId: input.cleanupId, createdAt: input.createdAt, updatedAt: input.createdAt };
             if (this.load("cleanup", run.cleanupId) || this.database.prepare("SELECT id FROM catalog_records WHERE kind='run' AND json_extract(data,'$.cleanupId')=?").get(run.cleanupId))
                 fail("VERSION_CONFLICT", "Cleanup identity is already used");
@@ -1185,7 +1241,110 @@ export class SqliteControlStore implements ControlStore {
             return result;
         });
     }
+    async getLegacyAdoption(scope: D.WorkspaceScope, id: D.MigrationId) { return this.load<D.LegacyAdoption>('legacy-adoption', id, scope); }
+    private adoption(input: { scope: D.WorkspaceScope; adoptionId: D.MigrationId; expectedVersion: number; fence: number; now: string }) {
+        const value = this.load<D.LegacyAdoption>('legacy-adoption', input.adoptionId, input.scope);
+        if (!value) fail('OPERATION_NOT_FOUND', 'Legacy adoption does not exist');
+        if (value.state === 'complete' || value.claim.fence !== input.fence || value.claim.expiresAt <= input.now) fail('STALE_FENCE', 'Legacy adoption claim is stale');
+        if (value.version !== input.expectedVersion) fail('VERSION_CONFLICT', 'Legacy adoption version changed'); return value;
+    }
+    private saveAdoption(value: D.LegacyAdoption) { this.write('legacy-adoption', value.id, value.scope, value); this.database.prepare('UPDATE catalog_commands SET value=? WHERE operation_id=?').run(JSON.stringify(value), value.command.operationId); }
+    private adoptionAuthority(principal: D.Principal, value: D.LegacyAdoption, create?: D.AuthorizationPrecondition, migrate?: D.AuthorizationPrecondition) {
+        const customer = { customerId: value.scope.customerId };
+        this.permit(principal, 'workspace:create', customer, create); this.permit(principal, 'workspace:migrate', customer, migrate);
+        const operation = this.load<D.Operation>('operation', value.command.operationId, value.scope);
+        if (operation && !same(identityOf(operation.principal), identityOf(principal))) fail('FORBIDDEN', 'Legacy adoption belongs to another identity');
+    }
+    async claimLegacyAdoption(input: Input<'claimLegacyAdoption'>) {
+        return this.transaction(() => {
+            const value = input.adoption; const scope = value.scope; this.command(value.command, input.principal, scope, 'storage:migrate');
+            this.adoptionAuthority(input.principal, value, input.authorization, input.migrationAuthorization);
+            const replay = this.replay<unknown>(value.command, input.principal);
+            if (replay) { const found = this.load<D.LegacyAdoption>('legacy-adoption', value.id, scope); if (!found || found.command.operationId !== replay.operation.id) fail('IDEMPOTENCY_KEY_REUSED', 'Command belongs to another migration'); return found; }
+            const w = value.workspace; const inventory = value.inventory;
+            if (!/^[a-f0-9]{64}$/.test(value.sourceFingerprint) || !isAbsolute(value.sourceRoot) || !isAbsolute(value.databasePath) || !isAbsolute(value.backup.directory) || value.backup.state !== 'preparing' || value.backup.receiptDigest !== null || value.copies.length || value.state !== 'preparing' || value.version !== 1 || !inventory.eligible || inventory.issues.length || !inventory.revisions.length || inventory.workspaceId !== scope.workspaceId || inventory.customerId !== scope.customerId || inventory.status !== 'active' || w.id !== scope.workspaceId || w.customerId !== scope.customerId || w.name !== inventory.name || w.version !== 1 || w.status !== 'active' || !same(scopeOf(w), scope) || !same(value.binding.scope, scope) || value.binding.id !== w.storageBindingId || value.binding.generation !== w.bindingGeneration || value.binding.generation !== 1 || value.binding.status !== 'active' || value.candidates.length !== inventory.revisions.length) fail('INVALID_REQUEST', 'Legacy adoption must select one unambiguous complete offline inventory');
+            if (this.load('workspace', w.id) || this.load('binding', value.binding.id) || this.all<D.LegacyAdoption>('legacy-adoption', scope).length || this.all<D.Operation>('operation', scope).some(o => o.state === 'processing')) fail('VERSION_CONFLICT', 'Workspace identity is already claimed');
+            const aliases = new Set<string>(); const candidates = new Set<string>(); const revisions = new Set<string>(); let parent: string | null = null; let canonicalParent: D.RevisionId | null = null;
+            for (let index = 0; index < inventory.revisions.length; index++) {
+                const source = inventory.revisions[index]; const selected = value.candidates[index]; const identity = selected.identity;
+                if (!source.alias || aliases.has(source.alias) || source.parentAlias !== parent || !same(selected.source, source) || D.manifestDigest(source.manifest) !== source.manifestDigest || !identity.revisionId || identity.revisionId === source.alias || revisions.has(identity.revisionId) || identity.parentRevisionId !== canonicalParent || identity.operationId !== value.command.operationId || !same(identity.scope, bindingOf(w)) || candidates.has(identity.candidateId) || this.load('revision', identity.revisionId)) fail('INVALID_REQUEST', 'Legacy adoption must preserve every revision through a unique opaque identity and workspace-scoped alias');
+                aliases.add(source.alias); candidates.add(identity.candidateId); revisions.add(identity.revisionId); parent = source.alias; canonicalParent = identity.revisionId;
+            }
+            if (parent !== inventory.selectedHead || canonicalParent !== w.currentRevisionId) fail('INVALID_REQUEST', 'Legacy adoption selected head must close its complete retained ancestry');
+            this.validClaim(value.claim, input.now); for (const candidate of value.candidates) this.candidate(candidate.identity);
+            const operation = this.operation(value.command, input.principal, scope, null); operation.claim = value.claim;
+            this.write('legacy-adoption', value.id, scope, value, true); this.saveCommand(operation, value); return value;
+        });
+    }
+    async claimLegacyAdoptionRecovery(input: Input<'claimLegacyAdoptionRecovery'>) {
+        return this.transaction(() => {
+            const value = this.load<D.LegacyAdoption>('legacy-adoption', input.adoptionId, input.scope); if (!value) fail('OPERATION_NOT_FOUND', 'Legacy adoption does not exist');
+            if (value.state === 'complete' || value.version !== input.expectedVersion || value.claim.expiresAt > input.now) fail('STALE_FENCE', 'Legacy adoption has another live owner');
+            this.validClaim({ ownerId: input.ownerId, fence: value.claim.fence + 1, expiresAt: input.expiresAt }, input.now);
+            value.claim = { ownerId: input.ownerId, fence: value.claim.fence + 1, expiresAt: input.expiresAt }; value.version++; value.updatedAt = input.now;
+            this.saveAdoption(value); const operation = this.load<D.Operation>('operation', value.command.operationId, value.scope)!; operation.claim = value.claim; operation.version++; operation.updatedAt = input.now; this.write('operation', operation.id, value.scope, operation); return value;
+        });
+    }
+    async renewLegacyAdoptionClaim(input: Input<'renewLegacyAdoptionClaim'>) {
+        return this.transaction(() => { const value = this.adoption(input); if (input.expiresAt <= value.claim.expiresAt) fail('INVALID_REQUEST', 'Renewal must extend adoption ownership'); value.claim.expiresAt = input.expiresAt; value.version++; value.updatedAt = input.now; this.saveAdoption(value); const operation = this.load<D.Operation>('operation', value.command.operationId, value.scope)!; operation.claim = value.claim; operation.version++; operation.updatedAt = input.now; this.write('operation', operation.id, value.scope, operation); return value; });
+    }
+    async releaseLegacyAdoptionClaim(input: Input<'releaseLegacyAdoptionClaim'>) {
+        return this.transaction(() => { const value = this.adoption(input); if (value.claim.ownerId !== input.ownerId) fail('STALE_FENCE', 'Only the adoption owner can yield its claim'); if (this.database.prepare("SELECT id FROM catalog_records WHERE kind='candidate-writer' AND customer_id=? AND workspace_id=? AND json_extract(data,'$.identity.operationId')=? AND json_extract(data,'$.ownerId')=? AND json_extract(data,'$.state')='active' LIMIT 1").get(input.scope.customerId, input.scope.workspaceId, value.command.operationId, input.ownerId)) fail('FINALIZATION_IN_PROGRESS', 'Legacy adoption writers have not stopped'); value.claim.expiresAt = input.now; value.version++; value.updatedAt = input.now; this.saveAdoption(value); const operation = this.load<D.Operation>('operation', value.command.operationId, value.scope)!; operation.claim = value.claim; operation.version++; operation.updatedAt = input.now; this.write('operation', operation.id, value.scope, operation); return value; });
+    }
+    async recordLegacyAdoptionBackup(input: Input<'recordLegacyAdoptionBackup'>) {
+        return this.transaction(() => { const value = this.adoption(input); if (!/^[a-f0-9]{64}$/.test(input.receiptDigest)) fail('INVALID_REQUEST', 'Complete backup proof is required'); if (value.backup.receiptDigest && value.backup.receiptDigest !== input.receiptDigest) fail('RECEIPT_MISMATCH', 'Legacy backup proof is immutable'); value.backup = { ...value.backup, state: 'ready', receiptDigest: input.receiptDigest }; value.version++; value.updatedAt = input.now; this.saveAdoption(value); return value; });
+    }
+    async recordLegacyAdoptionCopy(input: Input<'recordLegacyAdoptionCopy'>) {
+        return this.transaction(() => { const value = this.adoption(input); if (value.backup.state !== 'ready') fail('INVALID_TRANSITION', 'Legacy backup must precede target preparation'); const selected = value.candidates.find(candidate => candidate.identity.revisionId === input.candidate.revisionId); if (!selected) fail('RECEIPT_MISMATCH', 'Legacy copy is outside the selected inventory'); this.matchCandidate(selected.identity, input.candidate, selected.source.manifestDigest); const previous = value.copies.find(copy => copy.revisionId === input.candidate.revisionId); if (previous) { if (!same(previous, input.candidate)) fail('RECEIPT_MISMATCH', 'Legacy copy identity is immutable'); return value; } this.prepared(input.candidate); value.copies = [...value.copies, input.candidate]; value.version++; value.updatedAt = input.now; this.saveAdoption(value); return value; });
+    }
+    async acceptLegacyAdoption(input: Input<'acceptLegacyAdoption'>) {
+        return this.transaction(() => {
+            const value = this.adoption(input); this.adoptionAuthority(input.principal, value, input.authorization, input.migrationAuthorization);
+            if (input.sourceFingerprint !== value.sourceFingerprint || value.backup.state !== 'ready' || value.backup.receiptDigest !== input.backupDigest || digest(value.copies) !== input.verifiedCopyDigest || value.copies.length !== value.candidates.length || this.load('workspace', value.workspace.id) || this.load('binding', value.binding.id)) fail('RECEIPT_MISMATCH', 'Legacy adoption requires the unchanged full inventory, backups and exact copy set');
+            for (const selected of value.candidates) { const candidate = value.copies.find(copy => copy.revisionId === selected.identity.revisionId); if (!candidate) fail('RECEIPT_MISMATCH', 'Legacy adoption omitted retained history'); this.matchCandidate(selected.identity, candidate, selected.source.manifestDigest); const record = this.load<CandidateRecord>('candidate', candidate.candidateId, input.scope); if (!record || record.collection || !same(record.prepared, candidate)) fail('STALE_FENCE', 'Legacy candidate lost publication protection'); this.write('revision', candidate.revisionId, input.scope, this.revision(candidate, selected.identity.createdAt), true); this.write('alias', this.aliasId(input.scope, selected.source.alias), input.scope, { alias: selected.source.alias, revisionId: candidate.revisionId }, true); }
+            this.write('binding', value.binding.id, input.scope, value.binding, true); this.write('workspace', value.workspace.id, input.scope, value.workspace, true);
+            value.state = 'complete'; value.version++; value.updatedAt = input.now; this.saveAdoption(value); const operation = this.load<D.Operation>('operation', value.command.operationId, input.scope)!; operation.state = 'succeeded'; operation.phase = 'complete'; operation.version++; operation.updatedAt = input.now; operation.result = { kind: 'storage:migrate', migrationId: value.id, storageBindingId: value.binding.id, bindingGeneration: value.binding.generation }; this.saveOutcome(operation, value); this.events(input.events, operation); return value;
+        });
+    }
     async getStorageMigration(scope: D.WorkspaceScope, id: D.MigrationId) { return this.load<D.StorageMigration>("migration", id, scope); }
+    async claimMigrationBackup(input: Input<'claimMigrationBackup'>) {
+        return this.transaction(() => {
+            const migration = this.migration(input.scope, input.migrationId, input.expectedMigrationVersion, input.migrationFence, input.now); this.drained(input.scope);
+            if (!isAbsolute(input.directory) || input.directory.includes('\0')) fail('INVALID_REQUEST', 'Migration backup requires an explicit private directory');
+            if (migration.backup) { if (migration.backup.directory !== input.directory) fail('IDEMPOTENCY_KEY_REUSED', 'Migration backup location is immutable'); return migration; }
+            migration.backup = { directory: input.directory, state: 'preparing', receiptDigest: null }; migration.version++; migration.updatedAt = input.now; this.saveMigration(migration); return migration;
+        });
+    }
+    async captureMigrationCatalog(input: Input<'captureMigrationCatalog'>) {
+        const migration = this.transaction(() => { const value = this.migration(input.scope, input.migrationId, input.expectedMigrationVersion, input.migrationFence, input.now); this.drained(input.scope); if (!value.backup) fail('INVALID_TRANSITION', 'Migration backup ownership must precede backup writes'); return value; });
+        const directory = migration.backup!.directory; await createSafeDirectory(directory); const destination = join(directory, 'catalog.sqlite');
+        let existing = false;
+        try { const handle = await openImmutableBackupFile(directory, 'catalog.sqlite', /^catalog-pending-[a-f0-9-]{36}\.sqlite$/); await handle.close(); existing = true; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        if (!existing) {
+            const temporary = join(directory, `catalog-pending-${randomUUID()}.sqlite`); const handle = await open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600); await handle.close();
+            try { await this.database.backup(temporary); await chmod(temporary, 0o600); const completed = await open(temporary, constants.O_RDONLY | constants.O_NOFOLLOW); try { await completed.sync(); } finally { await completed.close(); } try { await link(temporary, destination); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; } await syncDirectory(directory); }
+            finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
+        }
+        const descriptor = await openRegularFile(directory, 'catalog.sqlite'); const hash = createHash('sha256');
+        try { for await (const bytes of descriptorBytes(descriptor, 65536)) hash.update(bytes); } finally { await descriptor.close(); }
+        const backup = new SqliteDatabase(destination, { readonly: true, fileMustExist: true });
+        try {
+            if (backup.pragma('integrity_check', { simple: true }) !== 'ok') fail('RECEIPT_MISMATCH', 'Catalog backup integrity failed');
+            const row = backup.prepare("SELECT data FROM catalog_records WHERE kind='workspace' AND customer_id=? AND workspace_id=?").get(input.scope.customerId, input.scope.workspaceId) as { data: string } | undefined;
+            const workspace = row ? JSON.parse(row.data) as D.Workspace : null;
+            const revisions = (backup.prepare("SELECT data FROM catalog_records WHERE kind='revision' AND customer_id=? AND workspace_id=?").all(input.scope.customerId, input.scope.workspaceId) as { data: string }[]).map(row => JSON.parse(row.data) as D.Revision);
+            if (!workspace || workspace.currentRevisionId !== migration.expectedHeadRevisionId || workspace.storageBindingId !== migration.sourceBindingId || workspace.bindingGeneration !== migration.sourceBindingGeneration || retainedRevisionSetDigest(revisions) !== migration.retainedRevisionSetDigest) fail('RECEIPT_MISMATCH', 'Catalog backup differs from the selected migration source');
+        } finally { backup.close(); }
+        return { sha256: hash.digest('hex') };
+    }
+    async completeMigrationBackup(input: Input<'completeMigrationBackup'>) {
+        return this.transaction(() => {
+            const migration = this.migration(input.scope, input.migrationId, input.expectedMigrationVersion, input.migrationFence, input.now); this.drained(input.scope);
+            if (!migration.backup || !/^[a-f0-9]{64}$/.test(input.receiptDigest)) fail('INVALID_REQUEST', 'A verified complete migration backup is required');
+            if (migration.backup.state === 'ready') { if (migration.backup.receiptDigest !== input.receiptDigest) fail('RECEIPT_MISMATCH', 'Migration backup proof is immutable'); return migration; }
+            migration.backup.state = 'ready'; migration.backup.receiptDigest = input.receiptDigest; migration.version++; migration.updatedAt = input.now; this.saveMigration(migration); return migration;
+        });
+    }
     async claimStorageMigration(input: Input<"claimStorageMigration">) {
         return this.transaction(() => {
             this.command(input.command, input.principal, input.scope, "storage:migrate");
@@ -1222,7 +1381,8 @@ export class SqliteControlStore implements ControlStore {
             if (retainedRevisionSetDigest(this.all<D.Revision>("revision", input.scope)) !== input.retainedRevisionSetDigest)
                 fail("REVISION_CONFLICT", "Retained revision set does not match catalog history");
             this.validClaim(input.claim, input.now);
-            const migration: D.StorageMigration = { id: input.migrationId, scope: input.scope, command: input.command, sourceBindingId: workspace.storageBindingId, sourceBindingGeneration: workspace.bindingGeneration, targetBinding: target, expectedHeadRevisionId: workspace.currentRevisionId, retainedRevisionSetDigest: input.retainedRevisionSetDigest, state: "draining", version: 1, claim: input.claim, copies: [], lastError: null, createdAt: input.now, updatedAt: input.now, switchedAt: null };
+            if (input.request && (input.request.targetConfigurationRef !== target.configurationRef || !isAbsolute(input.request.backupRoot) || !input.request.reason.trim() || input.request.reason.length > 4096)) fail('INVALID_REQUEST', 'Migration requires the exact target, backup and reason');
+            const migration: D.StorageMigration = { id: input.migrationId, scope: input.scope, command: input.command, sourceBindingId: workspace.storageBindingId, sourceBindingGeneration: workspace.bindingGeneration, targetBinding: target, expectedHeadRevisionId: workspace.currentRevisionId, retainedRevisionSetDigest: input.retainedRevisionSetDigest, state: "draining", version: 1, claim: input.claim, copies: [], candidates: [], ...(input.request ? { request: input.request } : {}), lastError: null, createdAt: input.now, updatedAt: input.now, switchedAt: null };
             this.write("migration-guards", migration.id, input.scope, { workspaceVersion: workspace.version, sourceReferences: this.all<D.Revision>("revision", input.scope).map(revision => ({ scope: revision.scope, privateReference: revision.privateReference })) } satisfies MigrationGuards, true);
             this.write("migration", migration.id, input.scope, migration, true);
             const operation = this.operation(input.command, input.principal, input.scope, null);
@@ -1242,10 +1402,37 @@ export class SqliteControlStore implements ControlStore {
         return migration;
     }
     private drained(scope: D.WorkspaceScope): void {
-        if (this.all<D.Run>("run", scope).some(r => r.mode === "read-write" && ["active", "finalizing"].includes(r.state)))
-            fail("FINALIZATION_IN_PROGRESS", "Mutable runs have not drained");
+        if (this.all<D.Run>("run", scope).some(r => ["active", "finalizing"].includes(r.state)))
+            fail("FINALIZATION_IN_PROGRESS", "Workspace runs have not drained");
+        for (const pin of this.all<D.CopySourcePin>('copy-source-pin', scope).filter(pin => pin.state === 'held')) {
+            const terminal = this.terminalCopy(pin);
+            if (!terminal) fail('FINALIZATION_IN_PROGRESS', 'A recoverable clone still owns its original source');
+            pin.state = 'released'; pin.terminalOperationId = terminal.id; pin.releasedAt = terminal.updatedAt; this.write('copy-source-pin', pin.id, pin.scope, pin);
+        }
+        if (this.database.prepare("SELECT id FROM catalog_records WHERE kind='operation' AND json_extract(data,'$.kind')='restore' AND json_extract(data,'$.state') IN ('pending','processing') AND ((customer_id=? AND workspace_id=?) OR (json_extract(data,'$.intent.source.kind')='revision' AND json_extract(data,'$.intent.source.revision.scope.customerId')=? AND json_extract(data,'$.intent.source.revision.scope.workspaceId')=?)) LIMIT 1").get(scope.customerId, scope.workspaceId, scope.customerId, scope.workspaceId)) fail('FINALIZATION_IN_PROGRESS', 'Restore sources and destinations have not drained');
+        if (this.database.prepare("SELECT id FROM catalog_records WHERE kind='bundle' AND json_extract(data,'$.kind')='export' AND json_extract(data,'$.state')='preparing' AND json_extract(data,'$.source.scope.customerId')=? AND json_extract(data,'$.source.scope.workspaceId')=? LIMIT 1").get(scope.customerId, scope.workspaceId)) fail('FINALIZATION_IN_PROGRESS', 'An export still owns its original source');
     }
     private saveMigration(migration: D.StorageMigration): void { this.write("migration", migration.id, migration.scope, migration); this.database.prepare("UPDATE catalog_commands SET value=? WHERE operation_id=?").run(JSON.stringify(migration), migration.command.operationId); }
+    async claimMigrationCandidate(input: Input<"claimMigrationCandidate">) {
+        return this.transaction(() => {
+            const migration = this.migration(input.scope, input.migrationId, input.expectedMigrationVersion, input.migrationFence, input.now);
+            this.permit(input.principal, "workspace:migrate", input.scope, input.authorization);
+            const operation = this.load<D.Operation>("operation", migration.command.operationId, input.scope);
+            if (!operation || !same(identityOf(operation.principal), identityOf(input.principal))) fail("FORBIDDEN", "Migration belongs to another authenticated identity");
+            this.drained(input.scope);
+            const source = this.load<D.Revision>("revision", input.revisionId, input.scope);
+            if (migration.backup?.state !== 'ready') fail('INVALID_TRANSITION', 'Verified backup must precede target preparation');
+            if (!source) fail("REVISION_NOT_FOUND", "Migration source is not retained history");
+            const identity = input.identity;
+            const expectedScope = { ...input.scope, storageBindingId: migration.targetBinding.id, bindingGeneration: migration.targetBinding.generation };
+            if (identity.revisionId !== source.id || identity.parentRevisionId !== source.parentRevisionId || identity.operationId !== migration.command.operationId || !same(identity.scope, expectedScope) || !identity.candidateId || !Number.isFinite(Date.parse(identity.createdAt))) fail("RECEIPT_MISMATCH", "Migration candidate differs from its selected source and target");
+            const existing = migration.candidates?.find(candidate => candidate.revisionId === source.id);
+            if (existing) { if (!same(existing.identity, identity) || !same(existing.source, source)) fail("RECEIPT_MISMATCH", "Migration candidate ownership is immutable"); return migration; }
+            this.candidate(identity);
+            migration.candidates = [...(migration.candidates ?? []), { revisionId: source.id, source, identity }];
+            migration.state = "copying"; migration.version++; migration.updatedAt = input.now; this.saveMigration(migration); return migration;
+        });
+    }
     async recordVerifiedRevisionCopy(input: Input<"recordVerifiedRevisionCopy">) {
         return this.transaction(() => {
             const migration = this.migration(input.scope, input.migrationId, input.expectedMigrationVersion, input.migrationFence, input.now);
@@ -1263,9 +1450,9 @@ export class SqliteControlStore implements ControlStore {
                     fail("RECEIPT_MISMATCH", "Verified copy checkpoint is immutable");
                 return migration;
             }
-            const identity: D.CandidateIdentity = { candidateId: target.candidateId, revisionId: target.revisionId, operationId: target.operationId, scope: target.scope, parentRevisionId: target.parentRevisionId, createdAt: target.preparedAt };
-            this.candidate(identity);
-            this.matchCandidate(identity, target, revision.manifestDigest);
+            const ownership = migration.candidates?.find(candidate => candidate.revisionId === revision.id);
+            if (!ownership || !same(ownership.source, revision)) fail("RECEIPT_MISMATCH", "Migration copy requires its original pre-copy ownership");
+            this.matchCandidate(ownership.identity, target, revision.manifestDigest);
             this.prepared(target);
             migration.copies = [...migration.copies, input.copy];
             migration.state = migration.copies.length === this.all<D.Revision>("revision", input.scope).length ? "verified" : "copying";
@@ -1287,6 +1474,8 @@ export class SqliteControlStore implements ControlStore {
             const claim = { ownerId: input.ownerId, fence: migration.claim.fence + 1, expiresAt: input.expiresAt };
             this.validClaim(claim, input.now);
             migration.claim = claim;
+            const operation = this.load<D.Operation>("operation", migration.command.operationId, input.scope)!;
+            operation.claim = claim; operation.version++; operation.updatedAt = input.now; this.write("operation", operation.id, input.scope, operation);
             migration.version++;
             migration.updatedAt = input.now;
             this.saveMigration(migration);
@@ -1299,6 +1488,8 @@ export class SqliteControlStore implements ControlStore {
             if (input.expiresAt <= migration.claim.expiresAt)
                 fail("INVALID_REQUEST", "Migration renewal must extend the claim");
             migration.claim.expiresAt = input.expiresAt;
+            const operation = this.load<D.Operation>("operation", migration.command.operationId, input.scope)!;
+            operation.claim = migration.claim; operation.version++; operation.updatedAt = input.now; this.write("operation", operation.id, input.scope, operation);
             migration.version++;
             migration.updatedAt = input.now;
             this.saveMigration(migration);
@@ -1322,6 +1513,7 @@ export class SqliteControlStore implements ControlStore {
             const migration = this.migration(input.scope, input.migrationId, input.expectedMigrationVersion, input.migrationFence, input.now);
             const workspace = this.workspace(input.scope);
             this.drained(input.scope);
+            if (migration.backup?.state !== 'ready') fail('INVALID_TRANSITION', 'Verified backup is required before binding cutover');
             const guards = this.load<MigrationGuards>("migration-guards", migration.id, input.scope);
             if (!guards || input.expectedWorkspaceVersion !== guards.workspaceVersion || workspace.version !== input.expectedWorkspaceVersion || workspace.currentRevisionId !== input.expectedHeadRevisionId || workspace.currentRevisionId !== migration.expectedHeadRevisionId)
                 fail("REVISION_CONFLICT", "Workspace changed during migration");
@@ -1369,6 +1561,15 @@ export class SqliteControlStore implements ControlStore {
             return { value: workspace, operation, replayed: false };
         });
     }
+    async releaseStorageMigrationClaim(input: Input<'releaseStorageMigrationClaim'>) {
+        return this.transaction(() => {
+            const migration = this.migration(input.scope, input.migrationId, input.expectedMigrationVersion, input.migrationFence, input.now);
+            if (migration.claim.ownerId !== input.ownerId) fail('STALE_FENCE', 'Only the current migration controller can yield ownership');
+            if (this.database.prepare("SELECT id FROM catalog_records WHERE kind='candidate-writer' AND customer_id=? AND workspace_id=? AND json_extract(data,'$.identity.operationId')=? AND json_extract(data,'$.ownerId')=? AND json_extract(data,'$.state')='active' LIMIT 1").get(input.scope.customerId, input.scope.workspaceId, migration.command.operationId, input.ownerId)) fail('FINALIZATION_IN_PROGRESS', 'Migration writers have not stopped');
+            migration.claim.expiresAt = input.now; migration.version++; migration.updatedAt = input.now; this.saveMigration(migration);
+            const operation = this.load<D.Operation>('operation', migration.command.operationId, input.scope)!; operation.claim = migration.claim; operation.version++; operation.updatedAt = input.now; this.write('operation', operation.id, input.scope, operation); return migration;
+        });
+    }
     async failStorageMigration(input: Input<"failStorageMigration">) {
         return this.transaction(() => {
             const migration = this.migration(input.scope, input.migrationId, input.expectedMigrationVersion, input.migrationFence, input.now);
@@ -1396,6 +1597,10 @@ export class SqliteControlStore implements ControlStore {
         if (!binding) {
             const operation = this.load<D.Operation>("operation", candidate.identity.operationId, candidate.identity.scope);
             if (operation?.kind === "workspace:create" && same(operation.intent.candidateIdentity, candidate.identity)) binding = operation.intent.binding;
+            if (operation?.kind === 'storage:migrate') {
+                binding = this.all<D.StorageMigration>('migration', candidate.identity.scope).find(value => value.command.operationId === operation.id && value.targetBinding.id === candidate.identity.scope.storageBindingId)?.targetBinding ?? null;
+                binding ??= this.all<D.LegacyAdoption>('legacy-adoption', candidate.identity.scope).find(value => value.command.operationId === operation.id && value.binding.id === candidate.identity.scope.storageBindingId)?.binding ?? null;
+            }
         }
         return { identity: candidate.identity, prepared: candidate.prepared, binding, collection: candidate.collection };
     }
@@ -1556,6 +1761,7 @@ export class SqliteControlStore implements ControlStore {
             if (candidate.collection) fail("REVISION_CONFLICT", "Candidate is permanently retired");
             const operation = this.load<D.Operation>("operation", input.identity.operationId, input.identity.scope);
             if (!operation || operation.state !== "processing" || !operation.claim || operation.claim.ownerId !== input.ownerId || operation.claim.expiresAt <= input.now) fail("STALE_FENCE", "Candidate writing requires its current processing owner");
+            if (operation.kind === 'storage:migrate') { const adoption = this.all<D.LegacyAdoption>('legacy-adoption', input.identity.scope).find(value => value.command.operationId === operation.id); if (adoption && adoption.backup.state !== 'ready') fail('INVALID_TRANSITION', 'Legacy backup must precede target preparation'); }
             if (!input.writerId || input.writerId.length > 255) fail("INVALID_REQUEST", "Candidate writer identity is required");
             const writer: D.CandidateWriter = { id: input.writerId, identity: input.identity, ownerId: input.ownerId, processingFence: operation.claim.fence, state: "active", startedAt: input.now, finishedAt: null };
             this.write("candidate-writer", writer.id, input.identity.scope, writer, true, operation.runId);
