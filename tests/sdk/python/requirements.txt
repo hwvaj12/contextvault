@@ -1,0 +1,5 @@
+# Host test/controller tools; SDK consumer runtime remains Python 3.8.
+pytest>=8,<9
+build>=1.2,<2
+setuptools>=61,<76
+wheel>=0.42,<0.46
