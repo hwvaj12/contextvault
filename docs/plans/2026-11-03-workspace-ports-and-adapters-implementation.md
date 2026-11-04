@@ -871,3 +871,11 @@ CV-14 owns the launcher and Vitest selection changes needed for explicit provide
 CV-14 consumes the closed catalog, shared file helpers, and backend-neutral Git contract fixtures.
 CV-17 owns the additional catalog/submission cleanup seams required by actual byte collection.
 CV-16 synchronizes configured administrator authority before automatic recovery starts.
+
+### CV-31: Isolate tenant secret dictionary keys
+
+The HTTP composition probe confirmed that special tenant names could mutate object prototypes and expose another tenant's synthetic key.
+This narrowly scoped security prerequisite uses the existing provider API and preserves valid JSON records.
+Scope: src/services/secrets.service.ts and tests/security/tenant-secrets-isolation.test.ts.
+CV-31 consumes the closed contracts; CV-16 waits for independently verified provider isolation before closure.
+No customer data, key rotation, persistence redesign, deployment, or global configuration change is authorized by this repair.
