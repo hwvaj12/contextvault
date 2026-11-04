@@ -1,592 +1,92 @@
-import { McpServer } from "@modelcontextprotocol/sdk/dist/esm/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/dist/esm/server/stdio.js";
-import { simpleGit } from "simple-git";
-import { ulid } from "ulid";
-import fs from "fs/promises";
-import fsSync from "fs";
-import path from "path";
-import process from "process";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { ContextVaultClient, WorkspaceTransport, ContextVaultError, NetworkError, type WorkspaceView } from "@contextvault/sdk";
+import { z } from "zod";
+import { Sessions } from './sessions.js';
+import { Administration } from './administration.js';
 
-// ============ Types ============
-
-interface WorkspaceMeta {
-  id: string;
-  customerId: string;
-  name: string;
-  createdAt: string;
-  updatedAt: string;
-  deletedAt: string | null;
+export function configuration(env: NodeJS.ProcessEnv = process.env) {
+  if (!env.CV_API_URL || !env.CV_API_KEY?.trim() || !env.CV_MCP_STATE_DIR) throw new Error("Set CV_API_URL, CV_API_KEY and CV_MCP_STATE_DIR");
+  const selectedCustomer = env.CV_CUSTOMER_ID?.trim();
+  if (selectedCustomer && selectedCustomer.length > 255) throw new Error("CV_CUSTOMER_ID exceeds its limit");
+  const duration = (value: string | undefined, fallback: number) => { const number = Number(value ?? fallback); if (!Number.isSafeInteger(number) || number < 1 || number > 120000) throw new Error('MCP deadlines must be between 1 and 120000 milliseconds'); return number; };
+  const options = { baseUrl: env.CV_API_URL.replace(/\/$/, ''), apiKey: env.CV_API_KEY, maxRetries: 0, requestTimeoutMs: duration(env.CV_MCP_REQUEST_TIMEOUT_MS, 30000), operationTimeoutMs: duration(env.CV_MCP_OPERATION_TIMEOUT_MS, 30000),
+    fetch: (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      if (selectedCustomer) headers.set("X-ContextVault-Customer-Id", selectedCustomer);
+      return fetch(input, { ...init, headers });
+    } };
+  return { options, stateDirectory: env.CV_MCP_STATE_DIR, selectedCustomer };
 }
-
-interface Workspace extends WorkspaceMeta {
-  latestCommitId: string | null;
-}
-
-interface Commit {
-  id: string;
-  workspaceId: string;
-  parentId: string | null;
-  metadata: Record<string, unknown>;
-  sizeBytes: number;
-  createdAt: string;
-}
-
-// ============ Storage Layer ============
-
-const DATA_DIR = path.join(process.cwd(), "data");
-const WORKSPACES_DIR = path.join(DATA_DIR, "workspaces");
-const META_DIR = path.join(DATA_DIR, "workspace-meta");
-
-function ensureDirs() {
-  fsSync.mkdirSync(WORKSPACES_DIR, { recursive: true });
-  fsSync.mkdirSync(META_DIR, { recursive: true });
-}
-ensureDirs();
-
-function metaPath(workspaceId: string): string {
-  return path.join(META_DIR, `${workspaceId}.json`);
-}
-
-function repoPath(workspaceId: string): string {
-  return path.join(WORKSPACES_DIR, workspaceId);
-}
-
-function gitFor(workspaceId: string) {
-  return simpleGit(repoPath(workspaceId));
-}
-
-function readMeta(workspaceId: string): WorkspaceMeta | null {
-  const p = metaPath(workspaceId);
-  if (!fsSync.existsSync(p)) return null;
-  return JSON.parse(fsSync.readFileSync(p, "utf-8"));
-}
-
-function writeMeta(meta: WorkspaceMeta): void {
-  fsSync.writeFileSync(metaPath(meta.id), JSON.stringify(meta, null, 2), "utf-8");
-}
-
-function encodeCommitMessage(
-  metadata: Record<string, unknown>,
-  files: string[],
-  sizeBytes: number
-): string {
-  const parts: string[] = [];
-  if (metadata.agentId) parts.push(`agent: ${metadata.agentId}`);
-  if (metadata.taskId) parts.push(`task: ${metadata.taskId}`);
-  if (metadata.tags && Array.isArray(metadata.tags) && metadata.tags.length > 0) {
-    parts.push(`tags: ${(metadata.tags as string[]).join(",")}`);
-  }
-  const summary = parts.length > 0 ? parts.join(" | ") : "commit";
-
-  const body = { ...metadata, files, sizeBytes };
-  return `${summary}\n---\n${JSON.stringify(body)}`;
-}
-
-function parseCommitMessage(message: string): {
-  metadata: Record<string, unknown>;
-  files: string[];
-  sizeBytes: number;
-} {
-  const sepIndex = message.indexOf("\n---\n");
-  if (sepIndex === -1) {
-    return { metadata: {}, files: [], sizeBytes: 0 };
-  }
-  try {
-    const json = JSON.parse(message.slice(sepIndex + 5));
-    const { files, sizeBytes, ...metadata } = json;
-    return { metadata, files: files || [], sizeBytes: sizeBytes || 0 };
-  } catch {
-    return { metadata: {}, files: [], sizeBytes: 0 };
-  }
-}
-
-// ============ Workspace Operations ============
-
-async function createWorkspace(customerId: string, name: string): Promise<Workspace> {
-  const id = `ws_${ulid()}`;
-  const now = new Date().toISOString();
-  const dir = repoPath(id);
-
-  await fs.mkdir(dir, { recursive: true });
-  const git = simpleGit(dir);
-  await git.init();
-  await git.addConfig("receive.denyCurrentBranch", "updateInstead");
-
-  const meta: WorkspaceMeta = {
-    id,
-    customerId,
-    name,
-    createdAt: now,
-    updatedAt: now,
-    deletedAt: null,
-  };
-  writeMeta(meta);
-
-  return { ...meta, latestCommitId: null };
-}
-
-async function getWorkspace(id: string): Promise<Workspace | null> {
-  const meta = readMeta(id);
-  if (!meta || meta.deletedAt) return null;
-
-  let latestCommitId: string | null = null;
-  try {
-    const git = gitFor(id);
-    const log = await git.log({ maxCount: 1 });
-    if (log.latest) latestCommitId = log.latest.hash;
-  } catch {
-    // No commits yet
-  }
-
-  return { ...meta, latestCommitId };
-}
-
-async function listWorkspaces(): Promise<Workspace[]> {
-  const files = fsSync.readdirSync(META_DIR).filter((f) => f.endsWith(".json"));
-  const workspaces: Workspace[] = [];
-
-  for (const file of files) {
-    const raw = fsSync.readFileSync(path.join(META_DIR, file), "utf-8");
-    const meta: WorkspaceMeta = JSON.parse(raw);
-    if (meta.deletedAt) continue;
-
-    let latestCommitId: string | null = null;
-    try {
-      const git = gitFor(meta.id);
-      const log = await git.log({ maxCount: 1 });
-      if (log.latest) latestCommitId = log.latest.hash;
-    } catch {
-      // No commits yet
-    }
-
-    workspaces.push({ ...meta, latestCommitId });
-  }
-
-  return workspaces;
-}
-
-async function deleteWorkspace(id: string): Promise<void> {
-  const meta = readMeta(id);
-  if (!meta) return;
-  meta.deletedAt = new Date().toISOString();
-  meta.updatedAt = meta.deletedAt;
-  writeMeta(meta);
-}
-
-// ============ Commit Operations ============
-
-async function listWorkingTreeFiles(dir: string): Promise<string[]> {
-  const results: string[] = [];
-  const walk = async (current: string, prefix: string) => {
-    const entries = await fs.readdir(current, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name === ".git") continue;
-      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) {
-        await walk(path.join(current, entry.name), rel);
-      } else {
-        results.push(rel);
-      }
+const legacy = (workspace: WorkspaceView) => ({ ...workspace, latestCommitId: workspace.currentRevisionId, deletedAt: workspace.status === "deleted" ? workspace.updatedAt : null });
+const result = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
+export function createMcpServer(config = configuration()) {
+  const http = new WorkspaceTransport(config.options);
+  const client = new ContextVaultClient(config.options);
+  const sessions = new Sessions(client, config.stateDirectory, config.options.apiKey, config.selectedCustomer);
+  const administration = new Administration(client, sessions, config.options);
+  const server = new McpServer({ name: "contextvault-mcp", version: "0.1.0" });
+  const guard = (handler: (...args: any[]) => Promise<unknown>) => async (...args: any[]) => {
+    try { return result(await handler(...args)); }
+    catch (error) {
+      const known = error instanceof ContextVaultError;
+      const code = known ? error.code ?? (error instanceof NetworkError ? "NETWORK_ERROR" : "REQUEST_FAILED") : "INTERNAL_ERROR";
+      const handle = error instanceof Error ? (error as Error & { workspaceHandle?: string }).workspaceHandle : undefined;
+      const commandHandle = error instanceof Error ? (error as Error & { commandHandle?: string }).commandHandle : undefined;
+      return { ...result({ error: { code, message: known ? error.message : "Workspace request could not complete", ...(known && error.operationId ? { operationId: error.operationId } : {}), ...(handle ? { workspaceHandle: handle } : {}), ...(commandHandle ? { commandHandle } : {}), ...(known && error.retryable !== undefined ? { retryable: error.retryable } : {}) } }), isError: true };
     }
   };
-  await walk(dir, "");
-  return results;
+  server.registerTool("list_workspaces", { description: "List authenticated customer workspaces from ContextVault", inputSchema: { offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(1000).default(100) } }, guard(async ({ offset, limit }) => {
+    const page = await http.json<{ workspaces: WorkspaceView[] }>("GET", `/v1/workspaces?offset=${offset}&limit=${limit}`);
+    return page.workspaces.map(legacy);
+  }));
+  server.registerTool("get_workspace", { description: "Read an authorized canonical workspace", inputSchema: { workspaceId: z.string().min(1).max(255) } }, guard(async ({ workspaceId }) => legacy(await http.json<WorkspaceView>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}`))));
+  const id = z.string().min(1).max(255); const requestId = z.string().min(1).max(256).optional();
+  server.registerTool('create_workspace', { description: 'Create an authorized canonical workspace. Reuse requestId for the same exact request.', inputSchema: { customerId: id, name: id, requestId } }, guard(async ({ requestId, ...input }) => {
+    const value = await administration.execute('create', input, requestId, async () => ({ method: 'POST', path: '/v1/workspaces', body: input }));
+    return legacy(value.currentRevisionId ? value : await http.json<WorkspaceView>('GET', `/v1/workspaces/${encodeURIComponent(value.result.workspaceId)}`));
+  }));
+  server.registerTool('delete_workspace', { description: 'Tombstone an authorized workspace while retaining accepted history. Reuse requestId after uncertainty.', inputSchema: { workspaceId: id, requestId, reason: z.string().min(1).max(4096).default('explicit MCP deletion') } }, guard(async ({ requestId, ...input }) => {
+    await administration.execute('delete', input, requestId, async () => ({ method: 'DELETE', path: `/v1/workspaces/${encodeURIComponent(input.workspaceId)}`, body: { reason: input.reason } })); return { workspaceId: input.workspaceId, deleted: true };
+  }));
+  server.registerTool('get_workspace_history', { description: 'Read accepted opaque revisions in current-head ancestry order', inputSchema: { workspaceId: id, limit: z.number().int().min(1).max(1000).default(20), cursor: id.optional() } }, guard(async input => {
+    const value = await http.json<any>('GET', `/v1/workspaces/${encodeURIComponent(input.workspaceId)}/revisions?limit=${input.limit}${input.cursor ? '&cursor=' + encodeURIComponent(input.cursor) : ''}`);
+    return value.revisions.map((revision: any) => ({ ...revision, parentId: revision.parentRevisionId }));
+  }));
+  server.registerTool('diff_workspace', { description: 'Compare two accepted opaque revisions through canonical administration', inputSchema: { workspaceId: id, from: id, to: id } }, guard(async input => {
+    const value = await http.json<any>('GET', `/v1/workspaces/${encodeURIComponent(input.workspaceId)}/diff?from=${encodeURIComponent(input.from)}&to=${encodeURIComponent(input.to)}`);
+    return { ...value, added: value.files.filter((file: any) => file.status === 'added').map((file: any) => file.path), removed: value.files.filter((file: any) => file.status === 'deleted').map((file: any) => file.path), modified: value.files.filter((file: any) => file.status === 'modified').map((file: any) => file.path) };
+  }));
+  server.registerTool('rollback_workspace', { description: 'Restore accepted contents with a durable command and optimistic current-head check; reuse requestId on retry', inputSchema: { workspaceId: id, toVersion: id, requestId, reason: z.string().min(1).max(4096).default('explicit MCP restore') } }, guard(async ({ requestId, ...input }) => {
+    const value = await administration.execute('restore', input, requestId, async () => { const workspace = await http.json<WorkspaceView>('GET', `/v1/workspaces/${encodeURIComponent(input.workspaceId)}`); return { method: 'POST', path: `/v1/workspaces/${encodeURIComponent(input.workspaceId)}/restore`, body: { revisionId: input.toVersion, expectedRevisionId: workspace.currentRevisionId, expectedWorkspaceVersion: workspace.version, reason: input.reason } }; });
+    return { ...value, commitId: value.result?.revisionId, rolledBackTo: input.toVersion };
+  }));
+  server.registerTool('push_to_workspace', { description: 'Replace the complete accepted file snapshot through the canonical legacy bridge. Direct requests are limited to 512 KiB; use local files or chunk tools for larger work.', inputSchema: { workspaceId: id, files: z.array(z.object({ path: z.string().min(1).max(1024), content: z.string().max(524288), encoding: z.enum(['utf8', 'base64']).optional() }).strict()).max(10000), requestId, agentId: id.optional(), taskId: id.optional(), tags: z.array(z.string().max(255)).max(100).optional() } }, guard(async ({ requestId, ...input }) => {
+    const { workspaceId, files, agentId, taskId, tags } = input;
+    return administration.execute('push', input, requestId, async () => ({ method: 'POST', path: `/workspaces/${encodeURIComponent(workspaceId)}/push`, body: { files, metadata: { ...(agentId ? { agentId } : {}), ...(taskId ? { taskId } : {}), ...(tags ? { tags } : {}) } } }));
+  }));
+  server.registerTool('pull_from_workspace', { description: 'Read a small accepted snapshot with explicit base64 for binary files; use workspace chunk tools for larger content', inputSchema: { workspaceId: id, version: id.optional() } }, guard(input => administration.request('GET', `/workspaces/${encodeURIComponent(input.workspaceId)}/pull${input.version ? '?version=' + encodeURIComponent(input.version) : ''}`)));
+  server.registerTool('reconcile_command', { description: 'Reconcile the original durable administration command. Known operation IDs use authenticated GET; otherwise explicitly resend its exact original stable key.', inputSchema: { commandHandle: id } }, guard(input => administration.reconcile(input.commandHandle)));
+  server.registerTool('recover_command_controller', { description: 'Remove a retained command controller marker only after every controller has stopped', inputSchema: { commandHandle: id, controllersStopped: z.literal(true) } }, guard(input => administration.recover(input.commandHandle)));
+  const selection = { workspaceHandle: z.string().min(1).max(255).optional(), workspaceId: z.string().min(1).max(255).optional() };
+  const openSchema = { workspaceId: z.string().min(1).max(255), access: z.enum(['local', 'remote']).default('local'), mode: z.enum(['read-only', 'read-write']).default('read-write'), requestId: z.string().min(1).max(256).optional(), agentLabel: z.string().min(1).max(255).default('mcp-agent'), task: z.string().min(1).max(4096).default('MCP workspace task'), reason: z.string().min(1).max(4096).default('explicit MCP checkout') };
+  for (const name of ['checkout_workspace', 'open_workspace']) server.registerTool(name, { description: 'Open a durable client workspace. Local paths belong to the MCP host; remote access returns only an opaque handle. Reuse requestId to recover the exact checkout.', inputSchema: openSchema }, guard(input => sessions.open(input)));
+  for (const [name, command] of [['get_sandbox_status', 'status'], ['workspace_status', 'status'], ['heartbeat_workspace', 'heartbeat']] as const) server.registerTool(name, { description: 'Read or renew the current authorized run for an exact MCP workspace handle', inputSchema: selection }, guard(input => sessions.command(input, command)));
+  for (const [name, command] of [['commit_workspace', 'checkpoint'], ['checkpoint_workspace', 'checkpoint'], ['finalize_workspace', 'finalize'], ['cleanup_workspace', 'cleanup'], ['reconcile_workspace', 'reconcile'], ['destroy_workspace', 'destroy']] as const) {
+    server.registerTool(name, { description: command === 'checkpoint' ? 'Publish the complete stopped-writer snapshot and reopen the same local workspace. Retain the original handle on uncertainty.' : 'Control the exact durable workspace after all agent writers have stopped. Uncertain commands require reconciliation before cleanup or another mutation.', inputSchema: { ...selection, writersStopped: z.literal(true) } }, guard(input => sessions.command(input, command)));
+  }
+  server.registerTool('abort_workspace', { description: 'Abort a known active run after writers stop. Accepted revisions remain intact.', inputSchema: { ...selection, writersStopped: z.literal(true), reason: z.string().min(1).max(4096) } }, guard(input => sessions.command(input, 'abort', input.reason)));
+  server.registerTool('recover_workspace_controller', { description: 'Recover a controller marker only after every controller for this handle has stopped. This never infers stopped writers or retries a mutation.', inputSchema: { ...selection, controllersStopped: z.literal(true) } }, guard(input => sessions.recover(input)));
+  server.registerTool('list_workspace_files', { description: 'List ordinary files and directories in an authorized MCP-host workspace', inputSchema: selection }, guard(input => sessions.files(input)));
+  const filePath = z.string().min(1).max(1024);
+  server.registerTool('read_workspace_file', { description: 'Read at most 64 KiB as base64 from an authorized workspace; no private state or server path is accepted', inputSchema: { ...selection, path: filePath, offset: z.number().int().min(0).default(0), length: z.number().int().min(1).max(65536).default(65536) } }, guard(input => sessions.read(input, input.path, input.offset, input.length)));
+  server.registerTool('write_workspace_file', { description: 'Write one canonical base64 chunk of at most 64 KiB at an explicit offset. Use truncate:true only for the first chunk at offset 0.', inputSchema: { ...selection, path: filePath, base64: z.string().max(87384), offset: z.number().int().min(0).default(0), truncate: z.boolean().default(false) } }, guard(input => sessions.write(input, input.path, input.base64, input.offset, input.truncate)));
+  server.registerTool('delete_workspace_file', { description: 'Remove one regular file from the active local workspace; publication still requires explicit finalize or checkpoint', inputSchema: { ...selection, path: filePath } }, guard(input => sessions.remove(input, input.path)));
+  server.registerTool('make_workspace_directory', { description: 'Create an ordinary directory in the active local workspace', inputSchema: { ...selection, path: filePath } }, guard(input => sessions.directoryEntry(input, input.path)));
+  return Object.assign(server, { initializePrivateState: () => Promise.all([sessions.initialize(), administration.initialize()]) });
 }
-
-async function pushCommit(
-  workspaceId: string,
-  files: { path: string; content: string }[],
-  metadata: Record<string, unknown>
-): Promise<{ commitId: string; parentId: string | null; sizeBytes: number; createdAt: string }> {
-  const dir = repoPath(workspaceId);
-  const git = gitFor(workspaceId);
-
-  let parentId: string | null = null;
-  try {
-    const log = await git.log({ maxCount: 1 });
-    if (log.latest) parentId = log.latest.hash;
-  } catch {
-    // First commit
-  }
-
-  // Clear working tree
-  const existingFiles = await listWorkingTreeFiles(dir);
-  for (const f of existingFiles) {
-    await fs.unlink(path.join(dir, f)).catch(() => {});
-  }
-
-  // Write new files
-  let sizeBytes = 0;
-  for (const file of files) {
-    const filePath = path.join(dir, file.path);
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, file.content, "utf-8");
-    sizeBytes += Buffer.byteLength(file.content, "utf-8");
-  }
-
-  const filePaths = files.map((f) => f.path);
-  const message = encodeCommitMessage(metadata, filePaths, sizeBytes);
-
-  await git.add("-A");
-  const result = await git.commit(message);
-  let commitId = result.commit || "";
-
-  if (!commitId) {
-    const log = await git.log({ maxCount: 1 });
-    commitId = log.latest?.hash || "";
-  }
-
-  const createdAt = new Date().toISOString();
-
-  const meta = readMeta(workspaceId);
-  if (meta) {
-    meta.updatedAt = createdAt;
-    writeMeta(meta);
-  }
-
-  return { commitId, parentId, sizeBytes, createdAt };
+export async function main() {
+  const server = createMcpServer();
+  await server.initializePrivateState();
+  await server.connect(new StdioServerTransport());
 }
-
-async function pullCommit(
-  workspaceId: string,
-  version?: string
-): Promise<{
-  commitId: string;
-  parentId: string | null;
-  files: { path: string; content: string }[];
-  metadata: Record<string, unknown>;
-  sizeBytes: number;
-  createdAt: string;
-} | null> {
-  const git = gitFor(workspaceId);
-
-  let targetHash: string;
-  try {
-    if (version) {
-      targetHash = version;
-    } else {
-      const log = await git.log({ maxCount: 1 });
-      if (!log.latest) return null;
-      targetHash = log.latest.hash;
-    }
-  } catch {
-    return null;
-  }
-
-  const rawLog = await git.raw([
-    "log", "-1",
-    "--format=format:%H%x00%P%x00%aI%x00%B",
-    targetHash
-  ]);
-  const parts = rawLog.split("\x00");
-  const [hash, parentHash, dateStr, body] = parts;
-  const { metadata, sizeBytes } = parseCommitMessage(body);
-
-  const treeRaw = await git.raw(["ls-tree", "-r", "--name-only", targetHash]);
-  const filePaths = treeRaw.trim().split("\n").filter(Boolean);
-
-  const files: { path: string; content: string }[] = [];
-  for (const fp of filePaths) {
-    const content = await git.raw(["show", `${targetHash}:${fp}`]);
-    files.push({ path: fp, content });
-  }
-
-  return {
-    commitId: hash,
-    parentId: parentHash || null,
-    files,
-    metadata,
-    sizeBytes,
-    createdAt: dateStr,
-  };
-}
-
-async function getHistory(workspaceId: string, limit: number = 20): Promise<Commit[]> {
-  const git = gitFor(workspaceId);
-
-  try {
-    const raw = await git.raw([
-      "log",
-      `--max-count=${limit}`,
-      "--format=%H %P %aI"
-    ]);
-
-    if (!raw.trim()) return [];
-
-    const commits: Commit[] = [];
-    const lines = raw.trim().split("\n");
-
-    for (const line of lines) {
-      const [hash, parent, dateStr] = line.split(" ");
-      const parentHash = parent || null;
-
-      const msgRaw = await git.raw(["log", "-1", "--format=%B", hash]);
-      const { metadata, sizeBytes } = parseCommitMessage(msgRaw.trim());
-
-      commits.push({
-        id: hash,
-        workspaceId,
-        parentId: parentHash,
-        metadata,
-        sizeBytes,
-        createdAt: dateStr,
-      });
-    }
-
-    return commits;
-  } catch {
-    return [];
-  }
-}
-
-async function getDiff(
-  workspaceId: string,
-  from: string,
-  to: string
-): Promise<{ added: string[]; removed: string[]; modified: string[] }> {
-  const git = gitFor(workspaceId);
-
-  const raw = await git.raw(["diff", "--name-status", from, to]);
-  const added: string[] = [];
-  const removed: string[] = [];
-  const modified: string[] = [];
-
-  for (const line of raw.trim().split("\n").filter(Boolean)) {
-    const [status, ...fileParts] = line.split("\t");
-    const filePath = fileParts.join("\t");
-    switch (status) {
-      case "A": added.push(filePath); break;
-      case "D": removed.push(filePath); break;
-      case "M": modified.push(filePath); break;
-    }
-  }
-
-  return { added, removed, modified };
-}
-
-async function rollbackWorkspace(
-  workspaceId: string,
-  toVersion: string,
-  metadata: Record<string, unknown>
-): Promise<{ commitId: string; parentId: string | null; sizeBytes: number; createdAt: string; files: string[] }> {
-  const git = gitFor(workspaceId);
-
-  let parentId: string | null = null;
-  try {
-    const log = await git.log({ maxCount: 1 });
-    if (log.latest) parentId = log.latest.hash;
-  } catch {
-    // empty
-  }
-
-  const treeRaw = await git.raw(["ls-tree", "-r", "--name-only", toVersion]);
-  const files = treeRaw.trim().split("\n").filter(Boolean);
-
-  await git.raw(["checkout", toVersion, "--", "."]);
-  await git.add("-A");
-
-  const dir = repoPath(workspaceId);
-  let sizeBytes = 0;
-  for (const f of files) {
-    try {
-      const stat = await fs.stat(path.join(dir, f));
-      sizeBytes += stat.size;
-    } catch {
-      // file might not exist
-    }
-  }
-
-  const rollbackMetadata = { ...metadata, rollbackFrom: toVersion };
-  const message = encodeCommitMessage(rollbackMetadata, files, sizeBytes);
-
-  const result = await git.commit(message, { "--allow-empty": null });
-  let commitId = result.commit || "";
-  if (!commitId) {
-    const log = await git.log({ maxCount: 1 });
-    commitId = log.latest?.hash || "";
-  }
-
-  const createdAt = new Date().toISOString();
-
-  const meta = readMeta(workspaceId);
-  if (meta) {
-    meta.updatedAt = createdAt;
-    writeMeta(meta);
-  }
-
-  return { commitId, parentId, sizeBytes, createdAt, files };
-}
-
-// ============ MCP Server ============
-
-const WORKSPACE_ID_REGEX = /^ws_[A-Za-z0-9]{10,26}$/;
-
-async function main() {
-  const server = new McpServer({
-    name: "contextvault-mcp",
-    version: "0.1.0"
-  });
-
-  // Workspace management tools
-  server.registerTool("create_workspace", {
-    description: "Create a new workspace for storing agent context and files",
-    inputSchema: {
-      customerId: { type: "string", description: "Customer ID this workspace belongs to" },
-      name: { type: "string", description: "Human-readable name for the workspace" },
-    }
-  }, async ({ customerId, name }: { customerId: string; name: string }) => {
-    const result = await createWorkspace(customerId, name);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  });
-
-  server.registerTool("list_workspaces", {
-    description: "List all workspaces, optionally filtered by customer",
-    inputSchema: {
-      customerId: { type: "string", description: "Filter by customer ID" }
-    }
-  }, async ({ customerId }: { customerId?: string }) => {
-    const workspaces = await listWorkspaces();
-    const filtered = customerId 
-      ? workspaces.filter(w => w.customerId === customerId)
-      : workspaces;
-    return { content: [{ type: "text", text: JSON.stringify(filtered, null, 2) }] };
-  });
-
-  server.registerTool("get_workspace", {
-    description: "Get details of a specific workspace",
-    inputSchema: {
-      workspaceId: { type: "string", description: "Workspace ID (format: ws_<ulid>)" },
-    }
-  }, async ({ workspaceId }: { workspaceId: string }) => {
-    if (!WORKSPACE_ID_REGEX.test(workspaceId)) {
-      return { content: [{ type: "text", text: `Invalid workspace ID format: ${workspaceId}` }], isError: true };
-    }
-    const ws = await getWorkspace(workspaceId);
-    if (!ws) {
-      return { content: [{ type: "text", text: `Workspace ${workspaceId} not found` }], isError: true };
-    }
-    return { content: [{ type: "text", text: JSON.stringify(ws, null, 2) }] };
-  });
-
-  server.registerTool("delete_workspace", {
-    description: "Soft-delete a workspace",
-    inputSchema: {
-      workspaceId: { type: "string", description: "Workspace ID to delete" },
-    }
-  }, async ({ workspaceId }: { workspaceId: string }) => {
-    if (!WORKSPACE_ID_REGEX.test(workspaceId)) {
-      return { content: [{ type: "text", text: `Invalid workspace ID format: ${workspaceId}` }], isError: true };
-    }
-    await deleteWorkspace(workspaceId);
-    return { content: [{ type: "text", text: `Workspace ${workspaceId} deleted` }] };
-  });
-
-  // Commit operations
-  server.registerTool("push_to_workspace", {
-    description: "Push files to a workspace as a new commit (agent saves state)",
-    inputSchema: {
-      workspaceId: { type: "string", description: "Target workspace ID" },
-      files: { 
-        type: "array", 
-        description: "Files to push",
-        items: {
-          path: { type: "string", description: "File path within workspace" },
-          content: { type: "string", description: "File content" },
-        }
-      },
-      agentId: { type: "string", description: "ID of the agent pushing" },
-      taskId: { type: "string", description: "Current task ID" },
-      tags: { type: "array", items: { type: "string" }, description: "Optional tags" },
-    }
-  }, async ({ workspaceId, files, agentId, taskId, tags }: { 
-    workspaceId: string; 
-    files: { path: string; content: string }[];
-    agentId?: string;
-    taskId?: string;
-    tags?: string[];
-  }) => {
-    if (!WORKSPACE_ID_REGEX.test(workspaceId)) {
-      return { content: [{ type: "text", text: `Invalid workspace ID format: ${workspaceId}` }], isError: true };
-    }
-    const metadata: Record<string, unknown> = {};
-    if (agentId) metadata.agentId = agentId;
-    if (taskId) metadata.taskId = taskId;
-    if (tags) metadata.tags = tags;
-
-    const result = await pushCommit(workspaceId, files, metadata);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  });
-
-  server.registerTool("pull_from_workspace", {
-    description: "Pull files from a workspace (agent restores state)",
-    inputSchema: {
-      workspaceId: { type: "string", description: "Workspace to pull from" },
-      version: { type: "string", description: "Specific commit hash to pull (optional, defaults to HEAD)" },
-    }
-  }, async ({ workspaceId, version }: { workspaceId: string; version?: string }) => {
-    if (!WORKSPACE_ID_REGEX.test(workspaceId)) {
-      return { content: [{ type: "text", text: `Invalid workspace ID format: ${workspaceId}` }], isError: true };
-    }
-    const result = await pullCommit(workspaceId, version);
-    if (!result) {
-      return { content: [{ type: "text", text: `No commits found in workspace ${workspaceId}` }], isError: true };
-    }
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  });
-
-  server.registerTool("get_workspace_history", {
-    description: "Get commit history for a workspace",
-    inputSchema: {
-      workspaceId: { type: "string", description: "Workspace ID" },
-      limit: { type: "number", description: "Max commits to return (default 20)" },
-    }
-  }, async ({ workspaceId, limit }: { workspaceId: string; limit?: number }) => {
-    if (!WORKSPACE_ID_REGEX.test(workspaceId)) {
-      return { content: [{ type: "text", text: `Invalid workspace ID format: ${workspaceId}` }], isError: true };
-    }
-    const history = await getHistory(workspaceId, limit || 20);
-    return { content: [{ type: "text", text: JSON.stringify(history, null, 2) }] };
-  });
-
-  server.registerTool("diff_workspace", {
-    description: "Compare two versions of a workspace",
-    inputSchema: {
-      workspaceId: { type: "string", description: "Workspace ID" },
-      from: { type: "string", description: "Source commit hash" },
-      to: { type: "string", description: "Target commit hash" },
-    }
-  }, async ({ workspaceId, from, to }: { workspaceId: string; from: string; to: string }) => {
-    if (!WORKSPACE_ID_REGEX.test(workspaceId)) {
-      return { content: [{ type: "text", text: `Invalid workspace ID format: ${workspaceId}` }], isError: true };
-    }
-    const diff = await getDiff(workspaceId, from, to);
-    return { content: [{ type: "text", text: JSON.stringify(diff, null, 2) }] };
-  });
-
-  server.registerTool("rollback_workspace", {
-    description: "Rollback a workspace to a previous version (creates new commit)",
-    inputSchema: {
-      workspaceId: { type: "string", description: "Workspace ID" },
-      toVersion: { type: "string", description: "Commit hash to rollback to" },
-      agentId: { type: "string", description: "Agent performing rollback" },
-    }
-  }, async ({ workspaceId, toVersion, agentId }: { workspaceId: string; toVersion: string; agentId?: string }) => {
-    if (!WORKSPACE_ID_REGEX.test(workspaceId)) {
-      return { content: [{ type: "text", text: `Invalid workspace ID format: ${workspaceId}` }], isError: true };
-    }
-    const metadata: Record<string, unknown> = {};
-    if (agentId) metadata.agentId = agentId;
-
-    const result = await rollbackWorkspace(workspaceId, toVersion, metadata);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  });
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("ContextVault MCP server running on stdio");
-}
-
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});

@@ -1,404 +1,212 @@
-# ContextVault MCP Server
+# ContextVault MCP
 
-MCP server for ContextVault — enables AI agents to interact with ContextVault workspaces via the Model Context Protocol.
+This stdio server gives MCP clients authenticated access to ContextVault workspaces.
+ContextVault owns permissions, accepted revisions, finalize, abort, and recovery.
+Existing agents run independently and use ordinary files or the workspace file tools.
 
-## Quick Start
+The MCP server requires Node.js 20 or later.
+The bundled ContextVault TypeScript SDK retains its separate Node.js 18 minimum.
+Development and production use the same TypeScript implementation.
+The development loader requires the package's local development dependencies.
 
-```bash
+## Local development
+
+1. Install the locked dependencies.
+
+```sh
+npm --prefix mcp ci --ignore-scripts
+```
+
+2. Configure an API origin, scoped credential, and private state directory.
+
+```sh
+export CV_API_URL=http://127.0.0.1:3000
+export CV_API_KEY=your-scoped-customer-key
+export CV_MCP_STATE_DIR=/absolute/private/contextvault-mcp
+```
+
+3. Start the development entrypoint.
+
+```sh
+npm --prefix mcp run dev
+```
+
+Use an absolute state path with real directory ancestors.
+MCP creates a missing private directory with mode 0700.
+An existing private directory must belong to the current user and have mode 0700.
+Symlink ancestors are rejected; on macOS, `/private/tmp` is the real ancestor behind `/tmp`.
+Use durable storage for this directory when recovery must survive host replacement.
+
+Administrator credentials also require `CV_CUSTOMER_ID` to select one customer explicitly.
+Customer credentials should leave that variable unset.
+Tools cannot supply another API origin or credential.
+The MCP state namespace binds the configured origin, credential, and selected customer.
+Changing credentials never grants access to another credential's retained local handles.
+
+Optional `CV_MCP_REQUEST_TIMEOUT_MS` and `CV_MCP_OPERATION_TIMEOUT_MS` set bounded deadlines from 1 through 120000 milliseconds.
+Both default to 30000 milliseconds.
+An elapsed deadline preserves uncertainty; it does not authorize cleanup.
+
+## Standalone production package
+
+The ContextVault SDK is currently supplied from this repository rather than an npm registry release.
+The package includes a reproducible SDK archive and bundles its installed runtime dependency.
+A packaged MCP consumer needs no source checkout, sibling SDK directory, or install scripts.
+
+1. Build the maintained implementation.
+
+```sh
+npm --prefix mcp run build
+```
+
+2. Pack the production artifact.
+
+```sh
 cd mcp
-npm install
-npm run dev    # Starts on stdio
+npm pack --ignore-scripts
 ```
 
-## Configuration
+3. Install that artifact in the consuming application.
 
-Environment variables:
-```bash
-CONTEXTVAULT_DATA_DIR=./data           # Where workspaces are stored
-CONTEXTVAULT_SANDBOX_DIR=./data/sandboxes  # Where sandboxes are created
+```sh
+npm install --ignore-scripts /absolute/path/contextvault-mcp-0.1.0.tgz
 ```
 
-## Claude Desktop Setup
+4. Launch the installed executable with the configuration above.
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+```sh
+./node_modules/.bin/contextvault-mcp
+```
+
+For an MCP host configuration, use the installed executable's absolute path and pass the three required environment variables.
+The transport is stdio. This package does not start a public HTTP MCP listener.
+
+`npm --prefix mcp run vendor:sdk` rebuilds the archive from the adjacent approved SDK source.
+It compiles an isolated copy and leaves the SDK source unchanged.
+`vendor/sdk-provenance.json` records source hashes, the source lockfile hash, compiler version, archive hash, and original MIT license metadata.
+Both the SDK archive and MCP artifact include the repository's MIT copyright and permission notice.
+The bundled SDK retains its original package metadata.
+After an approved SDK change, regenerate the archive, refresh its lockfile integrity, and verify a fresh install before packing.
+Use `npm --prefix mcp update @contextvault/sdk --package-lock-only --ignore-scripts`, followed by `npm --prefix mcp ci --ignore-scripts`.
+The packaging acceptance test checks deterministic regeneration and a cold MCP-only install.
+
+## Workspace tools
+
+`checkout_workspace` and `open_workspace` return a durable `workspaceHandle`.
+Pass a stable `requestId` when retrying the same checkout.
+Reusing that ID with another exact request fails.
+A fresh independent run needs a fresh `requestId`.
 
 ```json
 {
-  "mcpServers": {
-    "contextvault": {
-      "command": "node",
-      "args": ["/absolute/path/to/contextvault/mcp/src/index.mjs"],
-      "env": {
-        "CONTEXTVAULT_DATA_DIR": "/absolute/path/to/contextvault/data"
-      }
-    }
-  }
+  "workspaceId": "workspace-opaque-id",
+  "requestId": "task-123-checkout",
+  "mode": "read-write",
+  "access": "remote",
+  "agentLabel": "existing-agent",
+  "task": "Prepare the requested customer report",
+  "reason": "Authorized customer workflow"
 }
 ```
 
----
+`access:local` returns `path` and `sandboxPath` on the MCP host.
+Those paths belong to that host, including its container when MCP runs inside one.
+`access:remote` returns an opaque handle without host paths.
+Use file tools when the calling agent cannot access the MCP host's filesystem.
 
-## Patterns
+| Tool | Behavior |
+|---|---|
+| `workspace_status`, `get_sandbox_status` | Read current scoped run status |
+| `heartbeat_workspace` | Renew the run lease |
+| `list_workspace_files` | List ordinary workspace files and directories |
+| `read_workspace_file` | Read a bounded base64 chunk at an offset |
+| `write_workspace_file` | Write a base64 chunk at an explicit offset |
+| `delete_workspace_file` | Remove one regular workspace file |
+| `make_workspace_directory` | Create an ordinary workspace directory |
+| `commit_workspace`, `checkpoint_workspace` | Publish and reopen the same local workspace |
+| `finalize_workspace` | Publish the final complete snapshot |
+| `abort_workspace` | Abort a known active run without publication |
+| `cleanup_workspace` | Remove owned local workspace files after a known terminal result |
+| `destroy_workspace` | Explicitly abort an active run, then clean its owned local files |
+| `reconcile_workspace` | Reconcile the SDK's original durable command |
 
-### Pattern 1: Single-Agent Session
+Use `workspaceHandle` to identify the exact session.
+Legacy `workspaceId` selection works only when one uncleaned local session matches.
+Every file operation checks current server authority.
+File tools require current workspace content authority before accessing local files, even when run metadata remains readable.
+Deleted and suspended workspaces deny content access under the server policy.
+Read-only runs reject file writes.
+Paths must satisfy the shared portable-path rules.
+File tools reject symlinks, hardlinks, special files, traversal, and reserved metadata names.
 
-A single agent uses a workspace as its memory for one task or conversation.
+Read and write chunks contain at most 64 KiB.
+Use `offset` for subsequent chunks and `truncate:true` only for the first chunk at offset 0.
+An empty base64 value with truncation creates an empty file.
+File tools enforce the shared entry, per-file, and total-byte limits before additional writes.
+Ordinary agent files receive the same validation before publication.
+Large snapshots can use ordinary local files or repeated remote chunks.
 
-```
-Agent → create_workspace (if needed)
-       → push_to_workspace (save initial context)
-       → [later] pull_from_workspace (restore context)
-       → push_to_workspace (save updated context)
-```
+## Publication and recovery
 
-**When to use:** One agent handling a standalone task. No other agent needs this workspace.
+Stop every agent writer before capture, checkpoint, finalize, reconciliation, abort, or cleanup.
+Pass `writersStopped:true` on those calls.
+MCP never infers stopped writers from a terminal server state.
+Uncertain publication keeps the original key, capture, accepted receipt, and workspace available for reconciliation.
+Never discard that state to start a new publication.
 
-**Example:**
-```typescript
-// Start: pull latest context
-const state = await pull_from_workspace({ workspaceId });
+MCP uses a cooperative single-controller marker per handle.
+It does not take over a marker from a PID, elapsed time, or lease age.
+After a controller crash:
 
-// Agent works, modifies state
+1. Stop every controller for the affected handle.
+2. Call `recover_workspace_controller` with `controllersStopped:true`.
+3. Stop every agent writer for that workspace.
+4. Call `reconcile_workspace` with `writersStopped:true` and the original handle.
+5. Inspect the authoritative outcome before continuing or cleaning local files.
 
-// Done: push updated context
-await push_to_workspace({
-  workspaceId,
-  files: updatedFiles,
-  tags: ["completed"]
-});
-```
+These assertions are owner preconditions, not containment against hostile processes sharing the same user identity.
+Current authorization still gates recovery and retained file reads.
+API credentials stay outside workspace content and tool responses.
 
----
+## Retained administration
 
-### Pattern 2: Multi-Agent Handoff
+| Tool | Behavior |
+|---|---|
+| `create_workspace`, `list_workspaces`, `get_workspace` | Authenticated canonical workspace administration |
+| `delete_workspace` | Tombstone while retaining accepted history |
+| `push_to_workspace` | Complete replacement through ContextVault's canonical compatibility bridge |
+| `pull_from_workspace` | Accepted small snapshot, with base64 for binary files |
+| `get_workspace_history` | Current-head ancestry with opaque revision IDs |
+| `diff_workspace` | Canonical diff with retained added/removed/modified aliases |
+| `rollback_workspace` | Durable restore with an optimistic current-head check |
+| `reconcile_command` | Reconcile the original administration request or known operation ID |
 
-Agent A creates and populates a workspace. Agent B later pulls that workspace and continues from where A left off.
+Pass a stable `requestId` to create, delete, push, and rollback.
+MCP saves the exact request and stable server key before dispatch.
+Reusing an ID with different input fails.
+Mutations do not retry automatically.
+An uncertain administration result includes `commandHandle` for explicit reconciliation.
+A crashed administration controller requires `recover_command_controller` with `controllersStopped:true` before reconciliation.
 
-```
-Agent A → create_workspace → push_to_workspace (commits work)
-                                                         ↓
-Agent B → pull_from_workspace → [resumes from A's commit]
-```
+Direct requests are limited to 512 KiB and small snapshot responses to 2 MiB.
+Use workspace file chunks for larger contents.
+History defaults to 20 revisions and accepts a cursor and limit up to 1000.
+List defaults to 100 workspaces and accepts an offset and limit up to 1000.
+Revision IDs remain opaque; no Git hash format is required.
+Errors use MCP `isError:true` with a stable ContextVault code when available.
 
-**When to use:** Sequential handoffs. Agent A does research, Agent B acts on it. Different shifts on the same project.
+## Verification
 
-**Key behavior:**
-- `pull_from_workspace` with no `version` → pulls HEAD (latest commit)
-- Each commit is immutable — Agent B always sees a complete snapshot
-- Agent B's commits stack on top — Agent A's history is preserved
-
-**Example:**
-```typescript
-// Agent B resuming — gets everything Agent A committed
-const { files, commitId } = await pull_from_workspace({
-  workspaceId: "ws_..."
-});
-// files contains all of Agent A's work
-```
-
----
-
-### Pattern 3: Resumable Session
-
-An agent works intermittently. Each interaction pushes state. The next interaction resumes from the last commit.
-
-```
-Interaction 1 → push_to_workspace (commit "in-progress-1")
-Interaction 2 → pull_from_workspace → push_to_workspace (commit "in-progress-2")
-Interaction 3 → pull_from_workspace → push_to_workspace (commit "done")
-```
-
-**When to use:** Long-running tasks that span multiple conversations or sessions. Chatbots, code assistants, research agents.
-
-**Key behavior:**
-- Each `push_to_workspace` is a new commit on top of previous
-- `pull_from_workspace` (no version) always gets the latest state
-- Commit messages/tags let you track progress: `in-progress`, `review-needed`, `complete`
-
-**Example:**
-```typescript
-// On every interaction:
-async function saveProgress(workspaceId: string, files: File[]) {
-  await push_to_workspace({
-    workspaceId,
-    files,
-    tags: ["in-progress", `session-${sessionId}`]
-  });
-}
-
-async function loadProgress(workspaceId: string) {
-  const { files } = await pull_from_workspace({ workspaceId });
-  return files;
-}
+```sh
+npm --prefix mcp run build
+npm run test:mcp
+CV_TEST_BACKEND=s3 npm run test:mcp
 ```
 
----
-
-### Pattern 4: Error Recovery
-
-Agents encounter errors. Workspaces and sandboxes persist. Here are common recovery patterns.
-
-#### Workspace not found
-```typescript
-// If pull fails because workspace doesn't exist, create it
-try {
-  await pull_from_workspace({ workspaceId });
-} catch (e) {
-  if (e.message.includes("not found")) {
-    await create_workspace({ customerId, name: workspaceId });
-    // Then retry pull (will get empty workspace)
-  } else {
-    throw e; // Unknown error, surface it
-  }
-}
-```
-
-#### Sandbox already exists
-```typescript
-// If checkout fails because sandbox exists, destroy it first
-const status = await get_sandbox_status({ workspaceId });
-if (status.exists) {
-  await destroy_workspace({ workspaceId }); // Destroys sandbox, keeps workspace
-}
-await checkout_workspace({ workspaceId });
-```
-
-#### Agent crashes mid-session
-```typescript
-// On restart, check for orphaned sandboxes
-const status = await get_sandbox_status({ workspaceId });
-if (status.exists && status.hasChanges) {
-  // Agent was mid-work — commit or discard
-  // Option A: commit what exists
-  await commit_workspace({ workspaceId, tags: ["crash-recovery"] });
-  // Option B: destroy and start fresh
-  await destroy_workspace({ workspaceId });
-}
-```
-
-#### Commit fails (no changes)
-```typescript
-// commit_workspace succeeds but with empty files array if nothing changed
-const result = await commit_workspace({ workspaceId });
-if (result.files.length === 0) {
-  // Nothing to commit — expected for read-only sessions
-}
-```
-
----
-
-### Pattern 5: Workspace Per Conversation
-
-Each conversation/session gets its own workspace. Clean separation, no cross-contamination.
-
-```
-Session 1 → create_workspace → push → ... → push → archive
-Session 2 → create_workspace → push → ... → push → archive
-```
-
-**When to use:** Customer-facing chatbots, per-user memory, per-task workspaces.
-
-**Key behavior:**
-- Customer A's workspace is fully isolated from Customer B's
-- Workspace ID maps to conversation/session/user in your app
-- Archive by deleting (soft-delete) old workspaces
-
-**Example:**
-```typescript
-// Start new conversation
-const workspace = await create_workspace({
-  customerId: user.id,
-  name: `chat-${conversationId}`
-});
-// Workspace persists for lifetime of conversation
-
-// End conversation — workspace is preserved, available for audit
-```
-
----
-
-## MCP Tools
-
-### Workspace Management
-
-| Tool | Description |
-|------|-------------|
-| `create_workspace` | Create a new workspace |
-| `list_workspaces` | List all workspaces |
-| `get_workspace` | Get workspace details |
-| `delete_workspace` | Soft-delete workspace |
-
-### Sandbox Operations
-
-Sandboxes are temporary working directories for agent execution.
-
-| Tool | Description |
-|------|-------------|
-| `checkout_workspace` | Clone workspace to sandbox, return path |
-| `commit_workspace` | Commit sandbox changes to workspace |
-| `destroy_workspace` | Destroy sandbox (keep workspace) |
-| `get_sandbox_status` | Check if sandbox exists |
-
-### Version Control
-
-| Tool | Description |
-|------|-------------|
-| `push_to_workspace` | Push files directly (skip sandbox) |
-| `pull_from_workspace` | Pull files directly (skip sandbox) |
-| `get_workspace_history` | Get commit history |
-| `diff_workspace` | Compare two versions |
-| `rollback_workspace` | Rollback to previous version |
-
----
-
-## Sandbox Model
-
-**Don't put workspace in agent context — put it in a sandbox.**
-
-```
-1. Agent needs workspace context
-   ↓
-2. checkout_workspace(workspaceId)
-   → Clones workspace to /tmp/contextvault-sandbox/{workspaceId}/
-   → Returns sandbox path
-   ↓
-3. Agent works in sandbox (normal file operations)
-   ↓
-4. commit_workspace(workspaceId)
-   → git add + commit in sandbox
-   → Push to persistent workspace
-   ↓
-5. destroy_workspace(workspaceId)
-   → rm -rf sandbox
-   → Workspace intact, ready for next agent
-```
-
----
-
-## Tool Details
-
-### create_workspace
-```typescript
-{ customerId: string, name: string }
-→ { id, customerId, name, createdAt, latestCommitId }
-```
-
-### checkout_workspace
-```typescript
-{ workspaceId: string }
-→ { sandboxPath: string, workspaceId: string }
-```
-
-### commit_workspace
-```typescript
-{ workspaceId: string, agentId?: string, taskId?: string, tags?: string[] }
-→ { commitId: string, parentId: string | null, files: string[] }
-```
-
-### destroy_workspace
-```typescript
-{ workspaceId: string }
-→ { success: true }
-```
-
-### get_sandbox_status
-```typescript
-{ workspaceId: string }
-→ { exists: boolean, path: string, hasChanges: boolean }
-```
-
-### push_to_workspace
-```typescript
-{ workspaceId: string, files: {path, content}[], agentId?: string, taskId?: string, tags?: string[] }
-→ { commitId: string, parentId: string | null, sizeBytes: number }
-```
-
-### pull_from_workspace
-```typescript
-{ workspaceId: string, version?: string }
-→ { commitId, files: {path, content}[], metadata, createdAt }
-```
-
-### get_workspace_history
-```typescript
-{ workspaceId: string, limit?: number }
-→ [{ id, parentId, metadata, sizeBytes, createdAt }, ...]
-```
-
-### diff_workspace
-```typescript
-{ workspaceId: string, from: string, to: string }
-→ { added: string[], removed: string[], modified: string[] }
-```
-
-### rollback_workspace
-```typescript
-{ workspaceId: string, toVersion: string, agentId?: string }
-→ { commitId, parentId, sizeBytes, createdAt }
-```
-
----
-
-## Example Session
-
-```typescript
-// 1. Create workspace
-await callTool("create_workspace", {
-  customerId: "meta-profile",
-  name: "LeBron James"
-})
-// → { id: "ws_01HXXXXXXXX", ... }
-
-// 2. Checkout to sandbox
-await callTool("checkout_workspace", {
-  workspaceId: "ws_01HXXXXXXXX"
-})
-// → { sandboxPath: "/tmp/contextvault-sandbox/ws_01HXXXXXXXX" }
-
-// 3. Agent works in sandbox
-// - Reads /tmp/contextvault-sandbox/ws_01HXXXXXXXX/profile/summary.md
-// - Writes /tmp/contextvault-sandbox/ws_01HXXXXXXXX/analysis.md
-
-// 4. Commit changes
-await callTool("commit_workspace", {
-  workspaceId: "ws_01HXXXXXXXX",
-  agentId: "meta-profile",
-  taskId: "analysis-001",
-  tags: ["analysis"]
-})
-// → { commitId: "abc123", ... }
-
-// 5. Destroy sandbox
-await callTool("destroy_workspace", {
-  workspaceId: "ws_01HXXXXXXXX"
-})
-// → { success: true }
-```
-
----
-
-## Error Handling
-
-All errors return:
-```typescript
-{
-  content: [{ type: "text", text: "Error message" }],
-  isError: true
-}
-```
-
-Common errors:
-- `Invalid workspace ID format` — ID must match `ws_[A-Za-z0-9]{10,26}`
-- `Workspace not found` — Workspace doesn't exist
-- `Sandbox not found` — No sandbox for this workspace
-- `No commits found` — Workspace has no commits
-- `receive.denyCurrentBranch` — Workspace is locked by another agent
-
----
-
-## Protocol
-
-- Transport: stdio (local) or Streamable HTTP (remote)
-- JSON-RPC 2.0
-- Server name: `contextvault-mcp`
-- Server version: `0.1.0`
+S3 tests require the explicit nonproduction LocalStack settings documented by the root test harness.
+The package acceptance test requires Docker and the official `node:20-bookworm-slim` image locally.
+It fails if required targets are unavailable.
+The gate exercises actual stdio, normal HTTP, customer isolation, revocation, binary files, current authority, restart recovery, and installed packaging.
+It checks current Node.js 22 development/production and an actual standalone Node.js 20 installation.
+The minimum-runtime image has no Git executable.
+This evidence does not establish AWS IAM, physical remote hardware, Windows, or hosted CI behavior.

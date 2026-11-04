@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "package": "@contextvault/sdk",
+  "version": "0.1.0",
+  "license": "MIT",
+  "licenseSource": {
+    "path": "../../LICENSE",
+    "sha256": "a729c859dd36a07774203f6674dfbc3b6608ba71f9d9d5ae2870910f53a44d24"
+  },
+  "node": ">=18.0.0",
+  "compiler": "5.9.3",
+  "archive": "contextvault-sdk-0.1.0.tgz",
+  "sha256": "fa9040f6e48d074465b16a4117450ae410400f18fdf2a2858655106d3ec40c2f",
+  "sourceHashes": {
+    "src/apikeys.ts": "e79ab6676cbef0a75fc0f599117fabb0cebce1d55ec22967c54d2acd1506877b",
+    "src/bundles.ts": "4c2f41c441504b8290bf0645e1998a2dd626b2badd6d290e472017c87dfef07c",
+    "src/client.ts": "e403765bbe5d0d43c109cae28fcbbf4fd3b45635d8e700da081838cb3b21bc74",
+    "src/errors.ts": "eb57e01e50688b2e2a600794466853a26f57e89ce45f35d7a69c6ecd22b0ef1c",
+    "src/files.ts": "dd5114a9a88680346d7d11400a94f9735fed4e4fff9c56b27a8c24ef053d8bc0",
+    "src/index.ts": "2dadbc7d4682ad317a4d7024dae41bceac0f6c2151ef577ff012abd8ec0dfeda",
+    "src/manifest.ts": "36e18734ed7a3512e77fa05cfd9fc90d9abe4decffd69d377402b6ece1c9ebe5",
+    "src/resources.ts": "84d1b5ba3592c1fcd4a62e657e146490e0ec4c027eb1e227b9646db013618ee5",
+    "src/session.ts": "cf41253f7b306d71c2ce7dfa5412fa5fe97c1fbc84918d91adac8499ffcf7dbd",
+    "src/types.ts": "b97c82e05b11d192379e94b385c3948fab5b8d48760fa883a5639a7fb257b4bc",
+    "src/webhooks.ts": "3694954397b26d5986f518b96fcc0469bfda9d0a17c699a938b2ba320c32d597",
+    "src/workspaces.ts": "562b8511d6c6448a9abbb6657201c622a7ccbfbcef09a4b3e084443ea7900cd1",
+    "package.json": "657501693fcf4dcaad839aa1fae9ff2561d5308f41fc32a6e9cee6d2e6c5c342",
+    "package-lock.json": "59018bbb0a97ec2869b0df30355b3f8dcd36a3ff549bec37165f9e257700146d",
+    "tsconfig.json": "9f8f8670d94661be44dc70132af6235dd282100ec7627af498079f90b166b848",
+    "README.md": "fb3dfd6ba98fcf5d72526fffeb8a15fb0b577f2b578b51a105418f58b39d5ad0"
+  }
+}
