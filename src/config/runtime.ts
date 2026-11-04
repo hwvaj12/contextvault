@@ -8,6 +8,8 @@ import { WorkspaceError, type StorageBinding, type WorkspaceScope, type StorageB
 import { createSafeDirectory } from "../application/files";
 import { WorkspaceLifecycle, type LifecycleDependencies } from "../application/runs";
 import { WorkspaceMaintenance } from "../application/maintenance";
+import { RestoreService } from "../application/revisions/restore";
+import { BundleService } from "../application/workspaces/admin/bundles";
 import { SqliteControlStore, createRevisionWriterTracking } from "../adapters/control";
 import { CatalogAccessPolicy } from "../adapters/access/catalog-access-policy";
 import { createWebhookDelivery } from "../adapters/delivery/webhook";
@@ -25,6 +27,7 @@ export interface RuntimeOptions {
 export interface WorkspaceRuntime {
   configuration: ServerConfiguration; database: Database.Database; control: SqliteControlStore; accessPolicy: CatalogAccessPolicy;
   lifecycle: WorkspaceLifecycle; maintenance: WorkspaceMaintenance; now: () => Timestamp; ownerId: string;
+  restore: RestoreService; secrets: SecretsService; bundles: BundleService;
   revisionStore(binding: StorageBinding): Promise<RevisionStore>; submissionStore(binding: StorageBinding): Promise<SubmissionStore>;
   createBinding(scope: WorkspaceScope, id: StorageBindingId, createdAt: Timestamp): StorageBinding;
   schedule(operation: Operation, replayed: boolean): void;
@@ -86,7 +89,11 @@ export async function createRuntime(configuration: ServerConfiguration, database
     return { id, scope, backend: profile.backend, generation: 1, location: { storeId: profile.storeId, opaqueKey: scope.workspaceId }, configurationRef: profile.configurationRef, status: "active", createdAt };
   };
   const lifecycle = new WorkspaceLifecycle({ control, accessPolicy, submissions, revisionStore, createBinding, ownerId, now, leaseTtlMs: configuration.leaseTtlMs, processingTtlMs: configuration.processingTtlMs, ...options.lifecycle });
+  const freshSecrets = () => SecretsService.createLocal(configuration.legacySecretsPath);
+  const bundles = new BundleService(lifecycle.runtime, configuration, freshSecrets);
+  const restore = new RestoreService(lifecycle.runtime, configuration.limits, bundle => bundles.source(bundle));
   const maintenance = new WorkspaceMaintenance({ lifecycle, now, revisionStore, submissionStore, intervalMs: configuration.maintenanceIntervalMs,
+    recoveryProcessors: { restore: operation => restore.process({ scope: operation.scope, operationId: operation.id, processingFence: operation.claim!.fence }) },
     deliver: createWebhookDelivery({ resolveSigningKey: (reference, customerId) => withDatabase(database, () => getWebhookSigningKey(reference, customerId)) }) });
   const jobs = new Set<Promise<unknown>>(); let closing = false;
   // The local provider writes into an already private directory and precreated 0600 file.
@@ -98,12 +105,12 @@ export async function createRuntime(configuration: ServerConfiguration, database
   const secretStat = await lstat(secretsPath); if (!secretStat.isFile() || secretStat.isSymbolicLink() || secretStat.nlink !== 1) throw new WorkspaceError("STORAGE_UNAVAILABLE", "Legacy secrets require a private regular file");
   await chmod(secretsPath, 0o600);
   const secrets = SecretsService.createLocal(secretsPath); let provisioning = Promise.resolve();
-  return { configuration, database, control, accessPolicy, lifecycle, maintenance, now, ownerId, revisionStore, submissionStore, createBinding,
+  return { configuration, database, control, accessPolicy, lifecycle, maintenance, restore, secrets, bundles, now, ownerId, revisionStore, submissionStore, createBinding,
     schedule(operation, replayed) {
       if (replayed || operation.state !== "processing" || operation.claim?.ownerId !== ownerId) return;
       if (closing) throw new WorkspaceError("PUBLICATION_OUTCOME_UNKNOWN", "Processing requires reconciliation", { operationId: operation.id, retryable: true });
       const fence = operation.claim.fence;
-      const job = new Promise<void>(resolve => setImmediate(resolve)).then(() => withDatabase(database, () => lifecycle.processOperation({ scope: operation.scope, operationId: operation.id, processingFence: fence })));
+      const job = new Promise<void>(resolve => setImmediate(resolve)).then(() => withDatabase(database, () => operation.kind === 'restore' ? restore.process({ scope: operation.scope, operationId: operation.id, processingFence: fence }) : lifecycle.processOperation({ scope: operation.scope, operationId: operation.id, processingFence: fence })));
       jobs.add(job); void job.catch(() => { /* Durable operation remains available for fenced recovery. */ }).finally(() => jobs.delete(job));
     },
     provisionLegacyTenant(customerId) {

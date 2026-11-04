@@ -176,9 +176,9 @@ export default function CommitHistory({ commits, selectedCommit, onSelect }: Com
                       isSelected ? "bg-blue-500 border-blue-400" : "bg-gray-700 border-gray-600"
                     }`}
                   />
-                  <span className="text-xs font-mono text-gray-400">{commit.id.slice(0, 7)}</span>
+                  <span className="text-xs font-mono text-gray-400 break-all max-w-[180px]" title={commit.id}>{commit.id}</span>
                   <span className="text-xs text-gray-300 text-center line-clamp-2 max-w-[100px]">
-                    {commit.metadata?.tags?.join(", ") || `Commit ${commit.id.slice(0, 7)}`}
+                    {commit.metadata?.tags?.join(", ") || "Revision"}
                   </span>
                   <span className="text-xs text-gray-500">{timeAgo(commit.createdAt)}</span>
                 </button>

@@ -60,6 +60,121 @@ export function bootstrapAuthority(db: Database.Database, authority: CredentialA
 export class SqliteControlStore implements ControlStore {
     constructor(readonly database: Database.Database) { initSchema(database); }
     acquireCompatibilityLock(scope: D.WorkspaceScope, resource: string) { return acquireCompatibilityLock(this.database, scope, resource); }
+    private bundlePermit(bundle: D.BundleRecord, principal: D.Principal): void {
+        const customer = { customerId: bundle.customerId };
+        if (bundle.kind === "export") {
+            if (!bundle.source || bundle.source.scope.customerId !== bundle.customerId) fail("INVALID_REQUEST", "Export source is missing");
+            this.permit(principal, "workspace:export", bundle.source.scope);
+            this.permit(principal, "workspace:read", bundle.source.scope);
+            this.workspace(bundle.source.scope);
+        } else this.permit(principal, "workspace:create", customer);
+    }
+    async getBundle(scope: D.CustomerScope, id: string) { return this.load<D.BundleRecord>("bundle", id, scope); }
+    async createBundle(input: Input<"createBundle">) {
+        return this.transaction(() => {
+            const bundle = input.bundle;
+            if (bundle.customerId !== input.scope.customerId || !same(identityOf(bundle.principal), identityOf(input.principal)) || !/^bundle-[a-f0-9-]{36}$/.test(bundle.id) || !bundle.idempotencyKey || bundle.idempotencyKey.length > 256 || !bundle.requestDigest || bundle.version !== 1 || bundle.state === "ready") fail("INVALID_REQUEST", "Bundle ownership is invalid");
+            this.bundlePermit(bundle, input.principal);
+            const key = digest([input.scope, input.principal.actorId, input.principal.credential.id, bundle.kind, bundle.source?.scope.workspaceId ?? null, bundle.idempotencyKey]);
+            const prior = this.load<{ id: string; digest: string }>("bundle-command", key, input.scope);
+            if (prior) {
+                if (prior.digest !== bundle.requestDigest) fail("IDEMPOTENCY_KEY_REUSED", "Bundle key belongs to another request");
+                const retained = this.load<D.BundleRecord>("bundle", prior.id, input.scope);
+                if (!retained) fail("STORAGE_UNAVAILABLE", "Original bundle ownership is unavailable");
+                this.bundlePermit(retained, input.principal); return retained;
+            }
+            if (bundle.kind === "export" && !same(this.load("revision", bundle.source!.id, bundle.source!.scope), bundle.source)) fail("REVISION_NOT_FOUND", "Export source is not an accepted revision");
+            this.write("bundle", bundle.id, input.scope, bundle, true);
+            this.write("bundle-command", key, input.scope, { id: bundle.id, digest: bundle.requestDigest }, true); return bundle;
+        });
+    }
+    async selectBundleManifest(input: Input<"selectBundleManifest">) {
+        return this.transaction(() => {
+            const bundle = this.load<D.BundleRecord>("bundle", input.id, input.scope); if (!bundle) fail("REVISION_NOT_FOUND", "Bundle does not exist in this customer scope");
+            this.bundlePermit(bundle, input.principal);
+            if (bundle.header) { if (!same(bundle.header, input.header)) fail("IDEMPOTENCY_KEY_REUSED", "Bundle contents are already selected"); return bundle; }
+            if (bundle.version !== input.expectedVersion || bundle.state === "ready") fail("VERSION_CONFLICT", "Bundle version changed");
+            const manifest = D.canonicalizeManifest(input.header.snapshot);
+            if (input.header.signatureAlgorithm !== "Ed25519" || !input.header.signature || !input.header.keyId) fail("INVALID_MANIFEST", "Verified signed bundle header is required");
+            bundle.header = input.header; bundle.manifestDigest = D.manifestDigest(manifest); bundle.version++; bundle.updatedAt = input.now;
+            this.write("bundle", bundle.id, input.scope, bundle); return bundle;
+        });
+    }
+    async completeBundle(input: Input<"completeBundle">) {
+        return this.transaction(() => {
+            const bundle = this.load<D.BundleRecord>("bundle", input.id, input.scope); if (!bundle) fail("REVISION_NOT_FOUND", "Bundle does not exist in this customer scope");
+            this.bundlePermit(bundle, input.principal); if (bundle.state === "ready") return bundle;
+            if (bundle.version !== input.expectedVersion || !bundle.header || !bundle.manifestDigest) fail("VERSION_CONFLICT", "Bundle selection is incomplete or changed");
+            bundle.state = "ready"; bundle.version++; bundle.updatedAt = input.now; this.write("bundle", bundle.id, input.scope, bundle); return bundle;
+        });
+    }
+    private restoreSource(intent: D.RestoreIntent, principal: D.Principal, scope: D.WorkspaceScope, requireReference = true): void {
+        const source = intent.source;
+        if (source.kind === "revision") {
+            if (source.principal.actorId !== principal.actorId) fail("FORBIDDEN", "Copy source belongs to another actor");
+            this.permit(source.principal, "workspace:read", source.revision.scope); this.workspace(source.revision.scope);
+            // A terminal result survives storage migration. Current authority still gates its replay.
+            if (!requireReference) return;
+            const revision = this.load<D.Revision>("revision", source.revision.id, source.revision.scope);
+            const binding = this.load<D.StorageBinding>("binding", source.binding.id, source.revision.scope);
+            if (!same(revision, source.revision) || !same(binding, source.binding) || source.binding.id !== source.revision.scope.storageBindingId || source.binding.generation !== source.revision.scope.bindingGeneration || source.revision.manifestDigest !== intent.sourceManifestDigest) fail("STORAGE_BINDING_CHANGED", "Selected accepted source changed");
+        } else {
+            if (source.bundle.customerId !== scope.customerId) fail("FORBIDDEN", "Import source belongs to another customer");
+            this.bundlePermit(source.bundle, principal);
+            if (!requireReference) return;
+            const bundle = this.load<D.BundleRecord>("bundle", source.bundle.id, { customerId: scope.customerId });
+            if (!bundle || bundle.customerId !== scope.customerId || bundle.state !== "ready" || !same(bundle, source.bundle) || bundle.manifestDigest !== intent.sourceManifestDigest) fail("REVISION_NOT_FOUND", "Verified import source is unavailable");
+            this.bundlePermit(bundle, principal);
+        }
+    }
+    async claimRestore(input: Input<"claimRestore">) {
+        return this.transaction(() => {
+            const { intent, scope, principal, command } = input;
+            this.command(command, principal, scope, "restore");
+            const authorityScope = intent.destinationAction === "workspace:create" ? { customerId: scope.customerId } : scope;
+            this.permit(principal, intent.destinationAction, authorityScope, input.authorization);
+            const replay = this.replay<unknown>(command, principal);
+            if (replay) {
+                if (replay.operation.kind !== "restore" || replay.operation.intent.destinationAction !== intent.destinationAction || !same(replay.operation.intent.request, intent.request)) fail("IDEMPOTENCY_KEY_REUSED", "Restore retry must preserve its original request");
+                this.restoreSource(replay.operation.intent, principal, scope, ["pending", "processing"].includes(replay.operation.state)); return { operation: replay.operation, replayed: true };
+            }
+            const workspace = this.workspace(scope); const identity = intent.candidateIdentity; const request = intent.request.body;
+            if (intent.schemaVersion !== 1 || intent.kind !== "restore" || intent.request.method !== "POST" || intent.request.path !== `/v1/workspaces/${encodeURIComponent(scope.workspaceId)}/restore` || !["workspace:restore", "workspace:create"].includes(intent.destinationAction) || !request.reason || !same(identity.scope, bindingOf(workspace)) || identity.operationId !== command.operationId || identity.parentRevisionId !== request.expectedRevisionId) fail("INVALID_REQUEST", "Restore intent does not match its exact command and candidate");
+            if (workspace.currentRevisionId !== request.expectedRevisionId || workspace.version !== request.expectedWorkspaceVersion) fail("REVISION_CONFLICT", "Workspace changed before restore claim");
+            this.restoreSource(intent, principal, scope); this.validClaim(input.claim, input.now);
+            const operation = { ...this.operation(command, principal, scope, null), kind: "restore", runId: null, intent, claim: input.claim } as D.RestoreOperation;
+            this.candidate(identity); this.saveCommand(operation, null); return { operation, replayed: false };
+        });
+    }
+    async acceptRestore(input: Input<"acceptRestore">) {
+        return this.transaction(() => {
+            const existing = this.load<D.Operation>("operation", input.operationId, input.scope);
+            if (existing?.kind === "restore" && existing.state === "succeeded") {
+                if (existing.claim?.fence !== input.processingFence || !same(existing.candidate, input.candidate)) fail("STALE_FENCE", "Restore acceptance identity changed");
+                this.permit(existing.principal, existing.intent.destinationAction, existing.intent.destinationAction === "workspace:create" ? { customerId: input.scope.customerId } : input.scope, input.authorization);
+                this.restoreSource(existing.intent, existing.principal, input.scope, false); return existing;
+            }
+            const operation = this.processing(input); if (operation.kind !== "restore") fail("INVALID_TRANSITION", "Operation is not a restore");
+            const { intent, principal } = operation; this.permit(principal, intent.destinationAction, intent.destinationAction === "workspace:create" ? { customerId: input.scope.customerId } : input.scope, input.authorization); this.restoreSource(intent, principal, input.scope);
+            const workspace = this.workspace(input.scope); const request = intent.request.body;
+            if (workspace.currentRevisionId !== request.expectedRevisionId || workspace.version !== request.expectedWorkspaceVersion) fail("REVISION_CONFLICT", "Accepted workspace changed during restore");
+            if (!same(bindingOf(workspace), intent.candidateIdentity.scope)) fail("STORAGE_BINDING_CHANGED", "Restore destination binding changed");
+            this.matchCandidate(intent.candidateIdentity, input.candidate, intent.sourceManifestDigest);
+            if (!operation.candidate || !same(operation.candidate, input.candidate)) fail("RECEIPT_MISMATCH", "Restore must accept its recorded candidate");
+            const base = this.load<D.Revision>("revision", workspace.currentRevisionId, input.scope); if (!base) fail("REVISION_NOT_FOUND", "Current accepted revision is unavailable");
+            const changed = base.manifestDigest !== input.candidate.manifestDigest; const revision = changed ? this.revision(input.candidate, input.now) : base;
+            if (changed) { this.write("revision", revision.id, input.scope, revision, true); workspace.currentRevisionId = revision.id; workspace.version++; workspace.updatedAt = input.now; this.write("workspace", workspace.id, input.scope, workspace); }
+            operation.state = "succeeded"; operation.phase = "complete"; operation.version++; operation.updatedAt = input.now; operation.result = { kind: "restore", revisionId: revision.id, changed };
+            this.saveOutcome(operation, operation.result); this.events(input.events, operation); return operation;
+        });
+    }
+    async failRestore(input: Input<"failRestore">) {
+        return this.transaction(() => {
+            const operation = this.processing(input); if (operation.kind !== "restore") fail("INVALID_TRANSITION", "Operation is not a restore");
+            operation.state = "failed"; operation.phase = "complete"; operation.version++; operation.updatedAt = input.now; operation.error = { code: input.code, message: input.message, retryable: false };
+            this.saveOutcome(operation, null); this.events(input.events, operation); return operation;
+        });
+    }
     private transaction<T>(work: () => T): T { return this.database.transaction(work).immediate(); }
     private load<T>(kind: string, id: string, scope?: D.CustomerScope | D.WorkspaceScope): T | null {
         let sql = "SELECT data FROM catalog_records WHERE kind=? AND id=?";
@@ -281,6 +396,13 @@ export class SqliteControlStore implements ControlStore {
     }
     async getWorkspace(scope: D.WorkspaceScope) { return this.load<D.Workspace>("workspace", scope.workspaceId, scope); }
     async listWorkspaces(scope: D.CustomerScope, cursor?: string, limit?: number) { const page = this.page<D.Workspace>("workspace", scope, cursor, limit); return { workspaces: page.values, nextCursor: page.nextCursor }; }
+    async listWorkspaceMetadata(scope: D.CustomerScope, offset: number, limit: number) {
+        this.limit(limit); if (!Number.isSafeInteger(offset) || offset < 0) fail("INVALID_REQUEST", "Workspace offset is invalid");
+        const predicate = "kind='workspace' AND customer_id=? AND json_extract(data,'$.status')!='deleted'";
+        const total = (this.database.prepare(`SELECT COUNT(*) AS total FROM catalog_records WHERE ${predicate}`).get(scope.customerId) as { total: number }).total;
+        const workspaces = (this.database.prepare(`SELECT data FROM catalog_records WHERE ${predicate} ORDER BY id LIMIT ? OFFSET ?`).all(scope.customerId, limit, offset) as { data: string }[]).map(row => JSON.parse(row.data) as D.Workspace);
+        return { workspaces, total };
+    }
     async getBinding(scope: D.WorkspaceScope, id: D.StorageBindingId) { return this.load<D.StorageBinding>("binding", id, scope); }
     async getRevision(scope: D.WorkspaceScope, id: D.RevisionId) { return this.load<D.Revision>("revision", id, scope); }
     async listRevisions(scope: D.WorkspaceScope, cursor?: string, limit?: number) { const page = this.page<D.Revision>("revision", scope, cursor, limit); return { revisions: page.values, nextCursor: page.nextCursor }; }
@@ -581,12 +703,12 @@ export class SqliteControlStore implements ControlStore {
     async recordPreparedRevision(input: Input<"recordPreparedRevision">) {
         return this.transaction(() => {
             const operation = this.processing(input);
-            if (operation.kind !== "finalize" && operation.kind !== "workspace:create")
+            if (operation.kind !== "finalize" && operation.kind !== "workspace:create" && operation.kind !== "restore")
                 fail("INVALID_TRANSITION", "Operation cannot prepare a revision");
             if (operation.kind === "finalize" && operation.intent.mode !== "read-write")
                 fail("INVALID_TRANSITION", "Read-only operations have no candidate");
             const identity = operation.kind === "workspace:create" ? operation.intent.candidateIdentity : operation.intent.candidateIdentity;
-            const manifest = operation.kind === "workspace:create" ? operation.intent.initialManifestDigest : operation.intent.source?.manifestDigest;
+            const manifest = operation.kind === "workspace:create" ? operation.intent.initialManifestDigest : operation.kind === "restore" ? operation.intent.sourceManifestDigest : operation.intent.source?.manifestDigest;
             if (!identity || !manifest)
                 fail("INVALID_TRANSITION", "Operation does not have a candidate");
             this.matchCandidate(identity, input.candidate, manifest);
@@ -1377,6 +1499,9 @@ export class SqliteControlStore implements ControlStore {
         const operation = this.load<D.Operation>("operation", operationId, scope);
         if (operation && ["pending", "processing"].includes(operation.state))
             return false;
+        // Foreign-workspace copies and exports can pin an accepted source independently of its originating operation.
+        if (this.database.prepare("SELECT id FROM catalog_records WHERE kind='operation' AND json_extract(data,'$.kind')='restore' AND json_extract(data,'$.state') IN ('pending','processing') AND json_extract(data,'$.intent.source.kind')='revision' AND json_extract(data,'$.intent.source.revision.id')=? AND json_extract(data,'$.intent.source.revision.scope.customerId')=? AND json_extract(data,'$.intent.source.revision.scope.workspaceId')=? AND json_extract(data,'$.intent.source.revision.scope.storageBindingId')=? LIMIT 1").get(revisionId, scope.customerId, scope.workspaceId, scope.storageBindingId)) return false;
+        if (this.database.prepare("SELECT id FROM catalog_records WHERE kind='bundle' AND json_extract(data,'$.kind')='export' AND json_extract(data,'$.state')='preparing' AND json_extract(data,'$.source.id')=? AND json_extract(data,'$.source.scope.customerId')=? AND json_extract(data,'$.source.scope.workspaceId')=? AND json_extract(data,'$.source.scope.storageBindingId')=? LIMIT 1").get(revisionId, scope.customerId, scope.workspaceId, scope.storageBindingId)) return false;
         if (this.database.prepare("SELECT id FROM catalog_records WHERE kind='candidate-writer' AND customer_id=? AND workspace_id=? AND json_extract(data,'$.identity.candidateId')=? AND json_extract(data,'$.state')='active' LIMIT 1").get(scope.customerId, scope.workspaceId, candidate.identity.candidateId)) return false;
         for (const migration of this.all<D.StorageMigration>("migration", scope)) {
             if (migration.copies.some(copy => copy.target.candidateId === candidate.identity.candidateId))

@@ -5,7 +5,7 @@ import Workspace from "./pages/Workspace";
 import Diff from "./pages/Diff";
 import Usage from "./pages/Usage";
 import Webhooks from "./pages/Webhooks";
-import { getApiKey, setApiKey } from "./api/contextvault";
+import { getApiKey, setApiKey, setSelectedCustomerId } from "./api/contextvault";
 
 type Route =
   | { page: "dashboard" }
@@ -29,6 +29,14 @@ export default function App() {
   const [route, setRoute] = useState<Route>(parseHash);
   const [hasKey, setHasKey] = useState(!!getApiKey());
   const [keyInput, setKeyInput] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [customerInput, setCustomerInput] = useState("");
+  const connect = () => {
+    if (!keyInput.trim()) return;
+    setApiKey(keyInput.trim());
+    setSelectedCustomerId(customerInput.trim());
+    setHasKey(true);
+  };
 
   useEffect(() => {
     const handler = () => setRoute(parseHash());
@@ -58,24 +66,44 @@ export default function App() {
             Enter your API key to access the vault. Keys are scoped to your customer — you'll only see your own workspaces.
           </p>
           
+          <div className="flex items-center justify-between mb-2">
+            <label htmlFor="vault-api-key" className="text-gray-300 text-sm">API key</label>
+            <button type="button" onClick={() => setShowKey(!showKey)} aria-pressed={showKey} className="text-blue-400 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
+              {showKey ? "Hide API key" : "Show API key"}
+            </button>
+          </div>
           <input
-            type="password"
+            id="vault-api-key"
+            type={showKey ? "text" : "password"}
+            autoComplete="current-password"
             value={keyInput}
             onChange={(e) => setKeyInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && keyInput.trim()) {
-                setApiKey(keyInput.trim());
-                setHasKey(true);
+                connect();
               }
             }}
             placeholder="cv_key_..."
             className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm mb-4 focus:outline-none focus:border-blue-500"
           />
+          <label htmlFor="vault-customer-id" className="block text-gray-300 text-sm mb-2">Customer ID (administrator only)</label>
+          <input
+            id="vault-customer-id"
+            type="text"
+            inputMode="text"
+            autoComplete="off"
+            value={customerInput}
+            maxLength={255}
+            onChange={(event) => setCustomerInput(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Enter") connect(); }}
+            aria-describedby="vault-customer-help"
+            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm mb-2 focus:outline-none focus:border-blue-500"
+          />
+          <p id="vault-customer-help" className="text-gray-400 text-xs mb-4">Select a customer with an administrator key. Leave this field empty with a customer key.</p>
           <button
             onClick={() => {
               if (keyInput.trim()) {
-                setApiKey(keyInput.trim());
-                setHasKey(true);
+                connect();
               }
             }}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition-colors mb-3"
@@ -114,6 +142,8 @@ export default function App() {
       onNavigateHome={() => navigate("/")}
       onLogout={() => {
         setApiKey("");
+        setSelectedCustomerId("");
+        setCustomerInput("");
         setHasKey(false);
       }}
     >

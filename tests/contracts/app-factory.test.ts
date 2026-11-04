@@ -45,7 +45,7 @@ it("preserves the legacy authentication error and paginated workspace response",
   const unauthorized = await app.inject({ method: "GET", url: "/workspaces" });
   expect(unauthorized.statusCode).toBe(401);
   expect(unauthorized.json()).toEqual({ error: "Unauthorized", message: "Invalid or missing API key" });
-  const authorized = await app.inject({ method: "GET", url: "/workspaces?customerId=cv-factory-isolated", headers: { "X-API-Key": fixtureMasterKey } });
+  const authorized = await app.inject({ method: "GET", url: "/workspaces?customerId=cv-factory-isolated", headers: { "X-API-Key": fixtureMasterKey, "X-ContextVault-Customer-Id": "cv-factory-isolated" } });
   expect(authorized.statusCode).toBe(200);
   expect(authorized.json()).toEqual({ data: [], pagination: { total: 0, limit: 50, offset: 0, hasMore: false } });
 });

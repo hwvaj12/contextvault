@@ -57,8 +57,8 @@ export default function Diff({ workspaceId, onBack }: DiffProps) {
   }
 
   const getCommitLabel = (c: Commit) => {
-    const tags = c.metadata?.tags?.join(", ") || c.id.slice(0, 7);
-    return `${c.id.slice(0, 7)} - ${tags}`;
+    const tags = c.metadata?.tags?.join(", ");
+    return tags ? `${c.id} - ${tags}` : c.id;
   };
 
   return (
@@ -78,13 +78,14 @@ export default function Diff({ workspaceId, onBack }: DiffProps) {
         <span className="text-white text-sm font-semibold">Diff</span>
         <div className="h-4 w-px bg-gray-700" />
 
-        <label className="text-gray-400 text-xs">From:</label>
+        <label htmlFor="revision-from" className="text-gray-400 text-xs">From:</label>
         <select
+          id="revision-from"
           value={fromHash}
           onChange={(e) => setFromHash(e.target.value)}
           className="bg-gray-800 border border-gray-700 text-sm text-white rounded px-2 py-1 max-w-[200px]"
         >
-          <option value="">Select commit...</option>
+          <option value="">Select revision...</option>
           {commits.map((c) => (
             <option key={c.id} value={c.id}>
               {getCommitLabel(c)}
@@ -92,13 +93,14 @@ export default function Diff({ workspaceId, onBack }: DiffProps) {
           ))}
         </select>
 
-        <label className="text-gray-400 text-xs">To:</label>
+        <label htmlFor="revision-to" className="text-gray-400 text-xs">To:</label>
         <select
+          id="revision-to"
           value={toHash}
           onChange={(e) => setToHash(e.target.value)}
           className="bg-gray-800 border border-gray-700 text-sm text-white rounded px-2 py-1 max-w-[200px]"
         >
-          <option value="">Select commit...</option>
+          <option value="">Select revision...</option>
           {commits.map((c) => (
             <option key={c.id} value={c.id}>
               {getCommitLabel(c)}

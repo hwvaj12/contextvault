@@ -87,7 +87,7 @@ export default function Dashboard({ onSelect, onUsage, onWebhooks }: DashboardPr
               </div>
               <div className="flex justify-between">
                 <span>Head</span>
-                <span className="text-gray-400 font-mono">{ws.latestCommitId?.slice(0, 7) || "none"}</span>
+                <span className="text-gray-400 font-mono break-all text-right" title={ws.latestCommitId || undefined}>{ws.latestCommitId || "none"}</span>
               </div>
               <div className="flex justify-between">
                 <span>Updated</span>

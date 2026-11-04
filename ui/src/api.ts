@@ -1,9 +1,12 @@
 const BASE_URL = '/workspaces';
+let selectedCustomerId = '';
+export function setSelectedCustomerId(customerId: string): void { selectedCustomerId = customerId.trim(); }
 
 function headers(apiKey: string): HeadersInit {
   return {
     'Content-Type': 'application/json',
     'X-API-Key': apiKey,
+    ...(selectedCustomerId ? { 'X-ContextVault-Customer-Id': selectedCustomerId } : {}),
   };
 }
 
@@ -44,25 +47,21 @@ export interface PullResponse {
 export interface DiffResponse {
   from: string;
   to: string;
-  diff: {
-    added: string[];
-    removed: string[];
-    modified: string[];
-    unchanged: string[];
-  };
+  files: { path: string; status: 'added' | 'deleted' | 'modified' }[];
+  summary: { filesChanged: number };
 }
 
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `HTTP ${res.status}`);
+    throw new Error(typeof body.error === 'string' ? body.error : body.error?.message || `HTTP ${res.status}`);
   }
-  return res.json();
+  return res.status === 204 ? undefined as T : res.json();
 }
 
 export const api = {
   listWorkspaces: (apiKey: string) =>
-    fetch(BASE_URL, { headers: headers(apiKey) }).then((r) => handleResponse<Workspace[]>(r)),
+    fetch(BASE_URL, { headers: headers(apiKey) }).then((r) => handleResponse<{ data: Workspace[] }>(r)).then(result => result.data),
 
   createWorkspace: (apiKey: string, customerId: string, name: string) =>
     fetch(BASE_URL, {
@@ -77,10 +76,11 @@ export const api = {
     ),
 
   deleteWorkspace: (apiKey: string, id: string) =>
-    fetch(`${BASE_URL}/${id}`, {
+    fetch(`${BASE_URL}/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: headers(apiKey),
-    }),
+      body: JSON.stringify({}),
+    }).then((r) => handleResponse<void>(r)),
 
   push: (apiKey: string, workspaceId: string, files: FileEntry[], metadata?: Record<string, unknown>) =>
     fetch(`${BASE_URL}/${workspaceId}/push`, {
@@ -102,7 +102,7 @@ export const api = {
     ),
 
   diff: (apiKey: string, workspaceId: string, from: string, to: string) =>
-    fetch(`${BASE_URL}/${workspaceId}/diff?from=${from}&to=${to}`, {
+    fetch(`${BASE_URL}/${encodeURIComponent(workspaceId)}/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {
       headers: headers(apiKey),
     }).then((r) => handleResponse<DiffResponse>(r)),
 

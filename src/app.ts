@@ -20,6 +20,8 @@ import { loadConfiguration } from "./config";
 import { createRuntime, preparePrivateDirectory, type RuntimeOptions } from "./config/runtime";
 import { synchronizeConfiguredAdministrator } from "./middleware/catalog-identity";
 import { documentV1Schema, v1Routes } from "./routes/v1";
+import { documentRevisionSchema, revisionRoutes } from "./routes/v1/revisions";
+import { adminRoutes, documentAdminSchema, legacyAdminRoutes } from "./routes/v1/admin";
 import { createSafeDirectory } from "./application/files";
 
 export type ApplicationOptions = FastifyServerOptions & { contextVault?: RuntimeOptions };
@@ -58,7 +60,7 @@ export async function createApp(options: ApplicationOptions = {}) {
 
   // Swagger
   await app.register(swagger, {
-    transform: ({ schema, url, route }) => ({ schema: documentV1Schema(schema, url, route.method), url }),
+    transform: ({ schema, url, route }) => ({ schema: documentAdminSchema(documentRevisionSchema(documentV1Schema(schema, url, route.method), url, route.method), url, route.method), url }),
     openapi: {
       info: {
         title: "ContextVault API",
@@ -117,6 +119,7 @@ export async function createApp(options: ApplicationOptions = {}) {
 
   // Routes
   await app.register(workspaceRoutes);
+  await app.register(legacyAdminRoutes);
   await app.register(commitRoutes);
   await app.register(sandboxRoutes);
   await app.register(runRoutes);
@@ -124,6 +127,8 @@ export async function createApp(options: ApplicationOptions = {}) {
   await app.register(apiKeyRoutes);
   await app.register(analyticsRoutes);
   await app.register(v1Routes, { prefix: "/v1" });
+  await app.register(revisionRoutes, { prefix: "/v1" });
+  await app.register(adminRoutes, { prefix: "/v1" });
 
   return app;
 }

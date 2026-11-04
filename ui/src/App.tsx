@@ -1,9 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
-import { api, Workspace, PullResponse, Commit, DiffResponse } from './api';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { api, setSelectedCustomerId, type Workspace, type PullResponse, type Commit, type DiffResponse } from './api';
 import './App.css';
 
 function App() {
-  const [apiKey, setApiKey] = useState('cv-test-api-key-123');
+  const [apiKey, setApiKey] = useState('');
+  const [administratorCustomer, setAdministratorCustomer] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
+  const contextVersion = useRef(0);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWs, setSelectedWs] = useState<string>('');
   const [newWsName, setNewWsName] = useState('');
@@ -29,51 +33,114 @@ function App() {
   // Tab state
   const [tab, setTab] = useState<'workspaces' | 'push' | 'pull' | 'history' | 'diff'>('workspaces');
 
-  const flash = (msg: string, isError = false) => {
+  const clearWorkspaceData = () => {
+    setPullResult(null);
+    setCommits([]);
+    setDiffFrom('');
+    setDiffTo('');
+    setDiffResult(null);
+    setPushFiles([{ path: '', content: '' }]);
+    setPushAgentId('');
+  };
+
+  const clearTenantState = () => {
+    contextVersion.current++;
+    setWorkspaces([]);
+    setSelectedWs('');
+    setNewWsName('');
+    setNewWsCustomer('');
+    setError('');
+    setSuccess('');
+    setLoadingWorkspaces(false);
+    setTab('workspaces');
+    clearWorkspaceData();
+  };
+
+  const changeApiKey = (value: string) => {
+    clearTenantState();
+    setSelectedCustomerId('');
+    setAdministratorCustomer('');
+    setApiKey(value);
+  };
+
+  const changeAdministratorCustomer = (value: string) => {
+    clearTenantState();
+    setSelectedCustomerId(value);
+    setAdministratorCustomer(value);
+  };
+
+  const selectWorkspace = (id: string) => {
+    contextVersion.current++;
+    clearWorkspaceData();
+    setError('');
+    setSuccess('');
+    setLoadingWorkspaces(false);
+    setSelectedWs(id);
+  };
+
+  const flash = useCallback((msg: string, isError = false, generation = contextVersion.current) => {
+    if (generation !== contextVersion.current) return;
     if (isError) {
       setError(msg);
       setSuccess('');
     } else {
       setSuccess(msg);
       setError('');
+      setTimeout(() => { if (generation === contextVersion.current) setSuccess(''); }, 4000);
     }
-    setTimeout(() => { setError(''); setSuccess(''); }, 4000);
-  };
+  }, []);
 
   const loadWorkspaces = useCallback(async () => {
+    const generation = contextVersion.current;
+    setSelectedCustomerId(administratorCustomer);
+    setLoadingWorkspaces(true);
+    setError('');
     try {
       const ws = await api.listWorkspaces(apiKey);
+      if (generation !== contextVersion.current) return;
       setWorkspaces(ws);
     } catch (e: unknown) {
-      flash((e as Error).message, true);
+      flash((e as Error).message, true, generation);
+    } finally {
+      if (generation === contextVersion.current) setLoadingWorkspaces(false);
     }
-  }, [apiKey]);
+  }, [apiKey, administratorCustomer, flash]);
 
   useEffect(() => {
-    if (apiKey) loadWorkspaces();
+    if (apiKey) void loadWorkspaces();
   }, [apiKey, loadWorkspaces]);
 
+  useEffect(() => () => {
+    contextVersion.current++;
+    setSelectedCustomerId('');
+  }, []);
+
   const createWorkspace = async () => {
-    if (!newWsName || !newWsCustomer) return flash('Name and customer ID required', true);
+    const customerId = administratorCustomer.trim() || newWsCustomer.trim();
+    if (!newWsName || !customerId) return flash('Name and customer ID required', true);
+    const generation = contextVersion.current;
     try {
-      const ws = await api.createWorkspace(apiKey, newWsCustomer, newWsName);
+      const ws = await api.createWorkspace(apiKey, customerId, newWsName);
+      if (generation !== contextVersion.current) return;
       flash(`Created workspace ${ws.id}`);
       setNewWsName('');
       setNewWsCustomer('');
-      loadWorkspaces();
+      void loadWorkspaces();
     } catch (e: unknown) {
-      flash((e as Error).message, true);
+      flash((e as Error).message, true, generation);
     }
   };
 
   const deleteWorkspace = async (id: string) => {
+    const generation = contextVersion.current;
     try {
       await api.deleteWorkspace(apiKey, id);
+      if (generation !== contextVersion.current) return;
+      if (selectedWs === id) selectWorkspace('');
       flash(`Deleted workspace ${id}`);
-      if (selectedWs === id) setSelectedWs('');
-      loadWorkspaces();
+      void loadWorkspaces();
     } catch (e: unknown) {
-      flash((e as Error).message, true);
+      flash((e as Error).message, true, generation);
     }
   };
 
@@ -81,57 +148,67 @@ function App() {
     if (!selectedWs) return flash('Select a workspace first', true);
     const validFiles = pushFiles.filter((f) => f.path && f.content);
     if (!validFiles.length) return flash('Add at least one file with path and content', true);
+    const generation = contextVersion.current;
     try {
       const result = await api.push(apiKey, selectedWs, validFiles, {
         agentId: pushAgentId || undefined,
       });
+      if (generation !== contextVersion.current) return;
       flash(`Pushed commit ${result.commitId}`);
       setPushFiles([{ path: '', content: '' }]);
       setPushAgentId('');
     } catch (e: unknown) {
-      flash((e as Error).message, true);
+      flash((e as Error).message, true, generation);
     }
   };
 
   const doPull = async () => {
     if (!selectedWs) return flash('Select a workspace first', true);
+    const generation = contextVersion.current;
     try {
       const result = await api.pull(apiKey, selectedWs);
+      if (generation !== contextVersion.current) return;
       setPullResult(result);
     } catch (e: unknown) {
-      flash((e as Error).message, true);
+      flash((e as Error).message, true, generation);
     }
   };
 
   const loadHistory = async () => {
     if (!selectedWs) return flash('Select a workspace first', true);
+    const generation = contextVersion.current;
     try {
       const result = await api.history(apiKey, selectedWs);
+      if (generation !== contextVersion.current) return;
       setCommits(result.commits);
     } catch (e: unknown) {
-      flash((e as Error).message, true);
+      flash((e as Error).message, true, generation);
     }
   };
 
   const doDiff = async () => {
     if (!selectedWs || !diffFrom || !diffTo)
       return flash('Select workspace and both versions', true);
+    const generation = contextVersion.current;
     try {
       const result = await api.diff(apiKey, selectedWs, diffFrom, diffTo);
+      if (generation !== contextVersion.current) return;
       setDiffResult(result);
     } catch (e: unknown) {
-      flash((e as Error).message, true);
+      flash((e as Error).message, true, generation);
     }
   };
 
   const doRollback = async (version: string) => {
     if (!selectedWs) return;
+    const generation = contextVersion.current;
     try {
       const result = await api.rollback(apiKey, selectedWs, version);
+      if (generation !== contextVersion.current) return;
       flash(`Rolled back — new commit ${result.commitId}`);
-      loadHistory();
+      void loadHistory();
     } catch (e: unknown) {
-      flash((e as Error).message, true);
+      flash((e as Error).message, true, generation);
     }
   };
 
@@ -143,14 +220,39 @@ function App() {
       </header>
 
       <div className="api-key-bar">
-        <label>API Key:</label>
+        <label htmlFor="secondary-api-key">API key:</label>
         <input
-          type="text"
+          id="secondary-api-key"
+          type={showApiKey ? 'text' : 'password'}
+          autoComplete="current-password"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
           value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
+          onChange={(e) => changeApiKey(e.target.value)}
           placeholder="Enter API key"
         />
+        <button type="button" aria-pressed={showApiKey} onClick={() => setShowApiKey(!showApiKey)}>
+          {showApiKey ? 'Hide API key' : 'Show API key'}
+        </button>
       </div>
+      <div className="api-key-bar">
+        <label htmlFor="administrator-customer">Administrator customer ID (optional):</label>
+        <input
+          id="administrator-customer"
+          value={administratorCustomer}
+          onChange={(e) => changeAdministratorCustomer(e.target.value)}
+          placeholder="Leave blank for customer keys"
+          aria-describedby="administrator-customer-help"
+          autoComplete="off"
+          autoCapitalize="off"
+          spellCheck={false}
+        />
+        <button type="button" disabled={!apiKey || loadingWorkspaces} onClick={() => void loadWorkspaces()}>
+          {loadingWorkspaces ? 'Loading…' : 'Load workspaces'}
+        </button>
+      </div>
+      <p id="administrator-customer-help" className="subtitle">Administrators: enter a customer ID. Customer keys: leave this field blank.</p>
 
       {error && <div className="alert error">{error}</div>}
       {success && <div className="alert success">{success}</div>}
@@ -170,7 +272,7 @@ function App() {
       {selectedWs && (
         <div className="selected-ws">
           Selected: <strong>{selectedWs}</strong>
-          <button className="btn-sm" onClick={() => setSelectedWs('')}>Clear</button>
+          <button className="btn-sm" onClick={() => selectWorkspace('')}>Clear</button>
         </div>
       )}
 
@@ -181,7 +283,9 @@ function App() {
             <div className="create-form">
               <input
                 placeholder="Customer ID"
-                value={newWsCustomer}
+                aria-label="Workspace customer ID"
+                value={administratorCustomer.trim() || newWsCustomer}
+                readOnly={Boolean(administratorCustomer.trim())}
                 onChange={(e) => setNewWsCustomer(e.target.value)}
               />
               <input
@@ -196,7 +300,7 @@ function App() {
                 <div
                   key={ws.id}
                   className={`workspace-card ${selectedWs === ws.id ? 'selected' : ''}`}
-                  onClick={() => setSelectedWs(ws.id)}
+                  onClick={() => selectWorkspace(ws.id)}
                 >
                   <div className="ws-name">{ws.name}</div>
                   <div className="ws-meta">
@@ -212,7 +316,9 @@ function App() {
                   </button>
                 </div>
               ))}
-              {!workspaces.length && <p className="empty">No workspaces yet. Create one above.</p>}
+              {!apiKey && <p className="empty">Enter an API key to load your workspaces.</p>}
+              {loadingWorkspaces && <p className="empty" role="status">Loading workspaces…</p>}
+              {apiKey && !loadingWorkspaces && !error && !workspaces.length && <p className="empty">No workspaces yet. Create one above.</p>}
             </div>
           </section>
         )}
@@ -339,22 +445,18 @@ function App() {
             </div>
             {diffResult && (
               <div className="diff-result">
-                <div className="diff-section added">
-                  <h3>Added ({diffResult.diff.added.length})</h3>
-                  {diffResult.diff.added.map((f) => <div key={f}>+ {f}</div>)}
-                </div>
-                <div className="diff-section removed">
-                  <h3>Removed ({diffResult.diff.removed.length})</h3>
-                  {diffResult.diff.removed.map((f) => <div key={f}>- {f}</div>)}
-                </div>
-                <div className="diff-section modified">
-                  <h3>Modified ({diffResult.diff.modified.length})</h3>
-                  {diffResult.diff.modified.map((f) => <div key={f}>~ {f}</div>)}
-                </div>
-                <div className="diff-section unchanged">
-                  <h3>Unchanged ({diffResult.diff.unchanged.length})</h3>
-                  {diffResult.diff.unchanged.map((f) => <div key={f}>  {f}</div>)}
-                </div>
+                {(['added', 'deleted', 'modified'] as const).map((status) => {
+                  const files = diffResult.files.filter((file) => file.status === status);
+                  const label = status === 'added' ? 'Added' : status === 'deleted' ? 'Removed' : 'Modified';
+                  const symbol = status === 'added' ? '+' : status === 'deleted' ? '-' : '~';
+                  return (
+                    <div key={status} className={`diff-section ${status === 'deleted' ? 'removed' : status}`}>
+                      <h3>{label} ({files.length})</h3>
+                      {files.map((file) => <div key={file.path}>{symbol} {file.path}</div>)}
+                    </div>
+                  );
+                })}
+                <p className="subtitle">Only changed files are shown.</p>
               </div>
             )}
           </section>

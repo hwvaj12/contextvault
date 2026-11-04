@@ -1,12 +1,20 @@
 import type { Workspace, WorkspaceFile, Commit, DiffResult, Webhook } from "../types";
 
 let apiKey = localStorage.getItem("cv-api-key") || "";
+let selectedCustomerId = localStorage.getItem("cv-selected-customer-id") || "";
 const BASE_URL = window.location.origin;
 
 export function setApiKey(key: string) {
+  if (key !== apiKey) setSelectedCustomerId("");
   apiKey = key;
   localStorage.setItem("cv-api-key", key);
 }
+export function setSelectedCustomerId(customerId: string) {
+  selectedCustomerId = customerId.trim();
+  if (selectedCustomerId) localStorage.setItem("cv-selected-customer-id", selectedCustomerId);
+  else localStorage.removeItem("cv-selected-customer-id");
+}
+export function getSelectedCustomerId(): string { return selectedCustomerId; }
 
 export function getApiKey(): string {
   return apiKey;
@@ -17,6 +25,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       "X-API-Key": apiKey,
+      ...(selectedCustomerId ? { "X-ContextVault-Customer-Id": selectedCustomerId } : {}),
       "Content-Type": "application/json",
       ...init?.headers,
     },
@@ -25,7 +34,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = await res.text();
     throw new Error(`${res.status}: ${body}`);
   }
-  return res.json();
+  return res.status === 204 ? undefined as T : res.json();
 }
 
 export async function listWorkspaces(): Promise<Workspace[]> {
@@ -34,27 +43,27 @@ export async function listWorkspaces(): Promise<Workspace[]> {
 }
 
 export async function getWorkspace(id: string): Promise<Workspace> {
-  return request<Workspace>(`/workspaces/${id}`);
+  return request<Workspace>(`/workspaces/${encodeURIComponent(id)}`);
 }
 
 export async function getFiles(workspaceId: string, version?: string): Promise<WorkspaceFile[]> {
-  const qs = version ? `?version=${version}` : "";
+  const qs = version ? `?version=${encodeURIComponent(version)}` : "";
   const data = await request<{ files: WorkspaceFile[]; version: string }>(
-    `/workspaces/${workspaceId}/pull${qs}`
+    `/workspaces/${encodeURIComponent(workspaceId)}/pull${qs}`
   );
   return data.files;
 }
 
 export async function getHistory(workspaceId: string, limit = 50): Promise<Commit[]> {
-  const data = await request<{ commits: Commit[] }>(
-    `/workspaces/${workspaceId}/history?limit=${limit}`
+  const data = await request<{ revisions: { id: string; parentRevisionId: string | null; createdAt: string }[] }>(
+    `/v1/workspaces/${encodeURIComponent(workspaceId)}/revisions?limit=${limit}`
   );
-  return data.commits;
+  return data.revisions.map(revision => ({ id: revision.id, parentId: revision.parentRevisionId, createdAt: revision.createdAt }));
 }
 
 export async function getDiff(workspaceId: string, from: string, to: string): Promise<DiffResult> {
   return request<DiffResult>(
-    `/workspaces/${workspaceId}/diff?from=${from}&to=${to}`
+    `/v1/workspaces/${encodeURIComponent(workspaceId)}/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
   );
 }
 
@@ -68,15 +77,20 @@ export async function searchFiles(
   workspaceId: string,
   query: string
 ): Promise<{ query: string; results: SearchResult[]; count: number }> {
-  return request(`/workspaces/${workspaceId}/search?q=${encodeURIComponent(query)}`);
+  return request(`/v1/workspaces/${encodeURIComponent(workspaceId)}/search?q=${encodeURIComponent(query)}`);
 }
 
 export interface UsageStats {
-  totalRequests: number;
+  totalRequests: null;
   uniqueWorkspaces: number;
-  totalStorageBytes: number;
-  activeApiKeys: number;
-  requestsByDay: { date: string; count: number }[];
+  totalStorageBytes: null;
+  activeApiKeys: null;
+  requestsByDay: null;
+  recordedActions: number | null;
+  logicalAcceptedBytes: number | null;
+  recordedActionsByDay: { date: string; count: number }[];
+  measurementComplete: boolean;
+  metricsUnavailable: string[];
 }
 
 export async function getUsageStats(period: string = "7d"): Promise<UsageStats> {

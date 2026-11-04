@@ -180,7 +180,7 @@ export async function startWorkspaceServer(options = {}) {
         }
       }
       // A health response from another process cannot satisfy ownership after a port race.
-      const verified = await fetch(`${baseUrl}/workspaces?customerId=${encodeURIComponent(customerA)}`, { headers: { "X-API-Key": masterKey }, signal: AbortSignal.timeout(startupMs) });
+      const verified = await fetch(`${baseUrl}/workspaces?customerId=${encodeURIComponent(customerA)}`, { headers: { "X-API-Key": masterKey, "X-ContextVault-Customer-Id": customerA }, signal: AbortSignal.timeout(startupMs) });
       if (verified.status !== 200 || closed) throw new Error("Fixture server ownership check failed");
       await verified.body?.cancel();
       return client();

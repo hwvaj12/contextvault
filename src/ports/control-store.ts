@@ -110,10 +110,18 @@ export interface CredentialAuthority {
 
 /** One transactional authority. Tenant operations use explicit scope; maintenance scans return tenant-scoped records. */
 export interface ControlStore {
+  claimRestore(input: { scope: WorkspaceScope; principal: Principal; authorization: AuthorizationPrecondition; command: CommandIdentity<"restore">; intent: import("../domain").RestoreIntent; claim: ProcessingClaim; now: Timestamp }): Promise<{ operation: import("../domain").RestoreOperation; replayed: boolean }>;
+  acceptRestore(input: ProcessingCAS & { authorization: AuthorizationPrecondition; candidate: PreparedRevision; events: PublicationEvents }): Promise<import("../domain").RestoreOperation>;
+  failRestore(input: ProcessingCAS & { code: ErrorCode; message: string; events: PublicationEvents }): Promise<import("../domain").RestoreOperation>;
+  createBundle(input: { scope: CustomerScope; principal: Principal; bundle: import("../domain").BundleRecord }): Promise<import("../domain").BundleRecord>;
+  getBundle(scope: CustomerScope, id: string): Promise<import("../domain").BundleRecord | null>;
+  selectBundleManifest(input: { scope: CustomerScope; principal: Principal; id: string; expectedVersion: Version; header: import("../domain").SignedWorkspaceBundle; now: Timestamp }): Promise<import("../domain").BundleRecord>;
+  completeBundle(input: { scope: CustomerScope; principal: Principal; id: string; expectedVersion: Version; now: Timestamp }): Promise<import("../domain").BundleRecord>;
   /** Coordinate private compatibility metadata across processes, independently of canonical transactions. No lease-based takeover. */
   acquireCompatibilityLock(scope: WorkspaceScope, resource: string): Promise<CompatibilityLock>;
   getWorkspace(scope: WorkspaceScope): Promise<Workspace | null>;
   listWorkspaces(scope: CustomerScope, cursor?: string, limit?: number): Promise<{ workspaces: readonly Workspace[]; nextCursor: string | null }>;
+  listWorkspaceMetadata(scope: CustomerScope, offset: number, limit: number): Promise<{ workspaces: readonly Workspace[]; total: number }>;
   getBinding(scope: WorkspaceScope, bindingId: StorageBindingId): Promise<StorageBinding | null>;
   getRevision(scope: WorkspaceScope, revisionId: RevisionId): Promise<Revision | null>;
   listRevisions(scope: WorkspaceScope, cursor?: string, limit?: number): Promise<{ revisions: readonly Revision[]; nextCursor: string | null }>;

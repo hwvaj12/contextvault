@@ -9,6 +9,7 @@ export interface ServerConfiguration {
   dataDirectory: string; databasePath: string; legacySecretsPath: string; masterKey: string | null;
   defaultConfigurationRef: string; profiles: readonly StorageProfile[];
   limits: WorkspaceLimits; leaseTtlMs: number; processingTtlMs: number; maintenanceIntervalMs: number; requestTimeoutMs: number;
+  signing?: { privateKey: string; publicKey: string; keyId: string };
 }
 const invalid = (message: string): never => { throw new WorkspaceError("INVALID_REQUEST", message); };
 function absolute(value: unknown, label: string): string {
@@ -76,6 +77,7 @@ export function loadConfiguration(env: NodeJS.ProcessEnv = process.env): ServerC
   const limits = workspaceLimits(rawLimits);
   if (Object.entries(limits).some(([key, value]) => value > workspaceLimits()[key as keyof WorkspaceLimits])) return invalid("Workspace limits may lower the shared v1 ceilings");
   return { dataDirectory, databasePath, legacySecretsPath, masterKey: env.CONTEXTVAULT_API_KEY?.trim() ? env.CONTEXTVAULT_API_KEY : null,
+    ...(env.CONTEXTVAULT_SIGNING_PRIVATE_KEY && env.CONTEXTVAULT_SIGNING_PUBLIC_KEY && env.CONTEXTVAULT_SIGNING_KEY_ID ? { signing: { privateKey: env.CONTEXTVAULT_SIGNING_PRIVATE_KEY, publicKey: env.CONTEXTVAULT_SIGNING_PUBLIC_KEY, keyId: env.CONTEXTVAULT_SIGNING_KEY_ID } } : {}),
     profiles: [...new Map(profiles.map(profile => [profile.configurationRef, profile])).values()], defaultConfigurationRef: backend === "git" ? git.configurationRef : s3!.configurationRef,
     limits, leaseTtlMs: positive(env.CV_LEASE_TTL_MS, 300_000, "Lease TTL"), processingTtlMs: positive(env.CV_PROCESSING_TTL_MS, 300_000, "Processing TTL"),
     maintenanceIntervalMs: positive(env.CV_MAINTENANCE_INTERVAL_MS, 1000, "Maintenance interval"), requestTimeoutMs: positive(env.CV_REQUEST_TIMEOUT_MS, 120_000, "Request timeout") };

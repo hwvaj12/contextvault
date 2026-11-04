@@ -227,6 +227,29 @@ export interface WorkspaceCreationIntent {
   initialManifest: { schemaVersion: 1; entries: readonly [] };
   initialManifestDigest: Sha256;
 }
+/** Portable bundles bind complete canonical contents, including explicit empty directories. */
+export interface SignedWorkspaceBundle {
+  version: "1.0"; workspaceId: string; revisionId: string; createdAt: Timestamp; schemaVersion: "1";
+  signatureAlgorithm: "Ed25519"; signedBy: "contextvault"; keyId: string;
+  files: readonly { path: string; size: number; hash: string }[];
+  snapshot: Manifest; signature: string;
+}
+/** Private artifact ownership is durable before any staging bytes. Ready contents are immutable. */
+export interface BundleRecord {
+  id: string; customerId: CustomerId; principal: Principal; kind: "export" | "upload";
+  idempotencyKey: string; requestDigest: Sha256; state: "preparing" | "uploading" | "ready";
+  version: Version; source: Revision | null; header: SignedWorkspaceBundle | null;
+  manifestDigest: Sha256 | null; createdAt: Timestamp; updatedAt: Timestamp;
+}
+export type RestoreSource =
+  | { kind: "revision"; revision: Revision; binding: StorageBinding; principal: Principal }
+  | { kind: "bundle"; bundle: BundleRecord };
+/** Exact request, immutable source and candidate identity precede storage I/O. */
+export interface RestoreIntent {
+  schemaVersion: 1; kind: "restore"; request: JsonRequestSnapshot<RestoreRequest>;
+  source: RestoreSource; sourceManifestDigest: Sha256; candidateIdentity: CandidateIdentity;
+  destinationAction: "workspace:restore" | "workspace:create";
+}
 export type OperationResult = FinalizationResult
   | { kind: "workspace:create"; workspaceId: WorkspaceId; revisionId: RevisionId }
   | { kind: "workspace:status"; workspaceId: WorkspaceId; status: Workspace["status"] }
@@ -258,12 +281,13 @@ export interface OperationRecord<Kind extends OperationKind> {
 }
 export type FinalizationOperation = OperationRecord<"finalize"> & { runId: RunId; intent: FinalizationIntent };
 export type WorkspaceCreationOperation = OperationRecord<"workspace:create"> & { runId: null; intent: WorkspaceCreationIntent };
+export type RestoreOperation = OperationRecord<"restore"> & { runId: null; intent: RestoreIntent };
 export type OtherOperation = {
-  [Kind in Exclude<OperationKind, "finalize" | "workspace:create">]: OperationRecord<Kind> & {
+  [Kind in Exclude<OperationKind, "finalize" | "workspace:create" | "restore">]: OperationRecord<Kind> & {
     intent: { kind: "command"; candidateIdentity: CandidateIdentity | null };
   }
-}[Exclude<OperationKind, "finalize" | "workspace:create">];
-export type Operation = FinalizationOperation | WorkspaceCreationOperation | OtherOperation;
+}[Exclude<OperationKind, "finalize" | "workspace:create" | "restore">];
+export type Operation = FinalizationOperation | WorkspaceCreationOperation | RestoreOperation | OtherOperation;
 export interface AuditEvent {
   id: EventId;
   scope: WorkspaceScope;
