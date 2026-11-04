@@ -17,7 +17,7 @@ import { finalInput, principal, scopeOf, setup } from "./helpers";
 
 it("registers canonical lifecycle events through HTTP and delivers each authoritative event with the legacy signature", async () => {
   const context = await setup(); state.database = context.control.database;
-  const received: { event: string; payload: { eventId: string }; timestamp: string }[] = [];
+  const received: { event: string; payload: { eventId: string; runId?: string; operationId?: string }; timestamp: string }[] = [];
   const signatureKey = createHash("sha256").update("public-registration-secret").digest("hex");
   const server = createServer(async (request, response) => {
     let body = ""; for await (const chunk of request) body += chunk;
@@ -49,10 +49,17 @@ it("registers canonical lifecycle events through HTTP and delivers each authorit
     context.clock.value = "2026-11-03T12:10:00.000Z";
     const maintenance = new WorkspaceMaintenance({ lifecycle: context.app, now: () => context.clock.value, deliver: createWebhookDelivery({ resolveSigningKey: getWebhookSigningKey, timeoutMs: 2000 }) });
     expect((await maintenance.runOnce()).errors).toEqual([]);
-    expect(received.map(event => event.event).sort()).toEqual(["workspace.created", "run.finalized", "run.conflicted", "run.aborted", "run.expired"].sort());
-    expect(new Set(received.map(event => event.payload.eventId)).size).toBe(5);
-    expect((await context.control.listAudit(scope)).events).toHaveLength(5);
-    await maintenance.runOnce(); expect(received).toHaveLength(5);
+    expect(received.map(event => event.event).sort()).toEqual(["workspace.created", "run.finalized", "run.completed", "run.conflicted", "run.aborted", "run.expired"].sort());
+    expect(new Set(received.map(event => event.payload.eventId)).size).toBe(6);
+    const finalized = received.find(event => event.event === "run.finalized")!;
+    const completed = received.find(event => event.event === "run.completed")!;
+    expect(completed.payload.runId).toBe(finalized.payload.runId);
+    expect(completed.payload.operationId).toBe(finalized.payload.operationId);
+    const audit = (await context.control.listAudit(scope)).events;
+    expect(audit).toHaveLength(9);
+    expect(audit.filter(event => event.type === "run.started")).toHaveLength(4);
+    expect(new Set(audit.map(event => event.id)).size).toBe(9);
+    await maintenance.runOnce(); expect(received).toHaveLength(6);
     expect((await context.read(scope)).files["accepted.bin"]).toEqual(Buffer.from([0, 255]));
   } finally {
     await app.close(); server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); state.database = null;

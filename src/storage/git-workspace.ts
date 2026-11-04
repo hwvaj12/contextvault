@@ -1,26 +1,16 @@
+import { loadConfiguration } from "../config";
 import { simpleGit, SimpleGit } from "simple-git";
 import * as fs from "fs/promises";
 import * as fsSync from "fs";
 import * as path from "path";
 import { Workspace, Commit, CreateWorkspaceInput, IStorage } from "./interfaces";
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const WORKSPACES_DIR = path.join(DATA_DIR, "workspaces");
-const META_DIR = path.join(DATA_DIR, "workspace-meta");
-
-function ensureDirs() {
-  fsSync.mkdirSync(WORKSPACES_DIR, { recursive: true });
-  fsSync.mkdirSync(META_DIR, { recursive: true });
-}
-
-ensureDirs();
-
 function metaPath(workspaceId: string): string {
-  return path.join(META_DIR, `${workspaceId}.json`);
+  return path.join(loadConfiguration().dataDirectory, "workspace-meta", `${workspaceId}.json`);
 }
 
 function repoPath(workspaceId: string): string {
-  return path.join(WORKSPACES_DIR, workspaceId);
+  return path.join(loadConfiguration().dataDirectory, "workspaces", workspaceId);
 }
 
 function gitFor(workspaceId: string): SimpleGit {
@@ -43,6 +33,7 @@ function readMeta(workspaceId: string): WorkspaceMeta | null {
 }
 
 function writeMeta(meta: WorkspaceMeta): void {
+  fsSync.mkdirSync(path.dirname(metaPath(meta.id)), { recursive: true });
   fsSync.writeFileSync(metaPath(meta.id), JSON.stringify(meta, null, 2), "utf-8");
 }
 
@@ -126,11 +117,13 @@ export class GitStorage implements IStorage {
   }
 
   async listWorkspaces(): Promise<Workspace[]> {
-    const files = fsSync.readdirSync(META_DIR).filter((f) => f.endsWith(".json"));
+    const directory = path.join(loadConfiguration().dataDirectory, "workspace-meta");
+    if (!fsSync.existsSync(directory)) return [];
+    const files = fsSync.readdirSync(directory).filter((f) => f.endsWith(".json"));
     const workspaces: Workspace[] = [];
 
     for (const file of files) {
-      const raw = fsSync.readFileSync(path.join(META_DIR, file), "utf-8");
+      const raw = fsSync.readFileSync(path.join(loadConfiguration().dataDirectory, "workspace-meta", file), "utf-8");
       const meta: WorkspaceMeta = JSON.parse(raw);
       if (meta.deletedAt) continue;
 

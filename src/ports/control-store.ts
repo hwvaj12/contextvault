@@ -6,6 +6,7 @@ import type {
   StorageMigration, SubscriptionId, Timestamp, UploadReceipt, VerifiedRevisionCopy, Version, Workspace, WorkspaceCreationIntent, WorkspaceCreationOperation, WorkspaceScope,
 } from "../domain";
 
+export interface CompatibilityLock { release(): Promise<void> }
 export interface CommandResult<Value, StoredOperation extends Operation = Operation> { value: Value; operation: StoredOperation; replayed: boolean }
 export type CollectionWork = { kind: "cleanup"; cleanup: CleanupStatus } | { kind: "candidate"; candidate: CandidateCollectionTarget } | { kind: "submission"; submission: SubmissionCollectionTarget };
 export interface PublicationEvents { audit: AuditEvent; outbox: OutboxEvent }
@@ -93,6 +94,8 @@ export interface CatalogSubscription {
   eventTypes: readonly string[];
   destination: string;
   signingSecretRef: string | null;
+  /** Frozen presentation metadata shares one canonical event but has its own durable recipient delivery. */
+  representation?: { eventType: string; payload: Record<string, unknown>; subscriptionId: SubscriptionId; deliveryId: string };
 }
 export interface CredentialAuthority {
   credentialId: CredentialId;
@@ -107,12 +110,15 @@ export interface CredentialAuthority {
 
 /** One transactional authority. Tenant operations use explicit scope; maintenance scans return tenant-scoped records. */
 export interface ControlStore {
+  /** Coordinate private compatibility metadata across processes, independently of canonical transactions. No lease-based takeover. */
+  acquireCompatibilityLock(scope: WorkspaceScope, resource: string): Promise<CompatibilityLock>;
   getWorkspace(scope: WorkspaceScope): Promise<Workspace | null>;
   listWorkspaces(scope: CustomerScope, cursor?: string, limit?: number): Promise<{ workspaces: readonly Workspace[]; nextCursor: string | null }>;
   getBinding(scope: WorkspaceScope, bindingId: StorageBindingId): Promise<StorageBinding | null>;
   getRevision(scope: WorkspaceScope, revisionId: RevisionId): Promise<Revision | null>;
   listRevisions(scope: WorkspaceScope, cursor?: string, limit?: number): Promise<{ revisions: readonly Revision[]; nextCursor: string | null }>;
   getRun(scope: WorkspaceScope, runId: RunId): Promise<Run | null>;
+  listRuns(scope: WorkspaceScope, cursor?: string, limit?: number): Promise<{ runs: readonly Run[]; nextCursor: string | null }>;
   getOperation(scope: WorkspaceScope, operationId: OperationId): Promise<Operation | null>;
   /** Resolve by ID within one authenticated tenant, then enforce current credential/grant policy. No workspace enumeration or unscoped SQL fallback. */
   resolveRun(context: ResourceLookupContext, runId: RunId): Promise<Run | null>;
@@ -155,6 +161,8 @@ export interface ControlStore {
     scope: RunScope; principal: Principal; authorization: AuthorizationPrecondition; command: CommandIdentity;
     expectedRunVersion: Version; reason: string; events: PublicationEvents; now: Timestamp;
   }): Promise<CommandResult<Run>>;
+  /** Bind legacy push presentation to the exact authorized finalize command before its claim. This metadata never establishes acceptance. */
+  recordLegacyPush(input: { scope: RunScope; principal: Principal; authorization: AuthorizationPrecondition; command: CommandIdentity<"finalize"> }): Promise<void>;
   recordPreparedRevision(input: ProcessingCAS & { candidate: PreparedRevision }): Promise<Operation>;
   /**
    * Atomically recheck ownership, active workspace, authorization/key epochs, head, all versions, binding, and fence.

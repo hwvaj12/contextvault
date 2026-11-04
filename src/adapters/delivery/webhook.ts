@@ -14,8 +14,10 @@ export function createWebhookDelivery(options: WebhookDeliveryOptions = {}): Del
     let destination: URL;
     try { destination = new URL(recipient.destination); } catch { throw new WorkspaceError("STORAGE_UNAVAILABLE", "Webhook destination is invalid"); }
     if (!["http:", "https:"].includes(destination.protocol) || destination.username || destination.password) throw new WorkspaceError("STORAGE_UNAVAILABLE", "Webhook destination requires HTTP without embedded credentials");
-    const body = JSON.stringify({ event: event.type, payload: { ...event.payload, workspaceId: event.scope.workspaceId, ...(event.runId ? { runId: event.runId } : {}), operationId: event.operationId, eventId: event.id }, timestamp: event.createdAt });
-    const headers: Record<string, string> = { "Content-Type": "application/json", "X-ContextVault-Event": event.type, "X-ContextVault-Event-ID": event.id };
+    const eventType = recipient.representation?.eventType ?? event.type;
+    const deliveryId = recipient.representation?.deliveryId ?? event.id;
+    const body = JSON.stringify({ event: eventType, payload: { ...event.payload, ...recipient.representation?.payload, workspaceId: event.scope.workspaceId, ...(event.runId ? { runId: event.runId } : {}), operationId: event.operationId, eventId: deliveryId }, timestamp: event.createdAt });
+    const headers: Record<string, string> = { "Content-Type": "application/json", "X-ContextVault-Event": eventType, "X-ContextVault-Event-ID": deliveryId };
     if (recipient.signingSecretRef) {
       const key = await options.resolveSigningKey?.(recipient.signingSecretRef, event.scope.customerId);
       if (!key) throw new WorkspaceError("STORAGE_UNAVAILABLE", "Webhook signing key is unavailable");

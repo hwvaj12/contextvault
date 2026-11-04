@@ -1,9 +1,11 @@
+import { acquireCompatibilityLock } from "../../storage/compatibility-lock";
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import * as D from "../../domain";
 import type { ControlStore, CredentialAuthority, CatalogSubscription, CollectionWork, CommandResult, PublicationEvents, ResourceLookupContext, ProcessingCAS } from "../../ports/control-store";
 import { initSchema } from "../../db";
 import { isCurrentConfiguredAdministrator } from "../../db/configured-administrator";
+import { canonicalRepresentation, legacyRepresentations, representationRecipient } from "../../compat/webhook";
 import { decideAccess } from "../access/catalog-access-policy";
 type Input<K extends keyof ControlStore> = Parameters<ControlStore[K]>[0];
 type MigrationGuards = {
@@ -57,6 +59,7 @@ export function bootstrapAuthority(db: Database.Database, authority: CredentialA
 /** All mutations take SQLite's writer reservation before reading their CAS predicates. No backend bytes live here. */
 export class SqliteControlStore implements ControlStore {
     constructor(readonly database: Database.Database) { initSchema(database); }
+    acquireCompatibilityLock(scope: D.WorkspaceScope, resource: string) { return acquireCompatibilityLock(this.database, scope, resource); }
     private transaction<T>(work: () => T): T { return this.database.transaction(work).immediate(); }
     private load<T>(kind: string, id: string, scope?: D.CustomerScope | D.WorkspaceScope): T | null {
         let sql = "SELECT data FROM catalog_records WHERE kind=? AND id=?";
@@ -281,6 +284,7 @@ export class SqliteControlStore implements ControlStore {
     async getBinding(scope: D.WorkspaceScope, id: D.StorageBindingId) { return this.load<D.StorageBinding>("binding", id, scope); }
     async getRevision(scope: D.WorkspaceScope, id: D.RevisionId) { return this.load<D.Revision>("revision", id, scope); }
     async listRevisions(scope: D.WorkspaceScope, cursor?: string, limit?: number) { const page = this.page<D.Revision>("revision", scope, cursor, limit); return { revisions: page.values, nextCursor: page.nextCursor }; }
+    async listRuns(scope: D.WorkspaceScope, cursor?: string, limit?: number) { const page = this.page<D.Run>("run", scope, cursor, limit); return { runs: page.values, nextCursor: page.nextCursor }; }
     async getRun(scope: D.WorkspaceScope, id: D.RunId) { return this.load<D.Run>("run", id, scope); }
     async getOperation(scope: D.WorkspaceScope, id: D.OperationId) { return this.load<D.Operation>("operation", id, scope); }
     private resolve<T extends D.Run | D.Operation>(kind: "run" | "operation", context: ResourceLookupContext, id: string): T | null {
@@ -441,7 +445,10 @@ export class SqliteControlStore implements ControlStore {
             if (this.load("cleanup", run.cleanupId) || this.database.prepare("SELECT id FROM catalog_records WHERE kind='run' AND json_extract(data,'$.cleanupId')=?").get(run.cleanupId))
                 fail("VERSION_CONFLICT", "Cleanup identity is already used");
             this.write("run", run.id, input.scope, run, true, run.id);
-            return this.saveCommand(this.operation(input.command, input.principal, input.scope, null, { kind: "run:open", runId: run.id }), run);
+            const operation = this.operation(input.command, input.principal, input.scope, run.id, { kind: "run:open", runId: run.id });
+            const event = { scope: input.scope, runId: run.id, operationId: operation.id, actorId: input.principal.actorId, type: "run.started", payload: { agentId: run.agentLabel }, createdAt: input.createdAt };
+            this.events({ audit: { ...event, id: `audit-${operation.id}` as D.EventId }, outbox: { ...event, id: `outbox-${operation.id}` as D.EventId, deliveryState: "pending", version: 1, attempts: 0, nextAttemptAt: input.createdAt, claim: null } }, operation);
+            return this.saveCommand(operation, run);
         });
     }
     async transitionWorkspaceStatus(input: Input<"transitionWorkspaceStatus">) {
@@ -487,6 +494,23 @@ export class SqliteControlStore implements ControlStore {
             run.updatedAt = input.now;
             this.write("run", run.id, run.scope, run, false, run.id);
             return this.saveCommand(this.operation(input.command, input.principal, { customerId: input.scope.customerId, workspaceId: input.scope.workspaceId }, run.id, { kind: "run:heartbeat", runId: run.id, leaseVersion: run.lease.version }), run);
+        });
+    }
+    async recordLegacyPush(input: Input<"recordLegacyPush">) {
+        this.transaction(() => {
+            const scope = { customerId: input.scope.customerId, workspaceId: input.scope.workspaceId };
+            this.command(input.command, input.principal, input.scope, "finalize", input.scope.runId);
+            this.permit(input.principal, "run:finalize", scope, input.authorization);
+            const id = D.canonicalJson([input.command.idempotencyScope, input.command.idempotencyKey]);
+            const value = { kind: "legacy-push", runId: input.scope.runId, requestDigest: input.command.requestDigest };
+            const run = this.run(input.scope, input.principal);
+            const existing = this.load("compatibility-publication", id, scope);
+            if (existing) {
+                if (!same(existing, value)) fail("IDEMPOTENCY_KEY_REUSED", "Legacy publication metadata differs from the original command");
+                return;
+            }
+            this.active(run, input.command.requestedAt);
+            this.write("compatibility-publication", id, scope, value, true, input.scope.runId);
         });
     }
     async claimFinalization(input: Input<"claimFinalization">) {
@@ -1453,7 +1477,19 @@ export class SqliteControlStore implements ControlStore {
                 subscriptions: CatalogSubscription[];
             }>("outbox-recipients", event.id, input.scope);
             if (!snapshot) {
-                snapshot = { subscriptions: this.subscriptions({ customerId: input.scope.customerId }, event.type) };
+                let subscriptions = this.subscriptions({ customerId: input.scope.customerId }, event.type);
+                const operation = this.load<D.Operation>("operation", event.operationId, input.scope);
+                const run = event.runId ? this.load<D.Run>("run", event.runId, input.scope) : null;
+                const canonical = canonicalRepresentation(event, operation, run);
+                if (canonical) subscriptions = subscriptions.map(recipient => ({ ...recipient, representation: { ...canonical, subscriptionId: recipient.id, deliveryId: event.id } }));
+                const compatibility = operation ? this.load<{ kind: string; runId: D.RunId; requestDigest: D.Sha256 }>("compatibility-publication", D.canonicalJson([operation.command.idempotencyScope, operation.command.idempotencyKey]), input.scope) : null;
+                const legacyPush = compatibility?.kind === "legacy-push" && compatibility.runId === event.runId && compatibility.requestDigest === operation?.command.requestDigest;
+                for (const representation of legacyRepresentations(event, operation, run, legacyPush)) {
+                    for (const recipient of this.subscriptions({ customerId: input.scope.customerId }, representation.eventType)) {
+                        subscriptions.push(representationRecipient(event, recipient, representation));
+                    }
+                }
+                snapshot = { subscriptions };
                 this.write("outbox-recipients", event.id, input.scope, snapshot, true);
             }
             if (snapshot.subscriptions.length === 0) {

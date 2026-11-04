@@ -1,322 +1,51 @@
-import { FastifyInstance } from "fastify";
-import { z } from "zod";
-import { getWorkspace } from "../services/workspace.service";
-import { getCommitHistory } from "../services/commit.service";
-import { deliver } from "../services/webhook.service";
-import { getStorage } from "../storage";
-import { verifyWorkspaceOwnership } from "../middleware/tenant";
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { authorizedWorkspace, commandKey, identity } from '../compat/context';
+import { acceptedReference, acceptedSnapshot, publishSnapshot, snapshot } from '../compat/publication';
 
-const PushSchema = z.object({
-  files: z.array(
-    z.object({
-      path: z.string().min(1),
-      content: z.string(),
-    })
-  ).min(1),
-  metadata: z.object({
-    agentId: z.string().optional(),
-    taskId: z.string().optional(),
-    tags: z.array(z.string()).optional(),
-  }).optional().default({}),
-});
-
-const RollbackSchema = z.object({
-  toVersion: z.string().min(1),
-});
-
+const filesSchema = z.array(z.object({ path: z.string().min(1), content: z.string(), encoding: z.enum(['utf8', 'base64']).optional() }).strict());
 export async function commitRoutes(app: FastifyInstance) {
-  // POST /workspaces/:id/push
-  app.post(
-    "/workspaces/:id/push",
-    {
-      schema: {
-        description: "Push state (create a new commit)",
-        tags: ["Commits"],
-        params: {
-          type: "object",
-          properties: { id: { type: "string" } },
-          required: ["id"],
-        },
-        body: {
-          type: "object",
-          required: ["files"],
-          properties: {
-            files: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  path: { type: "string" },
-                  content: { type: "string" },
-                },
-                required: ["path", "content"],
-              },
-            },
-            metadata: {
-              type: "object",
-              properties: {
-                agentId: { type: "string" },
-                taskId: { type: "string" },
-                tags: { type: "array", items: { type: "string" } },
-              },
-            },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id } = request.params as { id: string };
-
-      if (!verifyWorkspaceOwnership(request, reply, id)) return;
-
-      const body = PushSchema.parse(request.body);
-
-      const workspace = await getWorkspace(id);
-      if (!workspace) {
-        return reply.code(404).send({ error: "Workspace not found" });
-      }
-
-      const storage = getStorage();
-      const result = await storage.pushCommit(id, body.files, body.metadata);
-
-      const commitResponse = {
-        commitId: result.commitId,
-        workspaceId: id,
-        parentId: result.parentId,
-        files: body.files.map((f) => f.path),
-        metadata: body.metadata,
-        sizeBytes: result.sizeBytes,
-        createdAt: result.createdAt,
-      };
-
-      deliver("commit.created", { workspaceId: id, commitId: result.commitId });
-
-      reply.code(201).send(commitResponse);
-    }
-  );
-
-  // GET /workspaces/:id/pull
-  app.get(
-    "/workspaces/:id/pull",
-    {
-      schema: {
-        description: "Pull latest state or a specific version",
-        tags: ["Commits"],
-        params: {
-          type: "object",
-          properties: { id: { type: "string" } },
-          required: ["id"],
-        },
-        querystring: {
-          type: "object",
-          properties: { version: { type: "string" } },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id } = request.params as { id: string };
-      const { version, v } = request.query as { version?: string; v?: string };
-      const commitRef = version || v;
-
-      if (!verifyWorkspaceOwnership(request, reply, id)) return;
-
-      const workspace = await getWorkspace(id);
-      if (!workspace) {
-        return reply.code(404).send({ error: "Workspace not found" });
-      }
-
-      const storage = getStorage();
-      const result = await storage.pullCommit(id, commitRef);
-
-      if (!result) {
-        return reply.send({ commitId: null, files: [], metadata: {} });
-      }
-
-      reply.send({
-        commitId: result.commitId,
-        workspaceId: id,
-        parentId: result.parentId,
-        files: result.files,
-        metadata: result.metadata,
-        sizeBytes: result.sizeBytes,
-        createdAt: result.createdAt,
-      });
-    }
-  );
-
-  // GET /workspaces/:id/history
-  app.get(
-    "/workspaces/:id/history",
-    {
-      schema: {
-        description: "List commit history for a workspace",
-        tags: ["History"],
-        params: {
-          type: "object",
-          properties: { id: { type: "string" } },
-          required: ["id"],
-        },
-        querystring: {
-          type: "object",
-          properties: {
-            limit: { type: "integer", default: 20 },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id } = request.params as { id: string };
-      const { limit } = request.query as { limit?: number };
-
-      if (!verifyWorkspaceOwnership(request, reply, id)) return;
-
-      const workspace = await getWorkspace(id);
-      if (!workspace) {
-        return reply.code(404).send({ error: "Workspace not found" });
-      }
-
-      const commits = await getCommitHistory(id, limit || 20);
-      reply.send({ commits, count: commits.length });
-    }
-  );
-
-  // GET /workspaces/:id/diff
-  app.get(
-    "/workspaces/:id/diff",
-    {
-      schema: {
-        description: "Compare two versions",
-        tags: ["History"],
-        params: {
-          type: "object",
-          properties: { id: { type: "string" } },
-          required: ["id"],
-        },
-        querystring: {
-          type: "object",
-          required: ["from", "to"],
-          properties: {
-            from: { type: "string" },
-            to: { type: "string" },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id } = request.params as { id: string };
-      const { from, to } = request.query as { from: string; to: string };
-
-      if (!from || !to) {
-        return reply
-          .code(400)
-          .send({ error: "Both 'from' and 'to' query params are required" });
-      }
-
-      if (!verifyWorkspaceOwnership(request, reply, id)) return;
-
-      const workspace = await getWorkspace(id);
-      if (!workspace) {
-        return reply.code(404).send({ error: "Workspace not found" });
-      }
-
-      try {
-        const storage = getStorage();
-        const result = await storage.getDiff(id, from, to);
-        reply.send({ from, to, files: result.files, summary: result.summary });
-      } catch {
-        return reply.code(404).send({ error: "One or both commits not found" });
-      }
-    }
-  );
-
-  // POST /workspaces/:id/rollback
-  app.post(
-    "/workspaces/:id/rollback",
-    {
-      schema: {
-        description: "Rollback to a specific version",
-        tags: ["History"],
-        params: {
-          type: "object",
-          properties: { id: { type: "string" } },
-          required: ["id"],
-        },
-        body: {
-          type: "object",
-          required: ["toVersion"],
-          properties: {
-            toVersion: { type: "string" },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id } = request.params as { id: string };
-
-      if (!verifyWorkspaceOwnership(request, reply, id)) return;
-
-      const body = RollbackSchema.parse(request.body);
-
-      const workspace = await getWorkspace(id);
-      if (!workspace) {
-        return reply.code(404).send({ error: "Workspace not found" });
-      }
-
-      try {
-        const storage = getStorage();
-        const result = await storage.rollback(id, body.toVersion, {});
-
-        reply.code(201).send({
-          commitId: result.commitId,
-          rolledBackTo: body.toVersion,
-          workspaceId: id,
-          files: result.files,
-          sizeBytes: result.sizeBytes,
-          createdAt: result.createdAt,
-        });
-      } catch {
-        return reply.code(404).send({ error: "Target version not found" });
-      }
-    }
-  );
-
-  // GET /workspaces/:id/search
-  app.get(
-    "/workspaces/:id/search",
-    {
-      schema: {
-        description: "Search files within a workspace",
-        tags: ["Search"],
-        params: {
-          type: "object",
-          properties: { id: { type: "string" } },
-          required: ["id"],
-        },
-        querystring: {
-          type: "object",
-          required: ["q"],
-          properties: {
-            q: { type: "string", minLength: 1 },
-            limit: { type: "integer", default: 50 },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id } = request.params as { id: string };
-      const { q, limit } = request.query as { q: string; limit?: number };
-
-      if (!verifyWorkspaceOwnership(request, reply, id)) return;
-
-      const workspace = await getWorkspace(id);
-      if (!workspace) {
-        return reply.code(404).send({ error: "Workspace not found" });
-      }
-
-      const storage = getStorage();
-      const results = await storage.searchFiles(id, q, { limit: limit || 50 });
-
-      reply.send({ query: q, results, count: results.length });
-    }
-  );
+  const runtime = app.contextVault;
+  app.post('/workspaces/:id/push', async (request, reply) => {
+    const { scope } = await authorizedWorkspace(runtime, request, 'workspace:write');
+    const body = z.object({ files: filesSchema, metadata: z.record(z.string(), z.unknown()).default({}) }).parse(request.body);
+    const key = commandKey(request);
+    const { run, ...result } = await publishSnapshot(runtime, { kind: 'push', scope, principal: identity(request), key, request: body, agentLabel: typeof body.metadata.agentId === 'string' ? body.metadata.agentId : undefined, source: async () => snapshot(runtime, body.files) });
+    return reply.code(201).header('Idempotency-Key', key).send({ ...result, metadata: body.metadata });
+  });
+  app.post('/workspaces/:id/rollback', async (request, reply) => {
+    const { scope } = await authorizedWorkspace(runtime, request, 'workspace:restore');
+    const body = z.object({ toVersion: z.string().min(1) }).parse(request.body); const key = commandKey(request);
+    const { run, ...result } = await publishSnapshot(runtime, { kind: 'rollback', scope, principal: identity(request), key, request: body, source: () => acceptedReference(runtime, identity(request), scope, body.toVersion) });
+    return reply.code(201).header('Idempotency-Key', key).send({ ...result, rolledBackTo: body.toVersion });
+  });
+  app.get('/workspaces/:id/pull', async request => {
+    const { scope } = await authorizedWorkspace(runtime, request, 'workspace:read');
+    const query = z.object({ version: z.string().optional(), v: z.string().optional() }).parse(request.query);
+    const value = await acceptedSnapshot(runtime, identity(request), scope, query.version ?? query.v);
+    return { commitId: value.revision.id, workspaceId: scope.workspaceId, parentId: value.revision.parentRevisionId, files: value.files.map(file => {
+      const bytes = Buffer.from(file.base64, 'base64'); const content = bytes.toString('utf8');
+      return Buffer.from(content, 'utf8').equals(bytes) ? { path: file.path, content } : { path: file.path, content: file.base64, encoding: 'base64' };
+    }), metadata: {}, sizeBytes: value.manifest.entries.reduce((size, entry) => size + (entry.kind === 'file' ? entry.byteLength : 0), 0), createdAt: value.revision.createdAt };
+  });
+  // Accepted history reads share catalog scope. Administration and bundles remain CV-24.
+  app.get('/workspaces/:id/history', async request => {
+    const { scope } = await authorizedWorkspace(runtime, request, 'workspace:read');
+    const query = z.object({ cursor: z.string().optional(), limit: z.coerce.number().int().min(1).max(1000).default(20) }).parse(request.query);
+    const page = await runtime.control.listRevisions(scope, query.cursor, query.limit);
+    return { commits: page.revisions.map(r => ({ id: r.id, commitId: r.id, workspaceId: scope.workspaceId, parentId: r.parentRevisionId, createdAt: r.createdAt })), count: page.revisions.length, nextCursor: page.nextCursor };
+  });
+  app.get('/workspaces/:id/diff', async request => {
+    const { scope } = await authorizedWorkspace(runtime, request, 'workspace:read'); const query = z.object({ from: z.string(), to: z.string() }).parse(request.query);
+    const a = await acceptedSnapshot(runtime, identity(request), scope, query.from); const b = await acceptedSnapshot(runtime, identity(request), scope, query.to);
+    const entries = new Map(a.manifest.entries.map(e => [e.path, e])); const next = new Map(b.manifest.entries.map(e => [e.path, e]));
+    const files = [...new Set([...entries.keys(), ...next.keys()])].sort().filter(p => JSON.stringify(entries.get(p)) !== JSON.stringify(next.get(p))).map(path => ({ path, status: !entries.has(path) ? 'added' : !next.has(path) ? 'deleted' : 'modified' }));
+    return { ...query, files, summary: { filesChanged: files.length } };
+  });
+  app.get('/workspaces/:id/search', async request => {
+    const { scope } = await authorizedWorkspace(runtime, request, 'workspace:read'); const query = z.object({ q: z.string().min(1) }).parse(request.query);
+    const value = await acceptedSnapshot(runtime, identity(request), scope);
+    const results = value.files.flatMap(file => { const bytes = Buffer.from(file.base64, 'base64'); const content = bytes.toString('utf8'); return Buffer.from(content).equals(bytes) && content.includes(query.q) ? [{ path: file.path, matches: content.split('\n').flatMap((text, index) => text.includes(query.q) ? [{ line: index + 1, text }] : []) }] : []; });
+    return { query: query.q, results, count: results.length };
+  });
 }

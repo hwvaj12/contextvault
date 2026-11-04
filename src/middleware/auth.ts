@@ -14,10 +14,10 @@ export interface AuthenticationOptions {
   provisionLegacyTenant?: (customerId: string) => Promise<void>;
 }
 const matches = (a: string, b: string) => timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
-function basic(header: string | undefined): string | null {
-  if (!header?.startsWith("Basic ")) return null;
+function basicCandidates(header: string | undefined): string[] {
+  if (!header?.startsWith("Basic ")) return [];
   const decoded = Buffer.from(header.slice(6), "base64").toString("utf8"); const colon = decoded.indexOf(":");
-  return colon < 0 ? decoded : decoded.slice(colon + 1) || decoded.slice(0, colon);
+  return [...new Set((colon < 0 ? [decoded] : [decoded.slice(colon + 1), decoded.slice(0, colon)]).filter(Boolean))];
 }
 function pathname(request: FastifyRequest): string { return request.url.split("?", 1)[0]; }
 function publicPath(path: string): boolean { return path === "/" || path === "/health" || path === "/docs" || path.startsWith("/docs/") || path === "/vault" || path.startsWith("/vault/"); }
@@ -45,8 +45,7 @@ export function createAuthMiddleware(options: AuthenticationOptions) {
     if (publicPath(pathname(request))) return;
     const presented = request.headers["x-api-key"];
     if (typeof presented === "string" && await authenticate(presented, request)) return;
-    const alternative = basic(request.headers.authorization);
-    if (alternative && await authenticate(alternative, request)) return;
+    for (const alternative of basicCandidates(request.headers.authorization)) if (await authenticate(alternative, request)) return;
     if (pathname(request).startsWith("/v1/")) throw new WorkspaceError("UNAUTHENTICATED", "Invalid or missing API key");
     if (pathname(request).startsWith("/repos/")) reply.header("WWW-Authenticate", 'Basic realm="ContextVault"');
     return reply.code(401).send({ error: "Unauthorized", message: "Invalid or missing API key" });

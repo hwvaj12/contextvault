@@ -11,6 +11,16 @@ function barrier() {
 function settle<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> { return promise.then(value => ({ status: "fulfilled", value }), reason => ({ status: "rejected", reason })); }
 const retries = ["same instance", "separate connection with same owner", "separate connection with different owner"] as const;
 
+async function expectSinglePublicationEvents(context: Awaited<ReturnType<typeof setup>>, scope: ReturnType<typeof scopeOf>) {
+  const events = (await context.control.listAudit(scope)).events;
+  expect(events.map(event => event.type).sort()).toEqual(["run.finalized", "run.started", "workspace.created"]);
+  expect(new Set(events.map(event => event.id)).size).toBe(3);
+  const outbox = await context.control.listPendingOutbox({ now: context.clock.value, limit: 10 });
+  expect(outbox.map(event => event.type).sort()).toEqual(["run.finalized", "run.started", "workspace.created"]);
+  expect(new Set(outbox.map(event => event.id)).size).toBe(3);
+  expect(new Set(outbox.map(event => event.operationId))).toEqual(new Set(events.map(event => event.operationId)));
+}
+
 it.each(retries)("returns one pending creation identity for a concurrent retry through %s", async mode => {
   const gate = barrier();
   const context = await setup({ hook: async (stage, operation) => { if (stage === "after-prepare" && operation.kind === "workspace:create") await gate.afterPrepare(); } });
@@ -80,8 +90,7 @@ it.each(retries)("returns one pending finalization identity for a concurrent ret
   expect(await peer.finalize(input)).toEqual(complete.value);
   expect((await context.read(scope)).files["once.bin"]).toEqual(payload);
   expect((await context.control.listRevisions(scope)).revisions).toHaveLength(2);
-  expect((await context.control.listAudit(scope)).events).toHaveLength(2);
-  expect(await context.control.listPendingOutbox({ now: context.clock.value, limit: 10 })).toHaveLength(2);
+  await expectSinglePublicationEvents(context, scope);
 });
 
 it("replays create, open, and finalize after reopening and rejects changed input under the same key", async () => {
@@ -99,7 +108,7 @@ it("replays create, open, and finalize after reopening and rejects changed input
   await expect(context.app.claimWorkspaceCreation({ principal, idempotencyKey: "create-once", request: { customerId: "tenant-a", name: "different" } })).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED" });
   await expect(context.app.claimFinalization({ ...input, request: { ...input.request, expectedRunVersion: 2 } })).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED" });
   expect((await context.control.listRevisions(scope)).revisions).toHaveLength(2);
-  expect((await context.control.listAudit(scope)).events).toHaveLength(2);
+  await expectSinglePublicationEvents(context, scope);
 });
 
 it("reconciles a lost acceptance response without replacing the committed result or duplicating events", async () => {
@@ -112,8 +121,7 @@ it("reconciles a lost acceptance response without replacing the committed result
   expect(result.state).toBe("succeeded");
   expect(await context.app.finalize(input)).toEqual(result);
   expect((await context.control.getRun(scope, run.id))?.state).toBe("finalized");
-  expect((await context.control.listAudit(scope)).events).toHaveLength(2);
-  expect(await context.control.listPendingOutbox({ now: context.clock.value, limit: 10 })).toHaveLength(2);
+  await expectSinglePublicationEvents(context, scope);
   expect((await context.read(scope)).files["accepted.bin"]).toEqual(Buffer.from([0, 255, 128]));
 });
 
