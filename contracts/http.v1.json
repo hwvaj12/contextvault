@@ -1,0 +1,205 @@
+{
+  "schemaVersion": 1,
+  "jsonSchema": "http.v1.schema.json",
+  "manifestSchema": "manifest.v1.schema.json",
+  "routes": [
+    {
+      "method": "POST",
+      "path": "/v1/workspaces",
+      "authenticated": true,
+      "idempotencyKeyRequired": true,
+      "requestSchema": "CreateWorkspaceRequest",
+      "responseSchema": "Workspace",
+      "successStatus": 201,
+      "processingStatus": 202,
+      "processingResponseSchema": "Operation",
+      "unknownOutcomeCode": "PUBLICATION_OUTCOME_UNKNOWN"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/workspaces/:id/runs",
+      "authenticated": true,
+      "idempotencyKeyRequired": true,
+      "requestSchema": "OpenRunRequest",
+      "responseSchema": "Run",
+      "successStatus": 201
+    },
+    {
+      "method": "GET",
+      "path": "/v1/runs/:id",
+      "authenticated": true,
+      "idempotencyKeyRequired": false,
+      "requestSchema": null,
+      "responseSchema": "Run",
+      "successStatus": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/runs/:id/workspace/manifest",
+      "authenticated": true,
+      "idempotencyKeyRequired": false,
+      "requestSchema": null,
+      "responseSchema": "Manifest",
+      "successStatus": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/runs/:id/workspace/files?path=...",
+      "authenticated": true,
+      "idempotencyKeyRequired": false,
+      "requestSchema": null,
+      "responseSchema": "bytes",
+      "successStatus": 200
+    },
+    {
+      "method": "POST",
+      "path": "/v1/runs/:id/submissions",
+      "authenticated": true,
+      "idempotencyKeyRequired": true,
+      "requestSchema": "CreateSubmissionRequest",
+      "responseSchema": "Submission",
+      "successStatus": 201
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/runs/:id/submissions/:sid/files?path=...",
+      "authenticated": true,
+      "idempotencyKeyRequired": true,
+      "requestSchema": "bytes",
+      "responseSchema": "UploadReceipt",
+      "successStatus": 201
+    },
+    {
+      "method": "POST",
+      "path": "/v1/runs/:id/submissions/:sid/seal",
+      "authenticated": true,
+      "idempotencyKeyRequired": true,
+      "requestSchema": "SealRequest",
+      "responseSchema": "Submission",
+      "successStatus": 200
+    },
+    {
+      "method": "POST",
+      "path": "/v1/runs/:id/finalize",
+      "authenticated": true,
+      "idempotencyKeyRequired": true,
+      "requestSchema": "FinalizeRequest",
+      "responseSchema": "Operation",
+      "successStatus": 202
+    },
+    {
+      "method": "POST",
+      "path": "/v1/runs/:id/abort",
+      "authenticated": true,
+      "idempotencyKeyRequired": true,
+      "requestSchema": "AbortRequest",
+      "responseSchema": "Run",
+      "successStatus": 200
+    },
+    {
+      "method": "POST",
+      "path": "/v1/runs/:id/heartbeat",
+      "authenticated": true,
+      "idempotencyKeyRequired": true,
+      "requestSchema": "HeartbeatRequest",
+      "responseSchema": "Run",
+      "successStatus": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/operations/:id",
+      "authenticated": true,
+      "idempotencyKeyRequired": false,
+      "requestSchema": null,
+      "responseSchema": "Operation",
+      "successStatus": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/workspaces/:id/revisions",
+      "authenticated": true,
+      "idempotencyKeyRequired": false,
+      "requestSchema": null,
+      "responseSchema": "RevisionList",
+      "successStatus": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/workspaces/:id/revisions/:rid/manifest",
+      "authenticated": true,
+      "idempotencyKeyRequired": false,
+      "requestSchema": null,
+      "responseSchema": "Manifest",
+      "successStatus": 200
+    },
+    {
+      "method": "POST",
+      "path": "/v1/workspaces/:id/restore",
+      "authenticated": true,
+      "idempotencyKeyRequired": true,
+      "requestSchema": "RestoreRequest",
+      "responseSchema": "Operation",
+      "successStatus": 202
+    }
+  ],
+  "errorSchema": "Error",
+  "runVersionSemantics": "lifecycle-only",
+  "submissionVersionSemantics": "receipt-registration-and-seal",
+  "leaseVersionSemantics": "heartbeat-only",
+  "processingFenceSemantics": "monotonic-per-claim",
+  "mutationIdempotencyScope": [
+    "customerId",
+    "actorId",
+    "kind",
+    "workspaceId",
+    "runId",
+    "Idempotency-Key"
+  ],
+  "requestDigest": "SHA-256 of canonical JSON with schemaVersion, customerId, actorId, credentialId, kind, resource, payload; UTF-8 object-key sort; exact JSON values; no whitespace/newline. Idempotency-Key is stored separately.",
+  "fileDownload": {
+    "headers": [
+      "Content-Type",
+      "Content-Length",
+      "X-Content-SHA256"
+    ],
+    "contentType": "application/octet-stream",
+    "digest": "lowercase SHA-256 of exact bytes",
+    "pathEncoding": "query-parameter"
+  },
+  "fileUpload": {
+    "requiredHeaders": [
+      "Content-Type",
+      "X-Content-SHA256",
+      "Idempotency-Key"
+    ],
+    "contentType": "application/octet-stream",
+    "optionalHeaders": [
+      "Content-Length"
+    ],
+    "digest": "X-Content-SHA256 contains exactly 64 lowercase hexadecimal SHA-256 characters. Stable request identity includes this header, path, and declared byte length. The server independently verifies bytes before registering a receipt.",
+    "retry": "Same attempt key and input returns the existing immutable receipt; different input fails."
+  },
+  "finalize": {
+    "processingStatus": 202,
+    "poll": "GET /v1/operations/:id",
+    "readOnlySubmission": "omit submissionId",
+    "readWriteSubmission": "sealed complete snapshot required, including empty deletion snapshot",
+    "noChange": "finalized without duplicate revision; stale read-write base still conflicts",
+    "reconciliation": "A lost response requires same-key retry or operation lookup. Never automatically abort an unknown outcome."
+  },
+  "authorization": "Verify identity before action authorization. Customer mismatch may return scoped 404. Every file/run/submission/operation is scoped. Acceptance rechecks catalog-backed key/grant epochs.",
+  "publicPaths": "No server path, canonical storage location, private reference, processing fence, or credential appears in these DTOs.",
+  "workspaceCreation": {
+    "normalCompletion": "201 Workspace after accepted empty revision",
+    "pendingRetry": "202 Operation for the original in-progress claim",
+    "durableIntent": "Persist the original request, command/key/digest, draft metadata, empty manifest, and immutable candidate identity before storage I/O.",
+    "replay": "Same-key/same-input returns the recorded operation or original completed 201 result; never allocate a second workspace.",
+    "unknownOutcome": "Preserve the original key and reconcile the operation or retry that same request. No workspace is readable before acceptance."
+  },
+  "resourceLookup": {
+    "tenantPrincipal": "Resolve runs/operations within the verified principal customer, without a workspace ID or enumeration. Reject a mismatched customer selector.",
+    "administratorTenantHeader": "X-ContextVault-Customer-Id",
+    "administratorPolicy": "A verified administrator must select one tenant and obtain a current catalog-backed scoped permit for run:read or operation:read. Missing selection is INVALID_REQUEST; missing permission is forbidden or scoped not-found.",
+    "pendingCreationOperation": "Resolve within its persisted tenant even before its draft workspace is accepted."
+  }
+}

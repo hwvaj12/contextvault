@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "schemaVersion": 1,
+    "customerId": "customer-a",
+    "actorId": "actor-a",
+    "credentialId": "key-a",
+    "kind": "finalize",
+    "resource": {
+      "workspaceId": "workspace-a",
+      "runId": "run-a"
+    },
+    "payload": {
+      "submissionId": "submission-a",
+      "expectedRunVersion": 2
+    }
+  },
+  "canonical": "{\"actorId\":\"actor-a\",\"credentialId\":\"key-a\",\"customerId\":\"customer-a\",\"kind\":\"finalize\",\"payload\":{\"expectedRunVersion\":2,\"submissionId\":\"submission-a\"},\"resource\":{\"runId\":\"run-a\",\"workspaceId\":\"workspace-a\"},\"schemaVersion\":1}",
+  "sha256": "98a19f03adb674aff2bb8cb2e3651b01956ff02b8614dabaf5400426493c5e40"
+}

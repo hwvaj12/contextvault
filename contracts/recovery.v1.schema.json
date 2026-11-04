@@ -1,0 +1,2088 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:contextvault:recovery:v1",
+  "title": "Internal recovery intent and private client-state contract v1",
+  "definitions": {
+    "WorkspaceScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "customerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "customerId",
+        "workspaceId"
+      ]
+    },
+    "BindingScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "customerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "storageBindingId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bindingGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "customerId",
+        "workspaceId",
+        "storageBindingId",
+        "bindingGeneration"
+      ]
+    },
+    "PrivateLocator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "storeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "opaqueKey": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "storeId",
+        "opaqueKey"
+      ]
+    },
+    "CandidateIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "candidateId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revisionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "$ref": "#/definitions/BindingScope"
+        },
+        "parentRevisionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "candidateId",
+        "revisionId",
+        "operationId",
+        "scope",
+        "parentRevisionId",
+        "createdAt"
+      ]
+    },
+    "StorageBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "$ref": "#/definitions/WorkspaceScope"
+        },
+        "backend": {
+          "type": "string",
+          "enum": [
+            "git",
+            "s3"
+          ]
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "location": {
+          "$ref": "#/definitions/PrivateLocator"
+        },
+        "configurationRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "retired"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "scope",
+        "backend",
+        "generation",
+        "location",
+        "configurationRef",
+        "status",
+        "createdAt"
+      ]
+    },
+    "WorkspaceDraft": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "customerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "currentRevisionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "suspended",
+            "deleted"
+          ]
+        },
+        "storageBindingId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bindingGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "customerId",
+        "name",
+        "currentRevisionId",
+        "version",
+        "status",
+        "storageBindingId",
+        "bindingGeneration",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SealedSubmissionSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "submissionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "submissionVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "manifestDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "submissionId",
+        "submissionVersion",
+        "manifestDigest"
+      ]
+    },
+    "FinalizationIntent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "schemaVersion": {
+              "const": 1
+            },
+            "kind": {
+              "const": "finalize"
+            },
+            "mode": {
+              "const": "read-write"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "const": "POST"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "expectedRunVersion": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "submissionId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "expectedRunVersion",
+                    "submissionId"
+                  ]
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "body"
+              ]
+            },
+            "source": {
+              "$ref": "#/definitions/SealedSubmissionSelection"
+            },
+            "candidateIdentity": {
+              "$ref": "#/definitions/CandidateIdentity"
+            }
+          },
+          "required": [
+            "schemaVersion",
+            "kind",
+            "mode",
+            "request",
+            "source",
+            "candidateIdentity"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "schemaVersion": {
+              "const": 1
+            },
+            "kind": {
+              "const": "finalize"
+            },
+            "mode": {
+              "const": "read-only"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "const": "POST"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "expectedRunVersion": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "expectedRunVersion"
+                  ]
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "body"
+              ]
+            },
+            "source": {
+              "type": "null"
+            },
+            "candidateIdentity": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "schemaVersion",
+            "kind",
+            "mode",
+            "request",
+            "source",
+            "candidateIdentity"
+          ]
+        }
+      ]
+    },
+    "WorkspaceCreationIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "workspace:create"
+        },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "const": "POST"
+            },
+            "path": {
+              "const": "/v1/workspaces"
+            },
+            "body": {
+              "$ref": "urn:contextvault:http:v1#/definitions/CreateWorkspaceRequest"
+            }
+          },
+          "required": [
+            "method",
+            "path",
+            "body"
+          ]
+        },
+        "workspace": {
+          "$ref": "#/definitions/WorkspaceDraft"
+        },
+        "binding": {
+          "$ref": "#/definitions/StorageBinding"
+        },
+        "candidateIdentity": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/CandidateIdentity"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "parentRevisionId": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        },
+        "initialManifest": {
+          "allOf": [
+            {
+              "$ref": "urn:contextvault:manifest:v1"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "entries": {
+                  "type": "array",
+                  "maxItems": 0
+                }
+              }
+            }
+          ]
+        },
+        "initialManifestDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "kind",
+        "request",
+        "workspace",
+        "binding",
+        "candidateIdentity",
+        "initialManifest",
+        "initialManifestDigest"
+      ]
+    },
+    "ClientRunIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseRevisionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "read-only",
+            "read-write"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "workspaceId",
+        "baseRevisionId",
+        "version",
+        "mode"
+      ]
+    },
+    "ClientSubmissionSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "submissionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifestDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "submissionId",
+        "manifestDigest"
+      ]
+    },
+    "PendingClientCommand": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "workspace:create"
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "const": "POST"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "$ref": "urn:contextvault:http:v1#/definitions/CreateWorkspaceRequest"
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "body"
+              ]
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "prepared",
+                "dispatched",
+                "outcome-unknown"
+              ]
+            },
+            "operationId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preparedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "kind",
+            "idempotencyKey",
+            "request",
+            "phase",
+            "operationId",
+            "preparedAt"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "run:open"
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "const": "POST"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "$ref": "urn:contextvault:http:v1#/definitions/OpenRunRequest"
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "body"
+              ]
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "prepared",
+                "dispatched",
+                "outcome-unknown"
+              ]
+            },
+            "operationId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preparedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "kind",
+            "idempotencyKey",
+            "request",
+            "phase",
+            "operationId",
+            "preparedAt"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "submission:create"
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "const": "POST"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "$ref": "urn:contextvault:http:v1#/definitions/CreateSubmissionRequest"
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "body"
+              ]
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "prepared",
+                "dispatched",
+                "outcome-unknown"
+              ]
+            },
+            "operationId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preparedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "kind",
+            "idempotencyKey",
+            "request",
+            "phase",
+            "operationId",
+            "preparedAt"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "submission:seal"
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "const": "POST"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "$ref": "urn:contextvault:http:v1#/definitions/SealRequest"
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "body"
+              ]
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "prepared",
+                "dispatched",
+                "outcome-unknown"
+              ]
+            },
+            "operationId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preparedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "kind",
+            "idempotencyKey",
+            "request",
+            "phase",
+            "operationId",
+            "preparedAt"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "run:heartbeat"
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "const": "POST"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "$ref": "urn:contextvault:http:v1#/definitions/HeartbeatRequest"
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "body"
+              ]
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "prepared",
+                "dispatched",
+                "outcome-unknown"
+              ]
+            },
+            "operationId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preparedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "kind",
+            "idempotencyKey",
+            "request",
+            "phase",
+            "operationId",
+            "preparedAt"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "abort"
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "const": "POST"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "$ref": "urn:contextvault:http:v1#/definitions/AbortRequest"
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "body"
+              ]
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "prepared",
+                "dispatched",
+                "outcome-unknown"
+              ]
+            },
+            "operationId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preparedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "kind",
+            "idempotencyKey",
+            "request",
+            "phase",
+            "operationId",
+            "preparedAt"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "restore"
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "const": "POST"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "$ref": "urn:contextvault:http:v1#/definitions/RestoreRequest"
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "body"
+              ]
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "prepared",
+                "dispatched",
+                "outcome-unknown"
+              ]
+            },
+            "operationId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preparedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "kind",
+            "idempotencyKey",
+            "request",
+            "phase",
+            "operationId",
+            "preparedAt"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "finalize"
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "const": "POST"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "expectedRunVersion": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "submissionId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "expectedRunVersion",
+                    "submissionId"
+                  ]
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "body"
+              ]
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "prepared",
+                "dispatched",
+                "outcome-unknown"
+              ]
+            },
+            "operationId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preparedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "mode": {
+              "const": "read-write"
+            },
+            "selectedSubmission": {
+              "$ref": "#/definitions/ClientSubmissionSelection"
+            }
+          },
+          "required": [
+            "kind",
+            "idempotencyKey",
+            "request",
+            "phase",
+            "operationId",
+            "preparedAt",
+            "mode",
+            "selectedSubmission"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "finalize"
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "const": "POST"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "expectedRunVersion": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "expectedRunVersion"
+                  ]
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "body"
+              ]
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "prepared",
+                "dispatched",
+                "outcome-unknown"
+              ]
+            },
+            "operationId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preparedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "mode": {
+              "const": "read-only"
+            },
+            "selectedSubmission": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "kind",
+            "idempotencyKey",
+            "request",
+            "phase",
+            "operationId",
+            "preparedAt",
+            "mode",
+            "selectedSubmission"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "submission:file"
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "const": "PUT"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "capture": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "captureId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "privateFilePath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "byteLength": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "captureId",
+                    "privateFilePath",
+                    "byteLength",
+                    "sha256"
+                  ]
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "capture"
+              ]
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "prepared",
+                "dispatched",
+                "outcome-unknown"
+              ]
+            },
+            "operationId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preparedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "kind",
+            "idempotencyKey",
+            "request",
+            "phase",
+            "operationId",
+            "preparedAt"
+          ]
+        }
+      ]
+    },
+    "ClientSessionState": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "serverOrigin": {
+          "type": "string",
+          "pattern": "^https?://[^/@\\s?#]+$"
+        },
+        "workspaceId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ClientRunIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "privateStatePath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "provisioning",
+            "ready",
+            "failed"
+          ]
+        },
+        "pendingCommand": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PendingClientCommand"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "sessionId",
+        "serverOrigin",
+        "workspaceId",
+        "run",
+        "path",
+        "privateStatePath",
+        "state",
+        "pendingCommand"
+      ]
+    },
+    "ExpiredActiveRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "customerId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "workspaceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "storageBindingId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "bindingGeneration": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "customerId",
+            "workspaceId",
+            "storageBindingId",
+            "bindingGeneration",
+            "runId"
+          ]
+        },
+        "expectedState": {
+          "const": "active"
+        },
+        "expectedRunVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "expectedLeaseVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "expectedLeaseExpiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "scope",
+        "expectedState",
+        "expectedRunVersion",
+        "expectedLeaseVersion",
+        "expectedLeaseExpiresAt"
+      ]
+    },
+    "Principal": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "customer",
+                "service"
+              ]
+            },
+            "customerId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "actorId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "credential": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "api-key",
+                    "service",
+                    "external"
+                  ]
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "version"
+              ]
+            },
+            "permissionEpoch": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "authenticatedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "kind",
+            "customerId",
+            "actorId",
+            "credential",
+            "permissionEpoch",
+            "authenticatedAt"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "administrator"
+            },
+            "actorId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "credential": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "api-key",
+                    "service",
+                    "external"
+                  ]
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "version"
+              ]
+            },
+            "permissionEpoch": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "authenticatedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "kind",
+            "actorId",
+            "credential",
+            "permissionEpoch",
+            "authenticatedAt"
+          ]
+        }
+      ]
+    },
+    "ProcessingClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "fence",
+        "expiresAt"
+      ]
+    },
+    "PreparedRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "candidateId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revisionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "$ref": "#/definitions/BindingScope"
+        },
+        "parentRevisionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifestDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "privateReference": {
+          "$ref": "#/definitions/PrivateLocator"
+        },
+        "preparedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "candidateId",
+        "revisionId",
+        "scope",
+        "parentRevisionId",
+        "operationId",
+        "manifestDigest",
+        "privateReference",
+        "preparedAt"
+      ]
+    },
+    "FinalizationOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "finalize"
+        },
+        "scope": {
+          "$ref": "#/definitions/WorkspaceScope"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "principal": {
+          "$ref": "#/definitions/Principal"
+        },
+        "command": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "idempotencyScope": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "customerId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "actorId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "const": "finalize"
+                },
+                "workspaceId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "runId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "customerId",
+                "actorId",
+                "kind",
+                "workspaceId",
+                "runId"
+              ]
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requestDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "operationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requestedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "idempotencyScope",
+            "idempotencyKey",
+            "requestDigest",
+            "operationId",
+            "requestedAt"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "processing",
+            "succeeded",
+            "failed"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "claimed",
+            "preparing",
+            "prepared",
+            "accepting",
+            "complete"
+          ]
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "claim": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProcessingClaim"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidate": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PreparedRevision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "urn:contextvault:http:v1#/definitions/FinalizationResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "INVALID_REQUEST",
+                    "UNAUTHENTICATED",
+                    "FORBIDDEN",
+                    "CREDENTIAL_REVOKED",
+                    "WORKSPACE_NOT_FOUND",
+                    "RUN_NOT_FOUND",
+                    "SUBMISSION_NOT_FOUND",
+                    "OPERATION_NOT_FOUND",
+                    "REVISION_NOT_FOUND",
+                    "IDEMPOTENCY_KEY_REUSED",
+                    "REVISION_CONFLICT",
+                    "VERSION_CONFLICT",
+                    "STALE_FENCE",
+                    "STORAGE_BINDING_CHANGED",
+                    "WORKSPACE_INACTIVE",
+                    "FINALIZATION_IN_PROGRESS",
+                    "INVALID_TRANSITION",
+                    "SUBMISSION_SEALED",
+                    "CAPTURE_CHANGED",
+                    "UNSUPPORTED_CAPABILITY",
+                    "RUN_EXPIRED",
+                    "QUOTA_EXCEEDED",
+                    "INVALID_MANIFEST",
+                    "RECEIPT_MISMATCH",
+                    "PUBLICATION_OUTCOME_UNKNOWN",
+                    "STORAGE_UNAVAILABLE"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                },
+                "retryable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "retryable"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "intent": {
+          "$ref": "#/definitions/FinalizationIntent"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "scope",
+        "runId",
+        "principal",
+        "command",
+        "state",
+        "phase",
+        "version",
+        "claim",
+        "candidate",
+        "result",
+        "error",
+        "createdAt",
+        "updatedAt",
+        "intent"
+      ]
+    },
+    "WorkspaceCreationOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "workspace:create"
+        },
+        "scope": {
+          "$ref": "#/definitions/WorkspaceScope"
+        },
+        "runId": {
+          "type": "null"
+        },
+        "principal": {
+          "$ref": "#/definitions/Principal"
+        },
+        "command": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "idempotencyScope": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "customerId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "actorId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "const": "workspace:create"
+                },
+                "workspaceId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "runId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "customerId",
+                "actorId",
+                "kind",
+                "workspaceId",
+                "runId"
+              ]
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requestDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "operationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requestedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "idempotencyScope",
+            "idempotencyKey",
+            "requestDigest",
+            "operationId",
+            "requestedAt"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "processing",
+            "succeeded",
+            "failed"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "claimed",
+            "preparing",
+            "prepared",
+            "accepting",
+            "complete"
+          ]
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "claim": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProcessingClaim"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidate": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PreparedRevision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "workspace:create"
+                },
+                "workspaceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "revisionId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "workspaceId",
+                "revisionId"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "INVALID_REQUEST",
+                    "UNAUTHENTICATED",
+                    "FORBIDDEN",
+                    "CREDENTIAL_REVOKED",
+                    "WORKSPACE_NOT_FOUND",
+                    "RUN_NOT_FOUND",
+                    "SUBMISSION_NOT_FOUND",
+                    "OPERATION_NOT_FOUND",
+                    "REVISION_NOT_FOUND",
+                    "IDEMPOTENCY_KEY_REUSED",
+                    "REVISION_CONFLICT",
+                    "VERSION_CONFLICT",
+                    "STALE_FENCE",
+                    "STORAGE_BINDING_CHANGED",
+                    "WORKSPACE_INACTIVE",
+                    "FINALIZATION_IN_PROGRESS",
+                    "INVALID_TRANSITION",
+                    "SUBMISSION_SEALED",
+                    "CAPTURE_CHANGED",
+                    "UNSUPPORTED_CAPABILITY",
+                    "RUN_EXPIRED",
+                    "QUOTA_EXCEEDED",
+                    "INVALID_MANIFEST",
+                    "RECEIPT_MISMATCH",
+                    "PUBLICATION_OUTCOME_UNKNOWN",
+                    "STORAGE_UNAVAILABLE"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                },
+                "retryable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "retryable"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "intent": {
+          "$ref": "#/definitions/WorkspaceCreationIntent"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "scope",
+        "runId",
+        "principal",
+        "command",
+        "state",
+        "phase",
+        "version",
+        "claim",
+        "candidate",
+        "result",
+        "error",
+        "createdAt",
+        "updatedAt",
+        "intent"
+      ]
+    }
+  },
+  "description": "Persist claims before storage I/O and client pending commands before HTTP dispatch. These records contain no API credentials. Runtime implementations also verify scope/identity equality, source digest equality, current authorization, CAS versions, lease expiry, and fences."
+}

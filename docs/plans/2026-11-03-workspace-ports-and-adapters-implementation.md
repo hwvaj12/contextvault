@@ -445,7 +445,7 @@ Do not mix bypassing legacy writers with catalog-owned workspaces.
 
 ## 9. Team work items and dependency waves
 
-The machine-readable work items are `docs/items/CV-10.md` through `CV-28.md`.
+The machine-readable work items are `docs/items/CV-10.md` through `CV-28.md`, plus the discovered security prerequisite `CV-29.md`.
 They contain exact dependencies, provided/consumed contracts, allowed paths, acceptance, and checks.
 Their states remain `planned` until implementation begins.
 Planning items CV-1 through CV-4 describe this planning effort only.
@@ -453,20 +453,22 @@ Planning items CV-1 through CV-4 describe this planning effort only.
 | Dependency wave | Items |
 |---|---|
 | 0 | CV-10 |
-| 1 | CV-11, CV-12, CV-13, CV-14 |
-| 2 | CV-15 |
-| 3 | CV-17 |
-| 4 | CV-16 |
-| 5 | CV-18, CV-19, CV-20, CV-23 |
-| 6 | CV-21, CV-22, CV-24 |
-| 7 | CV-25 |
-| 8 | CV-26 |
-| 9 | CV-27 |
-| 10 | CV-28 |
+| 1 | CV-11, CV-12, CV-13, CV-29 |
+| 2 | CV-14 |
+| 3 | CV-15 |
+| 4 | CV-17 |
+| 5 | CV-16 |
+| 6 | CV-18, CV-19, CV-20, CV-23 |
+| 7 | CV-21, CV-22, CV-24 |
+| 8 | CV-25 |
+| 9 | CV-26 |
+| 10 | CV-27 |
+| 11 | CV-28 |
 
-Critical path: CV-10 → CV-11 → CV-15 → CV-17 → CV-16 → CV-23 → CV-24 → CV-25 → CV-26 → CV-27 → CV-28.
+Critical path: CV-10 → CV-29 → CV-14 → CV-15 → CV-17 → CV-16 → CV-23 → CV-24 → CV-25 → CV-26 → CV-27 → CV-28.
 Dispatch at most three writers. Prioritize the critical path and queue other ready items.
-Start CV-11, CV-12, and CV-14 in the first parallel wave; start CV-13 when capacity frees.
+Start CV-11, CV-12, and CV-13 after CV-10 closes.
+The lead completes CV-29 before CV-14 takes package-file ownership.
 The helper computes readiness from dependency closure, rather than the suggested dispatch order.
 
 | Item | Work | Depends on | Acceptance |
@@ -475,7 +477,7 @@ The helper computes readiness from dependency closure, rather than the suggested
 | CV-11 | Add transactional catalog, policy identity, and versioned migrations | CV-10 | A03, A04, A05, A12 |
 | CV-12 | Implement canonical validation and sealed local submissions | CV-10 | A06 |
 | CV-13 | Implement immutable Git revision storage | CV-10 | A07 |
-| CV-14 | Implement S3 revision and submission storage | CV-10 | A06, A07 |
+| CV-14 | Implement S3 revision and submission storage | CV-10, CV-29 | A06, A07 |
 | CV-15 | Implement workspace open, finalize, abort, and expiry use cases | CV-11, CV-12, CV-13, CV-14 | A01, A02, A03, A04, A05 |
 | CV-16 | Expose authenticated lifecycle and binary transfer over HTTP | CV-15, CV-17 | A01, A05, A06, A08 |
 | CV-17 | Implement fenced recovery, tenant outbox, and controlled cleanup | CV-15 | A02, A05, A12 |
@@ -490,12 +492,13 @@ The helper computes readiness from dependency closure, rather than the suggested
 | CV-26 | Document the API, installed clients, compatibility, and operations | CV-18, CV-19, CV-20, CV-21, CV-22, CV-24, CV-25 | A08, A09, A10, A11 |
 | CV-27 | Prove backend parity, host access, packaging, and failure recovery | CV-17, CV-18, CV-19, CV-20, CV-21, CV-22, CV-24, CV-25, CV-26 | A01, A02, A03, A04, A05, A06, A07, A08, A09, A10, A11, A12 |
 | CV-28 | Independently review and close the workspace milestone | CV-26, CV-27 | A01, A02, A03, A04, A05, A06, A07, A08, A09, A10, A11, A12 |
+| CV-29 | Repair affected runtime dependency advisories | CV-10 | A05, A12 |
 
 ### CV-10: Freeze domain, transfer, compatibility, and acceptance contracts
 
 Extract a testable application factory without changing existing route behavior. Define scoped Principal, Workspace, Revision, Run, Submission, Operation, CleanupStatus, StorageBinding, manifest, and stream types. Define all five approved ports. Add package scripts and shared fixtures. Record the existing baseline before changing behavior. Provide the executable documentation-check runner and self-test fixtures before client or documentation tasks consume them.
 
-Allowed paths: `src/domain/**`, `src/ports/**`, `contracts/**`, `tests/contracts/**`, `tests/fixtures/workspaces/**`, `tests/helpers/**`, `tests/acceptance/lifecycle.test.ts`, `src/app.ts`, `src/index.ts`, `package.json`, `package-lock.json`, `vitest.config.ts`, `scripts/verify-workspace-docs.mjs`, `tests/docs/**`.
+Allowed paths: `src/domain/**`, `src/ports/**`, `contracts/**`, `tests/contracts/**`, `tests/fixtures/workspaces/**`, `tests/helpers/**`, `tests/acceptance/lifecycle.test.ts`, `src/app.ts`, `src/index.ts`, `package.json`, `package-lock.json`, `vitest.config.ts`, `scripts/verify-workspace-docs.mjs`, `scripts/run-workspace-tests.mjs`, `tests/docs/**`.
 
 Proof: The public lifecycle acceptance fails against current behavior for its missing publication outcome. Canonical manifests, errors, state transitions, and compatibility fixtures are versioned.
 
@@ -719,6 +722,18 @@ Tests to add: Independent reproduction of release matrix and documentation examp
 
 Proving commands: `npm run verify:workspace-release -- --require-real-s3 --require-all-hosts --require-all-sdks`.
 
+
+### CV-29: Repair affected runtime dependency advisories
+
+The clean baseline audit found relevant production security advisories.
+Use narrow patched dependency updates, preserve API behavior, and prove the affected boundaries before release.
+CV-14 follows this item to keep package and lockfile writes sequential.
+
+Allowed paths: `package.json`, `package-lock.json`, `tests/security/runtime-dependencies.test.ts`.
+
+Proof: production dependency audit has no relevant Critical or High findings, and baseline, contract, build, and regression checks pass.
+
+Proving commands: `npm audit --omit=dev --audit-level=high`; `npm test`; `npm run test:contracts`; `npm run build`.
 
 Use at most three concurrent writing workers, with separate clean worktrees and a recorded integration base.
 Read-only reviewers may inspect explicit checkouts without a separate worktree.

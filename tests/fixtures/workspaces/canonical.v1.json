@@ -1,0 +1,37 @@
+{
+  "input": {
+    "schemaVersion": 1,
+    "entries": [
+      {
+        "path": "notes.txt",
+        "kind": "file",
+        "byteLength": 7,
+        "sha256": "cd2eca3535741f27a8ae40c31b0c41d4057a7a7b912b33b9aed86485d1c84676"
+      },
+      {
+        "path": "empty",
+        "kind": "directory"
+      },
+      {
+        "path": "binary.bin",
+        "kind": "file",
+        "byteLength": 5,
+        "sha256": "6171db06a1c89b1ff8ab77e479d5df976ccd88a7b63567b4b18f413649e12ff3"
+      }
+    ]
+  },
+  "canonical": "{\"schemaVersion\":1,\"entries\":[{\"path\":\"binary.bin\",\"kind\":\"file\",\"byteLength\":5,\"sha256\":\"6171db06a1c89b1ff8ab77e479d5df976ccd88a7b63567b4b18f413649e12ff3\"},{\"path\":\"empty\",\"kind\":\"directory\"},{\"path\":\"notes.txt\",\"kind\":\"file\",\"byteLength\":7,\"sha256\":\"cd2eca3535741f27a8ae40c31b0c41d4057a7a7b912b33b9aed86485d1c84676\"}]}",
+  "sha256": "1b7d73693bb450a9724574481074a70f2546109329d654fa85590cc992f4012b",
+  "files": {
+    "binary.bin": {
+      "hex": "00ff800d0a",
+      "sha256": "6171db06a1c89b1ff8ab77e479d5df976ccd88a7b63567b4b18f413649e12ff3",
+      "byteLength": 5
+    },
+    "notes.txt": {
+      "hex": "68656c6c6f0d0a",
+      "sha256": "cd2eca3535741f27a8ae40c31b0c41d4057a7a7b912b33b9aed86485d1c84676",
+      "byteLength": 7
+    }
+  }
+}

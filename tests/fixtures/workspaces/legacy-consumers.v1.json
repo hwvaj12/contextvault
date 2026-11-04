@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "evidence": "representative-contract-fixtures-only",
+  "examples": [
+    {
+      "consumer": "Highlight Generator",
+      "legacyResult": {
+        "sandboxPath": "/service/data/sandboxes/ws_fixture",
+        "baseCommit": "1111111111111111111111111111111111111111"
+      },
+      "requiredClientResult": {
+        "path": "/agent/local/workspaces/run_fixture",
+        "baseRevisionId": "rev_empty"
+      },
+      "checkpointOutcome": "published-needs-reopen"
+    },
+    {
+      "consumer": "Agent Creator",
+      "calls": [
+        "checkout",
+        "write",
+        "commit",
+        "destroy"
+      ],
+      "requiredLifecycle": [
+        "open",
+        "materialize",
+        "capture",
+        "seal",
+        "finalize",
+        "cleanup"
+      ]
+    },
+    {
+      "consumer": "Code Factory",
+      "legacyStatus": "cleaned_up",
+      "v1Outcome": {
+        "state": "finalized",
+        "revisionId": "rev_accepted",
+        "changed": true
+      },
+      "v1Cleanup": {
+        "state": "complete"
+      },
+      "clientPath": "/agent/local/workspaces/run_fixture"
+    }
+  ]
+}

@@ -1,0 +1,393 @@
+{
+  "schemaVersion": 1,
+  "manifestDigest": "e13d010a6007fa2889ca3ee584f5259a09ff8f9bf5f3ab62ff2f264eef882047",
+  "creationIntent": {
+    "schemaVersion": 1,
+    "kind": "workspace:create",
+    "request": {
+      "method": "POST",
+      "path": "/v1/workspaces",
+      "body": {
+        "customerId": "customer-a",
+        "name": "Original requested name"
+      }
+    },
+    "workspace": {
+      "id": "ws_create",
+      "customerId": "customer-a",
+      "name": "Original requested name",
+      "currentRevisionId": "rev_empty",
+      "version": 1,
+      "status": "active",
+      "storageBindingId": "binding_create",
+      "bindingGeneration": 1,
+      "createdAt": "2026-11-03T00:00:00.000Z",
+      "updatedAt": "2026-11-03T00:00:00.000Z"
+    },
+    "binding": {
+      "id": "binding_create",
+      "scope": {
+        "customerId": "customer-a",
+        "workspaceId": "ws_create"
+      },
+      "backend": "git",
+      "generation": 1,
+      "location": {
+        "storeId": "configured-store",
+        "opaqueKey": "private-workspace-location"
+      },
+      "configurationRef": "configuration-v1",
+      "status": "active",
+      "createdAt": "2026-11-03T00:00:00.000Z"
+    },
+    "candidateIdentity": {
+      "candidateId": "candidate_create",
+      "revisionId": "rev_empty",
+      "operationId": "op_create",
+      "scope": {
+        "customerId": "customer-a",
+        "workspaceId": "ws_create",
+        "storageBindingId": "binding_create",
+        "bindingGeneration": 1
+      },
+      "parentRevisionId": null,
+      "createdAt": "2026-11-03T00:00:00.000Z"
+    },
+    "initialManifest": {
+      "schemaVersion": 1,
+      "entries": []
+    },
+    "initialManifestDigest": "e13d010a6007fa2889ca3ee584f5259a09ff8f9bf5f3ab62ff2f264eef882047"
+  },
+  "finalizationIntent": {
+    "schemaVersion": 1,
+    "kind": "finalize",
+    "mode": "read-write",
+    "request": {
+      "method": "POST",
+      "path": "/v1/runs/run_finalize/finalize",
+      "body": {
+        "expectedRunVersion": 1,
+        "submissionId": "sub_sealed_selected"
+      }
+    },
+    "source": {
+      "submissionId": "sub_sealed_selected",
+      "submissionVersion": 4,
+      "manifestDigest": "e13d010a6007fa2889ca3ee584f5259a09ff8f9bf5f3ab62ff2f264eef882047"
+    },
+    "candidateIdentity": {
+      "candidateId": "candidate_finalize",
+      "revisionId": "rev_candidate",
+      "operationId": "op_finalize",
+      "scope": {
+        "customerId": "customer-a",
+        "workspaceId": "ws_existing",
+        "storageBindingId": "binding_existing",
+        "bindingGeneration": 1
+      },
+      "parentRevisionId": "rev_base",
+      "createdAt": "2026-11-03T00:00:00.000Z"
+    }
+  },
+  "readOnlyIntent": {
+    "schemaVersion": 1,
+    "kind": "finalize",
+    "mode": "read-only",
+    "request": {
+      "method": "POST",
+      "path": "/v1/runs/run_read/finalize",
+      "body": {
+        "expectedRunVersion": 1
+      }
+    },
+    "source": null,
+    "candidateIdentity": null
+  },
+  "clientSessions": [
+    {
+      "schemaVersion": 1,
+      "sessionId": "local_session_1",
+      "serverOrigin": "https://vault.example.invalid",
+      "workspaceId": null,
+      "run": null,
+      "path": null,
+      "privateStatePath": "/agent/private/session-1.json",
+      "state": "provisioning",
+      "pendingCommand": {
+        "kind": "workspace:create",
+        "idempotencyKey": "original-key-1",
+        "request": {
+          "method": "POST",
+          "path": "/v1/workspaces",
+          "body": {
+            "customerId": "customer-a",
+            "name": "Original requested name"
+          }
+        },
+        "phase": "prepared",
+        "operationId": null,
+        "preparedAt": "2026-11-03T00:00:00.000Z"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "local_session_2",
+      "serverOrigin": "https://vault.example.invalid",
+      "workspaceId": "ws_existing",
+      "run": null,
+      "path": null,
+      "privateStatePath": "/agent/private/session-2.json",
+      "state": "provisioning",
+      "pendingCommand": {
+        "kind": "run:open",
+        "idempotencyKey": "original-key-2",
+        "request": {
+          "method": "POST",
+          "path": "/v1/workspaces/ws_existing/runs",
+          "body": {
+            "mode": "read-write",
+            "agentLabel": "existing-agent",
+            "task": "task",
+            "reason": "reason"
+          }
+        },
+        "phase": "prepared",
+        "operationId": null,
+        "preparedAt": "2026-11-03T00:00:00.000Z"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "local_session_3",
+      "serverOrigin": "https://vault.example.invalid",
+      "workspaceId": "ws_existing",
+      "run": {
+        "id": "run_finalize",
+        "workspaceId": "ws_existing",
+        "baseRevisionId": "rev_base",
+        "version": 1,
+        "mode": "read-write"
+      },
+      "path": "/agent/workspaces/run_finalize",
+      "privateStatePath": "/agent/private/session-3.json",
+      "state": "ready",
+      "pendingCommand": {
+        "kind": "finalize",
+        "idempotencyKey": "original-key-3",
+        "request": {
+          "method": "POST",
+          "path": "/v1/runs/run_finalize/finalize",
+          "body": {
+            "expectedRunVersion": 1,
+            "submissionId": "sub_sealed_selected"
+          }
+        },
+        "phase": "prepared",
+        "operationId": null,
+        "preparedAt": "2026-11-03T00:00:00.000Z",
+        "mode": "read-write",
+        "selectedSubmission": {
+          "submissionId": "sub_sealed_selected",
+          "manifestDigest": "e13d010a6007fa2889ca3ee584f5259a09ff8f9bf5f3ab62ff2f264eef882047"
+        }
+      }
+    }
+  ],
+  "expiredActiveRun": {
+    "scope": {
+      "customerId": "customer-a",
+      "workspaceId": "ws_existing",
+      "storageBindingId": "binding_existing",
+      "bindingGeneration": 1,
+      "runId": "run_active_expired"
+    },
+    "expectedState": "active",
+    "expectedRunVersion": 1,
+    "expectedLeaseVersion": 3,
+    "expectedLeaseExpiresAt": "2026-11-03T00:05:00.000Z"
+  },
+  "finalizationOperation": {
+    "id": "op_finalize",
+    "kind": "finalize",
+    "scope": {
+      "customerId": "customer-a",
+      "workspaceId": "ws_existing"
+    },
+    "runId": "run_finalize",
+    "principal": {
+      "kind": "customer",
+      "customerId": "customer-a",
+      "actorId": "actor-a",
+      "credential": {
+        "id": "key-a",
+        "kind": "api-key",
+        "version": 1
+      },
+      "permissionEpoch": 7,
+      "authenticatedAt": "2026-11-03T00:00:00.000Z"
+    },
+    "command": {
+      "idempotencyScope": {
+        "customerId": "customer-a",
+        "actorId": "actor-a",
+        "kind": "finalize",
+        "workspaceId": "ws_existing",
+        "runId": "run_finalize"
+      },
+      "idempotencyKey": "original-op_finalize-key",
+      "requestDigest": "3ba1dd22908f5659794acd5c58f43a32fff2f08c10b4ee5f0b2d8e58bba86532",
+      "operationId": "op_finalize",
+      "requestedAt": "2026-11-03T00:00:00.000Z"
+    },
+    "state": "processing",
+    "phase": "claimed",
+    "version": 1,
+    "claim": {
+      "ownerId": "worker-original",
+      "fence": 1,
+      "expiresAt": "2026-11-03T00:10:00.000Z"
+    },
+    "candidate": null,
+    "result": null,
+    "error": null,
+    "createdAt": "2026-11-03T00:00:00.000Z",
+    "updatedAt": "2026-11-03T00:00:00.000Z",
+    "intent": {
+      "schemaVersion": 1,
+      "kind": "finalize",
+      "mode": "read-write",
+      "request": {
+        "method": "POST",
+        "path": "/v1/runs/run_finalize/finalize",
+        "body": {
+          "expectedRunVersion": 1,
+          "submissionId": "sub_sealed_selected"
+        }
+      },
+      "source": {
+        "submissionId": "sub_sealed_selected",
+        "submissionVersion": 4,
+        "manifestDigest": "e13d010a6007fa2889ca3ee584f5259a09ff8f9bf5f3ab62ff2f264eef882047"
+      },
+      "candidateIdentity": {
+        "candidateId": "candidate_finalize",
+        "revisionId": "rev_candidate",
+        "operationId": "op_finalize",
+        "scope": {
+          "customerId": "customer-a",
+          "workspaceId": "ws_existing",
+          "storageBindingId": "binding_existing",
+          "bindingGeneration": 1
+        },
+        "parentRevisionId": "rev_base",
+        "createdAt": "2026-11-03T00:00:00.000Z"
+      }
+    }
+  },
+  "creationOperation": {
+    "id": "op_create",
+    "kind": "workspace:create",
+    "scope": {
+      "customerId": "customer-a",
+      "workspaceId": "ws_create"
+    },
+    "runId": null,
+    "principal": {
+      "kind": "customer",
+      "customerId": "customer-a",
+      "actorId": "actor-a",
+      "credential": {
+        "id": "key-a",
+        "kind": "api-key",
+        "version": 1
+      },
+      "permissionEpoch": 7,
+      "authenticatedAt": "2026-11-03T00:00:00.000Z"
+    },
+    "command": {
+      "idempotencyScope": {
+        "customerId": "customer-a",
+        "actorId": "actor-a",
+        "kind": "workspace:create",
+        "workspaceId": null,
+        "runId": null
+      },
+      "idempotencyKey": "original-op_create-key",
+      "requestDigest": "94dc9676205aa0ad4fd3f81d0f6a4a0fa7d53b589471159a243d4a7fa4c9b131",
+      "operationId": "op_create",
+      "requestedAt": "2026-11-03T00:00:00.000Z"
+    },
+    "state": "processing",
+    "phase": "claimed",
+    "version": 1,
+    "claim": {
+      "ownerId": "worker-original",
+      "fence": 1,
+      "expiresAt": "2026-11-03T00:10:00.000Z"
+    },
+    "candidate": null,
+    "result": null,
+    "error": null,
+    "createdAt": "2026-11-03T00:00:00.000Z",
+    "updatedAt": "2026-11-03T00:00:00.000Z",
+    "intent": {
+      "schemaVersion": 1,
+      "kind": "workspace:create",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces",
+        "body": {
+          "customerId": "customer-a",
+          "name": "Original requested name"
+        }
+      },
+      "workspace": {
+        "id": "ws_create",
+        "customerId": "customer-a",
+        "name": "Original requested name",
+        "currentRevisionId": "rev_empty",
+        "version": 1,
+        "status": "active",
+        "storageBindingId": "binding_create",
+        "bindingGeneration": 1,
+        "createdAt": "2026-11-03T00:00:00.000Z",
+        "updatedAt": "2026-11-03T00:00:00.000Z"
+      },
+      "binding": {
+        "id": "binding_create",
+        "scope": {
+          "customerId": "customer-a",
+          "workspaceId": "ws_create"
+        },
+        "backend": "git",
+        "generation": 1,
+        "location": {
+          "storeId": "configured-store",
+          "opaqueKey": "private-workspace-location"
+        },
+        "configurationRef": "configuration-v1",
+        "status": "active",
+        "createdAt": "2026-11-03T00:00:00.000Z"
+      },
+      "candidateIdentity": {
+        "candidateId": "candidate_create",
+        "revisionId": "rev_empty",
+        "operationId": "op_create",
+        "scope": {
+          "customerId": "customer-a",
+          "workspaceId": "ws_create",
+          "storageBindingId": "binding_create",
+          "bindingGeneration": 1
+        },
+        "parentRevisionId": null,
+        "createdAt": "2026-11-03T00:00:00.000Z"
+      },
+      "initialManifest": {
+        "schemaVersion": 1,
+        "entries": []
+      },
+      "initialManifestDigest": "e13d010a6007fa2889ca3ee584f5259a09ff8f9bf5f3ab62ff2f264eef882047"
+    }
+  }
+}

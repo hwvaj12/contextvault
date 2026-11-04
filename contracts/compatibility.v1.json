@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "minimumRuntimes": {
+    "node": "18",
+    "python": "3.8",
+    "php": "8.0"
+  },
+  "legacyPush": "complete-replacement",
+  "legacyHttpPathSemantics": "server-colocated-only",
+  "clientPathSemantics": "client-local-only",
+  "statusBridge": {
+    "merged": "finalized",
+    "cleaned_up": "cleanup.complete; preserve terminal run outcome"
+  },
+  "checkpoint": {
+    "successful": "finalize current run; open next run; preserve local session path",
+    "uncertainPublication": "reconcile original operation before reopen or cleanup",
+    "reopenFailure": "published-needs-reopen",
+    "reopenRetry": "reuse original reopen operation key; never republish the checkpoint"
+  },
+  "directGit": {
+    "canonicalReceivePack": "reject-by-default",
+    "retainedPush": "authorized submission and common publication only",
+    "advertisedRefs": "accepted-authorized-content-only",
+    "s3Protocol": "explicit capability error"
+  },
+  "consumers": [
+    {
+      "name": "Highlight Generator",
+      "legacyFields": [
+        "sandboxPath",
+        "baseCommit"
+      ],
+      "recipe": "Client-local paths and sequential checkpoint sessions."
+    },
+    {
+      "name": "Agent Creator",
+      "legacyCalls": [
+        "checkout",
+        "write",
+        "commit",
+        "destroy"
+      ],
+      "recipe": "Local-materialization wrapper or explicit consumer migration."
+    },
+    {
+      "name": "Code Factory",
+      "legacyFields": [
+        "sandboxPath",
+        "baseCommit",
+        "merged",
+        "cleaned_up"
+      ],
+      "recipe": "Field/status bridge and client-local provisioning; preserve v1 outcome independently."
+    }
+  ],
+  "evidence": "representative-contract-fixtures-only",
+  "crossRepositoryRuntimeCompatibilityProven": false
+}

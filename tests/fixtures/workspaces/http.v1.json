@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "run": {
+    "id": "run_fixture",
+    "workspaceId": "ws_fixture",
+    "mode": "read-write",
+    "agentLabel": "ordinary-agent",
+    "task": "edit files",
+    "reason": "fixture",
+    "baseRevisionId": "rev_empty",
+    "version": 1,
+    "state": "active",
+    "expiresAt": "2026-11-03T00:05:00.000Z",
+    "leaseVersion": 1,
+    "operationId": null,
+    "outcome": null,
+    "cleanup": {
+      "state": "pending",
+      "version": 1,
+      "attempts": 0,
+      "lastError": null
+    },
+    "createdAt": "2026-11-03T00:00:00.000Z",
+    "updatedAt": "2026-11-03T00:00:00.000Z",
+    "_links": {
+      "self": {
+        "href": "/v1/runs/run_fixture"
+      },
+      "manifest": {
+        "href": "/v1/runs/run_fixture/workspace/manifest"
+      },
+      "file": {
+        "href": "/v1/runs/run_fixture/workspace/files{?path}"
+      }
+    }
+  },
+  "operation": {
+    "id": "op_fixture",
+    "workspaceId": "ws_fixture",
+    "runId": "run_fixture",
+    "kind": "finalize",
+    "state": "succeeded",
+    "phase": "complete",
+    "version": 3,
+    "result": {
+      "kind": "finalize",
+      "runState": "finalized",
+      "revisionId": "rev_accepted",
+      "changed": true
+    },
+    "error": null,
+    "createdAt": "2026-11-03T00:00:00.000Z",
+    "updatedAt": "2026-11-03T00:00:00.000Z",
+    "_links": {
+      "self": {
+        "href": "/v1/operations/op_fixture"
+      }
+    }
+  }
+}

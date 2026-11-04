@@ -1,0 +1,1126 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:contextvault:http:v1",
+  "title": "ContextVault HTTP v1 JSON definitions",
+  "definitions": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1
+    },
+    "Version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "Links": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "href": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "href"
+        ]
+      }
+    },
+    "CreateWorkspaceRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "customerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "customerId",
+        "name"
+      ]
+    },
+    "OpenRunRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "read-only",
+            "read-write"
+          ]
+        },
+        "agentLabel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "mode",
+        "agentLabel",
+        "task",
+        "reason"
+      ]
+    },
+    "CreateSubmissionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {},
+      "required": []
+    },
+    "ReceiptSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "NFC relative path; canonical portable-name, ancestry, byte-limit, and collision validation is additionally required."
+        },
+        "receiptId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "path",
+        "receiptId"
+      ]
+    },
+    "SealRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "manifest": {
+          "$ref": "urn:contextvault:manifest:v1"
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReceiptSelection"
+          }
+        }
+      },
+      "required": [
+        "manifest",
+        "receipts"
+      ]
+    },
+    "FinalizeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "expectedRunVersion": {
+          "$ref": "#/definitions/Version"
+        },
+        "submissionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "expectedRunVersion"
+      ]
+    },
+    "AbortRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "expectedRunVersion": {
+          "$ref": "#/definitions/Version"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "expectedRunVersion",
+        "reason"
+      ]
+    },
+    "HeartbeatRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "expectedLeaseVersion": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "expectedLeaseVersion"
+      ]
+    },
+    "RestoreRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revisionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expectedRevisionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expectedWorkspaceVersion": {
+          "$ref": "#/definitions/Version"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "revisionId",
+        "expectedRevisionId",
+        "expectedWorkspaceVersion",
+        "reason"
+      ]
+    },
+    "Cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "running",
+            "complete",
+            "failed"
+          ]
+        },
+        "version": {
+          "$ref": "#/definitions/Version"
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "lastError": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "version",
+        "attempts",
+        "lastError"
+      ]
+    },
+    "RunOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "finalized",
+            "aborted",
+            "conflicted",
+            "failed",
+            "expired"
+          ]
+        },
+        "revisionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "changed": {
+          "type": "boolean"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "errorCode": {
+          "type": "string",
+          "enum": [
+            "INVALID_REQUEST",
+            "UNAUTHENTICATED",
+            "FORBIDDEN",
+            "CREDENTIAL_REVOKED",
+            "WORKSPACE_NOT_FOUND",
+            "RUN_NOT_FOUND",
+            "SUBMISSION_NOT_FOUND",
+            "OPERATION_NOT_FOUND",
+            "REVISION_NOT_FOUND",
+            "IDEMPOTENCY_KEY_REUSED",
+            "REVISION_CONFLICT",
+            "VERSION_CONFLICT",
+            "STALE_FENCE",
+            "STORAGE_BINDING_CHANGED",
+            "WORKSPACE_INACTIVE",
+            "FINALIZATION_IN_PROGRESS",
+            "INVALID_TRANSITION",
+            "SUBMISSION_SEALED",
+            "CAPTURE_CHANGED",
+            "UNSUPPORTED_CAPABILITY",
+            "RUN_EXPIRED",
+            "QUOTA_EXCEEDED",
+            "INVALID_MANIFEST",
+            "RECEIPT_MISMATCH",
+            "PUBLICATION_OUTCOME_UNKNOWN",
+            "STORAGE_UNAVAILABLE"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "revisionId",
+        "changed",
+        "completedAt"
+      ]
+    },
+    "Workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "customerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "currentRevisionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "$ref": "#/definitions/Version"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "suspended",
+            "deleted"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "_links": {
+          "$ref": "#/definitions/Links"
+        }
+      },
+      "required": [
+        "id",
+        "customerId",
+        "name",
+        "currentRevisionId",
+        "version",
+        "status",
+        "createdAt",
+        "updatedAt",
+        "_links"
+      ]
+    },
+    "Run": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "read-only",
+            "read-write"
+          ]
+        },
+        "agentLabel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseRevisionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "$ref": "#/definitions/Version"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "finalizing",
+            "finalized",
+            "aborted",
+            "conflicted",
+            "failed",
+            "expired"
+          ]
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "leaseVersion": {
+          "$ref": "#/definitions/Version"
+        },
+        "operationId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RunOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cleanup": {
+          "$ref": "#/definitions/Cleanup"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "_links": {
+          "$ref": "#/definitions/Links"
+        }
+      },
+      "required": [
+        "id",
+        "workspaceId",
+        "mode",
+        "agentLabel",
+        "task",
+        "reason",
+        "baseRevisionId",
+        "version",
+        "state",
+        "expiresAt",
+        "leaseVersion",
+        "operationId",
+        "outcome",
+        "cleanup",
+        "createdAt",
+        "updatedAt",
+        "_links"
+      ]
+    },
+    "UploadReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "submissionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "NFC relative path; canonical portable-name, ancestry, byte-limit, and collision validation is additionally required."
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "runId",
+        "submissionId",
+        "path",
+        "byteLength",
+        "sha256",
+        "completedAt"
+      ]
+    },
+    "Submission": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "uploading",
+            "sealed",
+            "expired"
+          ]
+        },
+        "version": {
+          "$ref": "#/definitions/Version"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "manifestDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sealedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "_links": {
+          "$ref": "#/definitions/Links"
+        }
+      },
+      "required": [
+        "id",
+        "runId",
+        "state",
+        "version",
+        "expiresAt",
+        "manifestDigest",
+        "sealedAt",
+        "_links"
+      ]
+    },
+    "ErrorDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "INVALID_REQUEST",
+            "UNAUTHENTICATED",
+            "FORBIDDEN",
+            "CREDENTIAL_REVOKED",
+            "WORKSPACE_NOT_FOUND",
+            "RUN_NOT_FOUND",
+            "SUBMISSION_NOT_FOUND",
+            "OPERATION_NOT_FOUND",
+            "REVISION_NOT_FOUND",
+            "IDEMPOTENCY_KEY_REUSED",
+            "REVISION_CONFLICT",
+            "VERSION_CONFLICT",
+            "STALE_FENCE",
+            "STORAGE_BINDING_CHANGED",
+            "WORKSPACE_INACTIVE",
+            "FINALIZATION_IN_PROGRESS",
+            "INVALID_TRANSITION",
+            "SUBMISSION_SEALED",
+            "CAPTURE_CHANGED",
+            "UNSUPPORTED_CAPABILITY",
+            "RUN_EXPIRED",
+            "QUOTA_EXCEEDED",
+            "INVALID_MANIFEST",
+            "RECEIPT_MISMATCH",
+            "PUBLICATION_OUTCOME_UNKNOWN",
+            "STORAGE_UNAVAILABLE"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "Error": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "$ref": "#/definitions/ErrorDetail"
+        }
+      },
+      "required": [
+        "error"
+      ]
+    },
+    "FinalizationResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "finalize"
+        },
+        "runState": {
+          "type": "string",
+          "enum": [
+            "finalized",
+            "conflicted",
+            "failed"
+          ]
+        },
+        "revisionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "changed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "runState",
+        "revisionId",
+        "changed"
+      ]
+    },
+    "OperationResult": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/FinalizationResult"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "workspace:create"
+            },
+            "workspaceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "revisionId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "workspaceId",
+            "revisionId"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "run:open"
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "runId"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "submission:create"
+            },
+            "submissionId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "submissionId"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "abort"
+            },
+            "runState": {
+              "const": "aborted"
+            },
+            "revisionId": {
+              "type": "null"
+            },
+            "changed": {
+              "const": false
+            }
+          },
+          "required": [
+            "kind",
+            "runState",
+            "revisionId",
+            "changed"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "restore"
+            },
+            "revisionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "changed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "revisionId",
+            "changed"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "submission:file"
+            },
+            "receiptId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "receiptId"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "submission:seal"
+            },
+            "submissionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "manifestDigest": {
+              "$ref": "#/definitions/Sha256"
+            }
+          },
+          "required": [
+            "kind",
+            "submissionId",
+            "manifestDigest"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "run:heartbeat"
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "leaseVersion": {
+              "$ref": "#/definitions/Version"
+            }
+          },
+          "required": [
+            "kind",
+            "runId",
+            "leaseVersion"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "workspace:status"
+            },
+            "workspaceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "status": {
+              "enum": [
+                "active",
+                "suspended",
+                "deleted"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "workspaceId",
+            "status"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "storage:migrate"
+            },
+            "migrationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "storageBindingId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "bindingGeneration": {
+              "$ref": "#/definitions/Version"
+            }
+          },
+          "required": [
+            "kind",
+            "migrationId",
+            "storageBindingId",
+            "bindingGeneration"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "revision:alias"
+            },
+            "workspaceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "aliases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "alias": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "revisionId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "alias",
+                  "revisionId"
+                ]
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "workspaceId",
+            "aliases"
+          ]
+        }
+      ]
+    },
+    "Operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "workspace:create",
+            "run:open",
+            "submission:create",
+            "finalize",
+            "abort",
+            "restore",
+            "submission:file",
+            "submission:seal",
+            "run:heartbeat",
+            "workspace:status",
+            "storage:migrate",
+            "revision:alias"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "processing",
+            "succeeded",
+            "failed"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "claimed",
+            "preparing",
+            "prepared",
+            "accepting",
+            "complete"
+          ]
+        },
+        "version": {
+          "$ref": "#/definitions/Version"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OperationResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ErrorDetail"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "_links": {
+          "$ref": "#/definitions/Links"
+        }
+      },
+      "required": [
+        "id",
+        "workspaceId",
+        "runId",
+        "kind",
+        "state",
+        "phase",
+        "version",
+        "result",
+        "error",
+        "createdAt",
+        "updatedAt",
+        "_links"
+      ]
+    },
+    "Revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parentRevisionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "manifestDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "_links": {
+          "$ref": "#/definitions/Links"
+        }
+      },
+      "required": [
+        "id",
+        "workspaceId",
+        "parentRevisionId",
+        "manifestDigest",
+        "createdAt",
+        "_links"
+      ]
+    },
+    "RevisionList": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Revision"
+          }
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "revisions",
+        "nextCursor"
+      ]
+    }
+  }
+}

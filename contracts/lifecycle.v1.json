@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "runTransitions": {
+    "active": ["finalizing", "aborted", "failed", "expired"],
+    "finalizing": ["finalized", "conflicted", "failed"],
+    "finalized": [],
+    "aborted": [],
+    "conflicted": [],
+    "failed": [],
+    "expired": []
+  },
+  "cleanupTransitions": {"pending": ["running"], "running": ["complete", "failed"], "complete": [], "failed": ["running"]},
+  "materializationStates": ["provisioning", "ready", "failed"],
+  "terminalRunStates": ["finalized", "aborted", "conflicted", "failed", "expired"],
+  "defaultLeaseSeconds": 300,
+  "clientRenewalSeconds": 60,
+  "completeSnapshots": true,
+  "staleWriteConflictsEvenWithoutChanges": true,
+  "readOnlyFinalizeRequiresSubmission": false,
+  "cleanupChangesOutcome": false,
+  "newWorkspaceHasAcceptedEmptyRevision": true
+}

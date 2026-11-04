@@ -66,3 +66,17 @@ Branch: codex/contextvault-ports, based on origin/main bd8e448d46077a4a102460fdb
 Worker worktrees live under /Users/hwvaj/Documents/ChatGPT/ContextVault/worktrees/.
 The original checkout and its Python packaging edit remain untouched.
 CV-19 must preserve and carry the setuptools.build_meta correction into its isolated changes.
+
+## Worktree runtime registry
+
+The native runtime selects the Git common-directory root before worktree-local records.
+Prepare workers with --root /Users/hwvaj/PhpstormProjects/contextvault and their explicit isolated --worktree path.
+Product integration, item state, reviews, audits, and verification remain in the isolated integration checkout.
+Use the integration checkout for lead-owned plan-check and status evidence.
+Host HTTP listeners and Docker require authorized host execution in this sandbox.
+
+## Baseline
+
+The clean integration baseline passed 83 tests across nine files and npm run build.
+Docker server 28.0.4, Node 24.19.0, Python 3.14.6, PHP 8.4.1, and Composer 2.8.12 are available.
+Real S3 bucket, region, and prefix remain pending user input.

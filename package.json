@@ -9,7 +9,19 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "migrate:tenants": "npx ts-node scripts/migrate-existing-tenants.ts"
+    "migrate:tenants": "npx ts-node scripts/migrate-existing-tenants.ts",
+    "test:contracts": "node scripts/run-workspace-tests.mjs contracts",
+    "test:adapters": "node scripts/run-workspace-tests.mjs adapters",
+    "test:acceptance": "node scripts/run-workspace-tests.mjs acceptance",
+    "test:hosts": "node scripts/run-workspace-tests.mjs hosts",
+    "test:sdk": "node scripts/run-workspace-tests.mjs sdk",
+    "test:mcp": "node scripts/run-workspace-tests.mjs mcp",
+    "test:legacy": "node scripts/run-workspace-tests.mjs legacy",
+    "test:recovery": "node scripts/run-workspace-tests.mjs recovery",
+    "test:migration": "node scripts/run-workspace-tests.mjs migration",
+    "test:e2e": "node scripts/run-workspace-tests.mjs e2e",
+    "test:docs": "node scripts/verify-workspace-docs.mjs",
+    "verify:workspace-release": "node scripts/run-workspace-tests.mjs release"
   },
   "repository": {
     "type": "git",
