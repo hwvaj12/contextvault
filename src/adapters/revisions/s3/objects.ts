@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, CreateMultipartUploadCommand,
   UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand, ListMultipartUploadsCommand,
@@ -54,6 +55,7 @@ async function* abortable(source: ByteStream, signal?: AbortSignal): ByteStream 
 export class S3Objects {
   readonly limits: WorkspaceLimits;
   readonly limiter: StreamLimiter;
+  private readonly writerContext = new AsyncLocalStorage<{ state: { uncertain: boolean }; mutating: boolean }>();
   constructor(readonly options: S3ObjectOptions) {
     if (!options.client || !options.bucket?.trim() || !options.storeId?.trim() || !options.prefix || !options.prefix.endsWith('/')
       || options.prefix.startsWith('/') || options.prefix.split('/').slice(0, -1).some(p => !p || p === '.' || p === '..')
@@ -65,14 +67,34 @@ export class S3Objects {
     this.options = { ...options, encryption: { ...options.encryption } };
     this.limits = workspaceLimits(options.limits); this.limiter = new StreamLimiter(this.limits.maxConcurrentStreams);
   }
-  private command<T extends { middlewareStack: { add: (...args: any[]) => void } }>(command: T): T {
+  private command<T extends { middlewareStack: { add: (...args: any[]) => void; addRelativeTo: (...args: any[]) => void } }>(command: T): T {
     command.middlewareStack.add((next: any) => async (args: any) => {
       if (args.request.protocol !== 'https:' && !this.options.allowInsecureEndpoint) {
         throw new WorkspaceError('INVALID_REQUEST', 'S3 transport requires HTTPS; plaintext needs an explicit emulator opt-in');
       }
       return next(args);
     }, { step: 'build', name: 'contextVaultRequireTls' });
+    // Observe each failed attempt inside the SDK retry middleware, even if a later retry returns success.
+    command.middlewareStack.addRelativeTo((next: any) => async (args: any) => {
+      try { return await next(args); } catch (error) { this.observeMutationFailure(error, this.writerContext.getStore()); throw error; }
+    }, { relation: 'after', toMiddleware: 'retryMiddleware', name: 'contextVaultObserveWrites' });
     return command;
+  }
+  private observeMutationFailure(error: unknown, context: { state: { uncertain: boolean }; mutating: boolean } | undefined): void {
+    if (!context?.mutating) return;
+    const status = (error as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
+    if (!status || status >= 500) context.state.uncertain = true;
+  }
+  /** A transport failure can leave a remote write in progress after its caller stops waiting. */
+  private async mutation<T>(send: () => Promise<T>): Promise<T> {
+    const parent = this.writerContext.getStore();
+    const context = parent ? { state: parent.state, mutating: true } : undefined;
+    try { return context ? await this.writerContext.run(context, send) : await send(); }
+    catch (error) { this.observeMutationFailure(error, context); throw error; }
+  }
+  async withStoppedWriter<T>(work: () => Promise<T>, stopped: () => Promise<unknown>): Promise<T> {
+    const context = { state: { uncertain: false }, mutating: false };
+    return this.writerContext.run(context, async () => { try { return await work(); } finally { if (!context.state.uncertain) await stopped(); } });
   }
   key(relative: string): string {
     if (!relative || relative.startsWith('/') || relative.split('/').some(p => !p || p === '.' || p === '..')) throw new WorkspaceError('INVALID_REQUEST', 'Invalid internal S3 key');
@@ -121,9 +143,9 @@ export class S3Objects {
   }
   private async put(relative: string, bytes: Buffer, signal?: AbortSignal): Promise<void> {
     checkAbort(signal);
-    await this.options.client.send(this.command(new PutObjectCommand({ Bucket: this.options.bucket, Key: this.key(relative), Body: bytes,
+    await this.mutation(() => this.options.client.send(this.command(new PutObjectCommand({ Bucket: this.options.bucket, Key: this.key(relative), Body: bytes,
       ContentLength: bytes.length, IfNoneMatch: '*', ChecksumSHA256: Buffer.from(digest(bytes), 'hex').toString('base64'),
-      Metadata: { 'cv-sha256': digest(bytes) }, ...this.encryption() })), { abortSignal: signal });
+      Metadata: { 'cv-sha256': digest(bytes) }, ...this.encryption() })), { abortSignal: signal }));
   }
   file(relative: string, entry: FileEntry, options: StreamOptions = {}, limited = true): ByteStream {
     const self = this;
@@ -151,12 +173,12 @@ export class S3Objects {
     const base = { Bucket: this.options.bucket, Key: this.key(relative) };
     const part = async (bytes: Buffer) => {
       if (!uploadId) {
-        uploadId = (await this.options.client.send(this.command(new CreateMultipartUploadCommand({ ...base, ChecksumAlgorithm: 'SHA256', Metadata: { 'cv-sha256': expected.sha256 }, ...this.encryption() })), { abortSignal: signal })).UploadId;
+        uploadId = (await this.mutation(() => this.options.client.send(this.command(new CreateMultipartUploadCommand({ ...base, ChecksumAlgorithm: 'SHA256', Metadata: { 'cv-sha256': expected.sha256 }, ...this.encryption() })), { abortSignal: signal }))).UploadId;
         if (!uploadId) throw new WorkspaceError('STORAGE_UNAVAILABLE', 'S3 omitted multipart upload identity');
       }
       const checksum = Buffer.from(digest(bytes), 'hex').toString('base64');
-      const result = await this.options.client.send(this.command(new UploadPartCommand({ ...base, UploadId: uploadId, PartNumber: parts.length + 1,
-        Body: bytes, ContentLength: bytes.length, ChecksumSHA256: checksum })), { abortSignal: signal });
+      const result = await this.mutation(() => this.options.client.send(this.command(new UploadPartCommand({ ...base, UploadId: uploadId, PartNumber: parts.length + 1,
+        Body: bytes, ContentLength: bytes.length, ChecksumSHA256: checksum })), { abortSignal: signal }));
       if (!result.ETag || result.ChecksumSHA256 !== checksum) mismatch();
       parts.push({ PartNumber: parts.length + 1, ETag: result.ETag, ChecksumSHA256: checksum });
     };
@@ -183,7 +205,7 @@ export class S3Objects {
         if (!uploadId) await this.put(relative, buffer.subarray(0, used), signal);
         else {
           if (used) await part(buffer.subarray(0, used));
-          await this.options.client.send(this.command(new CompleteMultipartUploadCommand({ ...base, UploadId: uploadId, IfNoneMatch: '*', MultipartUpload: { Parts: parts } })), { abortSignal: signal });
+          await this.mutation(() => this.options.client.send(this.command(new CompleteMultipartUploadCommand({ ...base, UploadId: uploadId, IfNoneMatch: '*', MultipartUpload: { Parts: parts } })), { abortSignal: signal }));
           uploadId = undefined;
         }
       } catch (error) { if (!conditionalConflict(error)) throw error; }
@@ -191,11 +213,19 @@ export class S3Objects {
       return { byteLength: length, sha256 };
     } finally {
       if (uploadId) {
-        try { await this.options.client.send(this.command(new AbortMultipartUploadCommand({ ...base, UploadId: uploadId }))); }
+        try { await this.mutation(() => this.options.client.send(this.command(new AbortMultipartUploadCommand({ ...base, UploadId: uploadId })))); }
         catch { /* The durable intent and deterministic key retain ownership for fenced collection. */ }
       }
       release();
     }
+  }
+  /** Caller must permanently fence acceptance before deleting this exact immutable candidate namespace. */
+  async hasContents(relativePrefix: string): Promise<boolean> {
+    const Prefix = this.key(relativePrefix) + '/';
+    const objects = await this.options.client.send(this.command(new ListObjectsV2Command({ Bucket: this.options.bucket, Prefix, MaxKeys: 1 })));
+    if (objects.Contents?.length) return true;
+    const uploads = await this.options.client.send(this.command(new ListMultipartUploadsCommand({ Bucket: this.options.bucket, Prefix, MaxUploads: 1 })));
+    return !!uploads.Uploads?.length;
   }
   /** Caller must permanently fence acceptance before deleting this exact immutable candidate namespace. */
   async collect(relativePrefix: string, preserve: string): Promise<void> {

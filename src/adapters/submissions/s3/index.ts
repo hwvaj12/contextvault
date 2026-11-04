@@ -1,10 +1,11 @@
 import { WorkspaceError, canonicalJson, canonicalizeManifest, manifestDigest, validatePortablePath, type FileEntry } from '../../../domain';
-import type { CommandIdentity, Operation, PrivateLocator, RunScope, Submission, SubmissionId, Timestamp, UploadReceipt } from '../../../domain';
+import type { CommandIdentity, Operation, PrivateLocator, RunScope, Submission, SubmissionCollectionPermit, SubmissionId, Timestamp, UploadReceipt } from '../../../domain';
 import type { ControlStore } from '../../../ports/control-store';
 import type { BeginSubmissionInput, SealSubmissionInput, SubmissionStore, WriteSubmissionFileInput } from '../../../ports/submission-store';
 import type { ByteStream, StreamOptions } from '../../../ports/streams';
 import { receiptMatches, sameRunScope, validateReceiptSelection } from '../../../application/submissions';
-import { S3Objects, hash, type S3ObjectOptions } from '../../revisions/s3/objects';
+import { S3Objects, hash, missingObject, type S3ObjectOptions } from '../../revisions/s3/objects';
+import { randomUUID } from 'node:crypto';
 export interface S3SubmissionStoreOptions extends S3ObjectOptions { control: ControlStore; now?: () => Timestamp }
 interface AttemptIntent {
   schemaVersion: 1; requestDigest: string; fingerprint: string; startedAt: Timestamp;
@@ -56,6 +57,12 @@ export class S3SubmissionStore implements SubmissionStore {
     try { await this.objects.verify(this.receiptKey(receipt.privateReference), { path: receipt.path, kind: 'file', byteLength: receipt.byteLength, sha256: receipt.sha256 }, options.signal); }
     finally { release(); }
   }
+  private async readCollectionMarker(key: string, signal?: AbortSignal): Promise<unknown> {
+    const bytes = await this.objects.raw(`${this.root(key)}/collected.json`, 16 * 1024, signal);
+    if (!bytes) return undefined;
+    try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+    catch { throw new WorkspaceError('STORAGE_UNAVAILABLE', 'Invalid submission collection marker'); }
+  }
   private async retainedAttempt(root: string, intent: AttemptIntent, signal?: AbortSignal): Promise<UploadReceipt | null> {
     const record = await this.objects.json<DurableAttempt>(`${root}/receipt.json`, signal);
     if (!record) return null;
@@ -99,19 +106,31 @@ export class S3SubmissionStore implements SubmissionStore {
     if (operation?.state === 'succeeded' && operation.result?.kind === 'submission:file') {
       const receipt = await this.control.getReceipt(input.scope, input.submissionId, operation.result.receiptId);
       if (!receipt || !receiptMatches(receipt, input.scope, input.submissionId, { path: input.path, sha256: input.declaredSha256, byteLength: input.declaredByteLength })) return mismatch();
-      await this.verifyReceipt(receipt, { signal: input.signal });
       const current = await this.required(input.scope, input.submissionId);
-      return (await this.control.registerUploadReceipt({ scope: input.scope, principal: input.principal, command: input.command, expectedSubmissionVersion: current.version, receipt, now: this.now() })).value;
+      const replayed = (await this.control.registerUploadReceipt({ scope: input.scope, principal: input.principal, command: input.command, expectedSubmissionVersion: current.version, receipt, now: this.now() })).value;
+      if (!await this.control.isUploadReceiptRetired(replayed)) {
+        try { await this.verifyReceipt(replayed, { signal: input.signal }); }
+        catch (error) {
+          if (!missingObject(error)) throw error;
+          const marker = await this.readCollectionMarker(replayed.privateReference.opaqueKey, input.signal);
+          if (!await this.control.isUploadReceiptRetired(replayed, marker)) throw error;
+        }
+      }
+      return replayed;
     }
     const submission = await this.required(input.scope, input.submissionId);
     if (submission.state !== 'uploading') throw new WorkspaceError('SUBMISSION_SEALED', 'Submission does not accept uploads');
-    const { key, fingerprint } = this.attemptIdentity(input); const receipt = await this.persistAttempt(input, key, fingerprint);
-    for (let attempt = 0; attempt < 32; attempt++) {
-      const current = await this.required(input.scope, input.submissionId);
-      try { return (await this.control.registerUploadReceipt({ scope: input.scope, principal: input.principal, command: input.command, expectedSubmissionVersion: current.version, receipt, now: this.now() })).value; }
-      catch (error) { if (!(error instanceof WorkspaceError) || error.code !== 'VERSION_CONFLICT' || attempt === 31) throw error; }
-    }
-    throw new WorkspaceError('VERSION_CONFLICT', 'Submission changed repeatedly');
+    const { key, fingerprint } = this.attemptIdentity(input); const writerId = randomUUID();
+    await this.control.beginSubmissionWrite({ scope: input.scope, principal: input.principal, command: input.command, submissionId: input.submissionId, writerId, attemptKey: key, storeId: this.storeId, now: this.now() });
+    return this.objects.withStoppedWriter(async () => {
+      const receipt = await this.persistAttempt(input, key, fingerprint);
+      for (let attempt = 0; attempt < 32; attempt++) {
+        const current = await this.required(input.scope, input.submissionId);
+        try { return (await this.control.registerUploadReceipt({ scope: input.scope, principal: input.principal, command: input.command, expectedSubmissionVersion: current.version, receipt, now: this.now() })).value; }
+        catch (error) { if (!(error instanceof WorkspaceError) || error.code !== 'VERSION_CONFLICT' || attempt === 31) throw error; }
+      }
+      throw new WorkspaceError('VERSION_CONFLICT', 'Submission changed repeatedly');
+    }, () => this.control.finishSubmissionWrite({ scope: input.scope, submissionId: input.submissionId, writerId, now: this.now() }));
   }
   async seal(input: SealSubmissionInput): Promise<Submission> {
     input = structuredClone(input); this.checkCommand(input, 'submission:seal');
@@ -143,6 +162,30 @@ export class S3SubmissionStore implements SubmissionStore {
   async expire(scope: RunScope, submissionId: SubmissionId, expectedVersion: number, now: Timestamp): Promise<void> {
     // Retain failed/partial attempts. Catalog expiry cannot authorize arbitrary object deletion.
     await this.control.expireSubmission({ scope, submissionId, expectedVersion, now });
+  }
+  async collect(input: SubmissionCollectionPermit, _now: Timestamp): Promise<void> {
+    const permit = structuredClone(input);
+    const authorize = async () => { if (!await this.control.verifySubmissionCollectionPermit(permit, this.now())) throw new WorkspaceError('STALE_FENCE', 'Submission collection requires a current catalog mark and stopped writers'); };
+    await authorize(); let cursor: string | undefined;
+    do {
+      const page = await this.control.listSubmissionCollectionAttempts({ permit, now: this.now(), cursor, limit: 100 });
+      for (const attempt of page.attempts) {
+        if (attempt.storeId !== this.storeId || !/^[a-f0-9]{64}$/.test(attempt.attemptKey)) throw new WorkspaceError('STORAGE_UNAVAILABLE', 'Submission cleanup requires its original private store');
+        const root = this.root(attempt.attemptKey); const markerKey = `${root}/collected.json`;
+        const expected = { scope: permit.scope, submissionId: permit.submissionId, attemptKey: attempt.attemptKey, storeId: this.storeId };
+        const marker = await this.objects.json(markerKey);
+        if (marker && canonicalJson(marker) !== canonicalJson(expected)) throw new WorkspaceError('STALE_FENCE', 'Submission attempt belongs to another collection target');
+        if (!marker) {
+          const intent = await this.objects.json<AttemptIntent>(`${root}/intent.json`);
+          if (intent ? !intent.receipt || !sameRunScope(intent.receipt.scope, permit.scope) || intent.receipt.submissionId !== permit.submissionId || intent.receipt.privateReference.storeId !== this.storeId || intent.receipt.privateReference.opaqueKey !== attempt.attemptKey : await this.objects.hasContents(root)) throw new WorkspaceError('STORAGE_UNAVAILABLE', 'Missing immutable attempt ownership; retain bytes');
+          await authorize(); await this.objects.putJson(markerKey, expected, () => { throw new WorkspaceError('STALE_FENCE', 'Submission collection marker changed'); });
+        }
+        await authorize(); await this.objects.collect(root, markerKey);
+        await this.control.recordSubmissionCollectionProgress({ permit, attemptId: attempt.id, now: this.now() });
+      }
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    await this.control.completeSubmissionCollection(permit, this.now());
   }
 }
 export function createS3SubmissionStore(options: S3SubmissionStoreOptions): SubmissionStore { return new S3SubmissionStore(options); }

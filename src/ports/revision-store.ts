@@ -7,6 +7,12 @@ export interface PrepareRevisionInput {
   source: SnapshotSource;
   signal?: AbortSignal;
 }
+/** Server composition supplies durable catalog-backed tracking. A collection callback alone proves no writer quiescence. */
+export interface RevisionWriterTracking {
+  begin(identity: CandidateIdentity, writerId: string): Promise<unknown>;
+  finish(identity: CandidateIdentity, writerId: string): Promise<unknown>;
+  stopped(identity: CandidateIdentity): Promise<boolean>;
+}
 
 export interface RevisionStore {
   /** Prepare exact immutable contents. Same identity with different contents must fail. */

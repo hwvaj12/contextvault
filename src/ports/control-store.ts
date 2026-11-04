@@ -1,12 +1,13 @@
 import type {
-  ActorId, AuditEvent, AuthorizationPrecondition, BindingScope, CandidateIdentity, CleanupId, CleanupStatus,
+  ActorId, AuditEvent, AuthorizationPrecondition, BindingScope, CandidateIdentity, CandidateCollectionTarget, CandidateWriter, CleanupId, CleanupStatus, CleanupTargets,
   CollectionPermit, CommandIdentity, CredentialId, CustomerScope, ErrorCode, EventId, Fence, FinalizationIntent, FinalizationOperation, IdempotencyScope, Manifest,
   LegacyRevisionAlias, MigrationId, Operation, OperationId, OutboxEvent, PermissionGrant, PreparedRevision, Principal, ProcessingClaim, ReceiptSelection, Revision,
-  RevisionId, Run, RunId, RunScope, Sha256, StorageBinding, StorageBindingId, Submission, SubmissionId,
+  RevisionId, Run, RunId, RunScope, Sha256, StorageBinding, StorageBindingId, Submission, SubmissionId, SubmissionWriter, SubmissionCollectionPermit, SubmissionCollectionAttempt, SubmissionCollectionTarget,
   StorageMigration, SubscriptionId, Timestamp, UploadReceipt, VerifiedRevisionCopy, Version, Workspace, WorkspaceCreationIntent, WorkspaceCreationOperation, WorkspaceScope,
 } from "../domain";
 
 export interface CommandResult<Value, StoredOperation extends Operation = Operation> { value: Value; operation: StoredOperation; replayed: boolean }
+export type CollectionWork = { kind: "cleanup"; cleanup: CleanupStatus } | { kind: "candidate"; candidate: CandidateCollectionTarget } | { kind: "submission"; submission: SubmissionCollectionTarget };
 export interface PublicationEvents { audit: AuditEvent; outbox: OutboxEvent }
 export interface FinalizerPreconditions {
   expectedRunVersion: Version;
@@ -165,9 +166,10 @@ export interface ControlStore {
   completeReadOnly(input: ReadOnlyCompletionInput): Promise<PublicationResult>;
   /** Prove acceptance did not commit before recording terminal failure. A stale fence cannot replace any outcome. */
   failFinalization(input: ProcessingCAS & { code: ErrorCode; message: string; events: PublicationEvents }): Promise<Operation>;
-  listRecoverableOperations(input: { now: Timestamp; limit: number }): Promise<readonly Operation[]>;
-  /** Recovery increments the fencing token monotonically and preserves persisted candidate identity. */
-  claimRecovery(input: { scope: WorkspaceScope; operationId: OperationId; expectedVersion: Version; ownerId: string; now: Timestamp; expiresAt: Timestamp }): Promise<Operation>;
+  /** Defaults to lifecycle kinds. Composition explicitly selects additional kinds with registered use-case processors. */
+  listRecoverableOperations(input: { now: Timestamp; limit: number; kinds?: readonly Operation["kind"][] }): Promise<readonly Operation[]>;
+  /** Recovery increments the fence. Additional kinds require an explicit matching registration, without inventing outcomes. */
+  claimRecovery(input: { scope: WorkspaceScope; operationId: OperationId; expectedVersion: Version; ownerId: string; now: Timestamp; expiresAt: Timestamp; kind?: Operation["kind"] }): Promise<Operation>;
   renewProcessingClaim(input: ProcessingCAS & { expiresAt: Timestamp }): Promise<Operation>;
   /** Internal bounded scan: active runs with expired client leases only. Processing finalizations are recovery work, never expiry candidates. */
   listExpiredActiveRuns(input: { now: Timestamp; limit: number; cursor?: string }): Promise<{ runs: readonly ExpiredActiveRun[]; nextCursor: string | null }>;
@@ -177,6 +179,8 @@ export interface ControlStore {
   createSubmission(input: { scope: RunScope; principal: Principal; command: CommandIdentity; submissionId: SubmissionId; expiresAt: Timestamp }): Promise<CommandResult<Submission>>;
   getSubmission(scope: RunScope, submissionId: SubmissionId): Promise<Submission | null>;
   getReceipt(scope: RunScope, submissionId: SubmissionId, receiptId: UploadReceipt["id"]): Promise<UploadReceipt | null>;
+  /** Require catalog acknowledgment, or an exact private storage marker plus permanent catalog fencing. Neither absence nor a permit alone proves retirement. */
+  isUploadReceiptRetired(receipt: UploadReceipt, storageMarker?: unknown): Promise<boolean>;
   /** Register completed immutable bytes only while both run and submission are writable. */
   registerUploadReceipt(input: { scope: RunScope; principal: Principal; command: CommandIdentity; expectedSubmissionVersion: Version; receipt: UploadReceipt; now: Timestamp }): Promise<CommandResult<UploadReceipt>>;
   /** CAS uploading to sealed, validate selected receipts exactly, and block late registrations in one transaction. */
@@ -185,6 +189,15 @@ export interface ControlStore {
     manifest: Manifest; manifestDigest: Sha256; receipts: readonly ReceiptSelection[]; now: Timestamp;
   }): Promise<CommandResult<Submission>>;
   expireSubmission(input: { scope: RunScope; submissionId: SubmissionId; expectedVersion: Version; now: Timestamp }): Promise<Submission>;
+  /** Persist ownership before opening upload bytes. Only completion proves this writer stopped. */
+  beginSubmissionWrite(input: { scope: RunScope; principal: Principal; command: CommandIdentity; submissionId: SubmissionId; writerId: string; attemptKey: string; storeId: string; now: Timestamp }): Promise<SubmissionWriter>;
+  finishSubmissionWrite(input: { scope: RunScope; submissionId: SubmissionId; writerId: string; now: Timestamp }): Promise<SubmissionWriter>;
+  claimSubmissionCollection(input: { scope: RunScope; submissionId: SubmissionId; now: Timestamp; expiresAt: Timestamp }): Promise<SubmissionCollectionPermit>;
+  verifySubmissionCollectionPermit(permit: SubmissionCollectionPermit, now: Timestamp): Promise<boolean>;
+  completeSubmissionCollection(permit: SubmissionCollectionPermit, now: Timestamp): Promise<void>;
+  listSubmissionCollectionAttempts(input: { permit: SubmissionCollectionPermit; now: Timestamp; limit: number; cursor?: string }): Promise<{ attempts: readonly SubmissionCollectionAttempt[]; nextCursor: string | null }>;
+  recordSubmissionCollectionProgress(input: { permit: SubmissionCollectionPermit; attemptId: string; now: Timestamp }): Promise<void>;
+  listSubmissionCollectionTargets(input: { now: Timestamp; limit: number; cursor?: string }): Promise<{ submissions: readonly SubmissionCollectionTarget[]; nextCursor: string | null }>;
 
   getLegacyRevisionAlias(scope: WorkspaceScope, alias: string): Promise<LegacyRevisionAlias | null>;
   /** Register immutable workspace-scoped aliases. Reject conflicting aliases; never replace an existing mapping. */
@@ -224,19 +237,33 @@ export interface ControlStore {
   }): Promise<StorageMigration>;
 
   getCleanup(scope: WorkspaceScope, cleanupId: CleanupId): Promise<CleanupStatus | null>;
+  getCleanupTargets(scope: WorkspaceScope, cleanupId: CleanupId, limit?: number, cursor?: string): Promise<CleanupTargets | null>;
+  /** Atomically advance durable fair scan positions. Selection confers no storage or publication authority. */
+  nextCollectionWork(input: { now: Timestamp }): Promise<CollectionWork | null>;
+  listCandidateCollectionTargets(input: { now: Timestamp; limit: number; cursor?: string }): Promise<{ candidates: readonly CandidateCollectionTarget[]; nextCursor: string | null }>;
   listDueCleanup(input: { now: Timestamp; limit: number }): Promise<readonly CleanupStatus[]>;
   claimCleanup(input: { scope: WorkspaceScope; cleanupId: CleanupId; expectedVersion: Version; ownerId: string; now: Timestamp; expiresAt: Timestamp }): Promise<CleanupStatus>;
-  completeCleanup(input: { scope: WorkspaceScope; cleanupId: CleanupId; expectedVersion: Version; fence: Fence; now: Timestamp; error: string | null; nextAttemptAt: Timestamp }): Promise<CleanupStatus>;
+  completeCleanup(input: { scope: WorkspaceScope; cleanupId: CleanupId; expectedVersion: Version; fence: Fence; now: Timestamp; error: string | null; nextAttemptAt: Timestamp; targetCursor?: string | null }): Promise<CleanupStatus>;
+  releaseCleanupClaim(input: { scope: WorkspaceScope; cleanupId: CleanupId; expectedVersion: Version; fence: Fence; now: Timestamp; nextAttemptAt: Timestamp; targetCursor?: string | null }): Promise<CleanupStatus>;
   /** Mark/fence before sweep. Deny accepted history, active bases, operations, migrations, and exports. */
   claimCandidateCollection(input: { scope: BindingScope; candidateId: CandidateIdentity["candidateId"]; now: Timestamp; expiresAt: Timestamp }): Promise<CollectionPermit>;
   /** Confirm the current scoped collection fence immediately before an adapter deletes bytes. */
   verifyCollectionPermit(permit: CollectionPermit, now: Timestamp): Promise<boolean>;
+  completeCandidateCollection(permit: CollectionPermit, now: Timestamp): Promise<void>;
+  beginCandidateWrite(input: { identity: CandidateIdentity; writerId: string; ownerId: string; now: Timestamp }): Promise<CandidateWriter>;
+  finishCandidateWrite(input: { identity: CandidateIdentity; writerId: string; now: Timestamp }): Promise<CandidateWriter>;
+  areCandidateWritersStopped(identity: CandidateIdentity, ownerId: string): Promise<boolean>;
   listPendingOutbox(input: { now: Timestamp; limit: number }): Promise<readonly OutboxEvent[]>;
   claimOutbox(input: { scope: WorkspaceScope; eventId: EventId; expectedVersion: Version; ownerId: string; now: Timestamp; expiresAt: Timestamp }): Promise<OutboxEvent>;
   /** Every recipient lookup requires the event's customer scope. Delivery remains at least once with stable IDs. */
   listSubscriptions(scope: CustomerScope, eventType: string): Promise<readonly CatalogSubscription[]>;
   /** Read the immutable tenant-scoped recipient snapshot established by the first outbox claim. */
   listOutboxRecipients(scope: WorkspaceScope, eventId: EventId): Promise<readonly CatalogSubscription[]>;
+  listDeliveredSubscriptions(scope: WorkspaceScope, eventId: EventId): Promise<readonly SubscriptionId[]>;
+  /** Frozen, unsuccessful recipients due now, ordered by durable prior attempt time. */
+  listDueOutboxRecipients(input: { scope: WorkspaceScope; eventId: EventId; now: Timestamp; limit: number }): Promise<readonly { recipient: CatalogSubscription; attempts: number }[]>;
+  /** Release a bounded partial delivery batch without retracting receipts or resetting its monotonic fence. */
+  releaseOutboxClaim(input: { scope: WorkspaceScope; eventId: EventId; expectedVersion: Version; fence: Fence; now: Timestamp; nextAttemptAt: Timestamp }): Promise<OutboxEvent>;
   recordDelivery(input: { scope: WorkspaceScope; eventId: EventId; subscriptionId: SubscriptionId; expectedVersion: Version; fence: Fence; delivered: boolean; now: Timestamp; nextAttemptAt: Timestamp }): Promise<OutboxEvent>;
   listAudit(scope: WorkspaceScope, cursor?: string, limit?: number): Promise<{ events: readonly AuditEvent[]; nextCursor: string | null }>;
 }

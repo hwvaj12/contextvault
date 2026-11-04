@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand, ListMultipartUploadsCommand, AbortMultipartUploadCommand } from "@aws-sdk/client-s3";
 import { S3RevisionStore, type S3RevisionStoreOptions } from "../../../src/adapters/revisions/s3";
+import { createTestWriterTracking } from "../../recovery/tracking";
 export * from "../git/fixtures";
 
 export async function setup(overrides: Partial<S3RevisionStoreOptions> = {}) {
@@ -13,6 +14,7 @@ export async function setup(overrides: Partial<S3RevisionStoreOptions> = {}) {
     ...(provider === 'localstack' ? { credentials: { accessKeyId: 'test', secretAccessKey: 'test' } } : {}), maxAttempts: 1 });
   const prefix = `${parent}cv14-${randomUUID()}/`;
   const options: S3RevisionStoreOptions = { client, bucket, prefix, storeId: 'private-s3-test', allowInsecureEndpoint: provider === 'localstack', encryption: { algorithm: 'AES256' }, ...overrides };
+  if (options.verifyCollectionPermit && !options.writerTracking) options.writerTracking = createTestWriterTracking();
   return { client, bucket, prefix, options, store: new S3RevisionStore(options), reopen: () => new S3RevisionStore(options),
     async keys() { return (await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix }))).Contents?.map(o => o.Key!) ?? []; },
     async close() {

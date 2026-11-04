@@ -1,4 +1,4 @@
-import type { CommandIdentity, Manifest, Principal, ReceiptId, ReceiptSelection, RunScope, Sha256, Submission, SubmissionId, Timestamp, UploadReceipt } from "../domain";
+import type { CommandIdentity, Manifest, Principal, ReceiptId, ReceiptSelection, RunScope, Sha256, Submission, SubmissionCollectionPermit, SubmissionId, Timestamp, UploadReceipt } from "../domain";
 import type { ByteStream, StreamOptions } from "./streams";
 
 export interface BeginSubmissionInput {
@@ -44,4 +44,6 @@ export interface SubmissionStore {
   openSealedFile(scope: RunScope, submissionId: SubmissionId, path: string, options?: StreamOptions): Promise<ByteStream>;
   /** Catalog eligibility must protect recoverable finalizations from submission expiry. */
   expire(scope: RunScope, submissionId: SubmissionId, expectedVersion: number, now: Timestamp): Promise<void>;
+  /** Delete only exact owned attempts after a current catalog mark and proven stopped writers. */
+  collect(permit: SubmissionCollectionPermit, now: Timestamp): Promise<void>;
 }

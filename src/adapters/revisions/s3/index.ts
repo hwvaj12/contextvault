@@ -3,14 +3,17 @@ import {
   type BindingScope, type CandidateIdentity, type CollectionPermit, type FileEntry, type Manifest,
   type PreparedRevision, type PrivateLocator, type Timestamp,
 } from '../../../domain';
-import type { PrepareRevisionInput, RevisionStore } from '../../../ports/revision-store';
+import type { PrepareRevisionInput, RevisionStore, RevisionWriterTracking } from '../../../ports/revision-store';
 import type { ByteStream, RevisionReference, StreamOptions } from '../../../ports/streams';
 import { S3Objects, hash, type S3ObjectOptions } from './objects';
 import { StreamLimiter } from '../../../application/files';
+import { randomUUID } from 'node:crypto';
 export type { S3ObjectOptions } from './objects';
 export interface S3RevisionStoreOptions extends S3ObjectOptions {
   /** Must verify current catalog eligibility and permanently fence later acceptance. Default: deny. */
   verifyCollectionPermit?: (permit: CollectionPermit, now: Timestamp) => Promise<boolean>;
+  /** Collection stays denied without completed, durable writer tracking. */
+  writerTracking?: RevisionWriterTracking;
 }
 interface Intent { schemaVersion: 1; identity: CandidateIdentity; manifest: Manifest }
 interface Loaded { intent: Intent; prepared: PreparedRevision; entries: Map<string, FileEntry>; weight: number }
@@ -39,7 +42,9 @@ export class S3RevisionStore implements RevisionStore {
   private readonly loadLimiter: StreamLimiter;
   private readonly options: S3RevisionStoreOptions;
   constructor(options: S3RevisionStoreOptions) {
-    this.options = { ...options }; this.objects = new S3Objects(options);
+    if (options.writerTracking && [options.writerTracking.begin, options.writerTracking.finish, options.writerTracking.stopped].some(method => typeof method !== 'function')) throw new WorkspaceError('INVALID_REQUEST', 'Revision writer tracking must be complete');
+    const tracking = options.writerTracking;
+    this.options = { ...options, writerTracking: tracking ? { begin: tracking.begin.bind(tracking), finish: tracking.finish.bind(tracking), stopped: tracking.stopped.bind(tracking) } : undefined }; this.objects = new S3Objects(options);
     this.loadLimiter = new StreamLimiter(this.objects.limits.maxConcurrentStreams);
   }
   private root(identity: CandidateIdentity): string { return `v1/${hash(identity.scope)}/${hash({ scope: identity.scope, candidateId: identity.candidateId })}`; }
@@ -92,6 +97,12 @@ export class S3RevisionStore implements RevisionStore {
     return this.alive(root);
   }
   async prepare(input: PrepareRevisionInput): Promise<PreparedRevision> {
+    const identity = identityCopy(input.identity); const tracking = this.options.writerTracking;
+    if (!tracking) return this.prepareOwned({ ...input, identity });
+    const writerId = randomUUID(); await tracking.begin(identity, writerId);
+    return this.objects.withStoppedWriter(() => this.prepareOwned({ ...input, identity }), () => tracking.finish(identity, writerId));
+  }
+  private async prepareOwned(input: PrepareRevisionInput): Promise<PreparedRevision> {
     input.signal?.throwIfAborted();
     const identity = identityCopy(input.identity); const manifest = canonicalizeManifest(input.source.manifest, this.objects.limits);
     const intent: Intent = { schemaVersion: 1, identity, manifest }; const root = this.root(identity);
@@ -140,16 +151,19 @@ export class S3RevisionStore implements RevisionStore {
   async deleteCollectible(input: CollectionPermit, now: Timestamp): Promise<void> {
     const permit = structuredClone(input);
     const stale = (): never => { throw new WorkspaceError('STALE_FENCE', 'S3 collection requires an exact unexpired catalog permit'); };
-    if (!this.options.verifyCollectionPermit || !scopeValid(permit.scope) || !id(permit.candidateId) || !Number.isSafeInteger(permit.collectionFence) || permit.collectionFence <= 0
-      || !Number.isFinite(Date.parse(now)) || !Number.isFinite(Date.parse(permit.expiresAt)) || Date.parse(permit.expiresAt) <= Date.parse(now)
-      || permit.privateReference?.storeId !== this.options.storeId) return stale();
+    if (!this.options.verifyCollectionPermit || !this.options.writerTracking || !scopeValid(permit.scope) || !id(permit.candidateId) || !Number.isSafeInteger(permit.collectionFence) || permit.collectionFence <= 0
+      || !Number.isFinite(Date.parse(now)) || !Number.isFinite(Date.parse(permit.expiresAt)) || Date.parse(permit.expiresAt) <= Date.parse(now)) return stale();
+    if (permit.kind === 'partial' ? permit.storeId !== this.options.storeId || permit.identity.candidateId !== permit.candidateId || canonicalJson(permit.identity.scope) !== canonicalJson(permit.scope) : permit.privateReference?.storeId !== this.options.storeId) return stale();
     const root = `v1/${hash(permit.scope)}/${hash({ scope: permit.scope, candidateId: permit.candidateId })}`;
-    if (permit.privateReference.opaqueKey !== root) return stale();
+    if (permit.kind !== 'partial' && permit.privateReference.opaqueKey !== root) return stale();
     const tombstoneKey = `${root}/collected.json`;
-    const tombstone = await this.objects.json<{ scope: BindingScope; candidateId: string; privateReference: PrivateLocator }>(tombstoneKey);
+    const tombstone = await this.objects.json<{ scope: BindingScope; candidateId: string; privateReference: PrivateLocator; identity: CandidateIdentity }>(tombstoneKey);
     const intent = await this.load(root);
-    const expected = { scope: permit.scope, candidateId: permit.candidateId, privateReference: permit.privateReference };
-    if (tombstone ? canonicalJson(tombstone) !== canonicalJson(expected) : !intent || intent.intent.identity.candidateId !== permit.candidateId || canonicalJson(intent.intent.identity.scope) !== canonicalJson(permit.scope)) return stale();
+    const identity = permit.kind === 'partial' ? identityCopy(permit.identity) : intent?.intent.identity ?? (tombstone?.identity ? identityCopy(tombstone.identity) : null);
+    if (!identity || identity.candidateId !== permit.candidateId || canonicalJson(identity.scope) !== canonicalJson(permit.scope) || (intent && canonicalJson(intent.intent.identity) !== canonicalJson(identity))) return stale();
+    const expected = { scope: permit.scope, candidateId: permit.candidateId, privateReference: permit.kind === 'partial' ? { storeId: permit.storeId, opaqueKey: root } : permit.privateReference, identity };
+    if (tombstone ? canonicalJson(tombstone) !== canonicalJson(expected) : !intent && (permit.kind !== 'partial' || await this.objects.hasContents(root))) return stale();
+    if (!await this.options.writerTracking.stopped(identity)) return stale();
     // The callback must permanently fence later acceptance before it returns true.
     if (!await this.options.verifyCollectionPermit(permit, now)) return stale();
     await this.objects.putJson(tombstoneKey, expected, stale);

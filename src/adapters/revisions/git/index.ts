@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -6,7 +6,7 @@ import {
   validatePortablePath, verifyFileStream,
 } from "../../../domain";
 import type { BindingScope, CandidateIdentity, CollectionPermit, FileEntry, Manifest, PreparedRevision, PrivateLocator, Timestamp } from "../../../domain";
-import type { PrepareRevisionInput, RevisionStore } from "../../../ports/revision-store";
+import type { PrepareRevisionInput, RevisionStore, RevisionWriterTracking } from "../../../ports/revision-store";
 import type { ByteStream, RevisionReference, StreamOptions } from "../../../ports/streams";
 import { gitBlob, gitCommand } from "./process";
 import { oidPattern, snapshotTree, treeEntries, validateTree, writeTree } from "./trees";
@@ -18,6 +18,8 @@ export interface GitRevisionStoreOptions {
   storeId: string;
   /** Verify a current catalog collection claim which permanently fences later acceptance. Default: deny. */
   verifyCollectionPermit?: (permit: CollectionPermit, now: Timestamp) => Promise<boolean>;
+  /** Required for collection; server composition uses durable catalog writer records. */
+  writerTracking?: RevisionWriterTracking;
 }
 interface LoadedCandidate {
   identity: CandidateIdentity; manifest: Manifest; files: Map<string, string>;
@@ -64,7 +66,9 @@ export class GitRevisionStore implements RevisionStore {
   private cachePayloadBytes = 0;
   constructor(options: GitRevisionStoreOptions) {
     if (!path.isAbsolute(options.rootDirectory) || !id(options.storeId)) throw new WorkspaceError("INVALID_REQUEST", "Git storage requires an absolute private directory and store ID");
-    this.options = { ...options };
+    if (options.writerTracking && [options.writerTracking.begin, options.writerTracking.finish, options.writerTracking.stopped].some(method => typeof method !== "function")) throw new WorkspaceError("INVALID_REQUEST", "Revision writer tracking must be complete");
+    const tracking = options.writerTracking;
+    this.options = { ...options, writerTracking: tracking ? { begin: tracking.begin.bind(tracking), finish: tracking.finish.bind(tracking), stopped: tracking.stopped.bind(tracking) } : undefined };
   }
 
   private repository(): Promise<string> {
@@ -130,6 +134,13 @@ export class GitRevisionStore implements RevisionStore {
   }
 
   async prepare(input: PrepareRevisionInput): Promise<PreparedRevision> {
+    const identity = identityCopy(input.identity); const tracking = this.options.writerTracking;
+    if (!tracking) return this.prepareOwned({ ...input, identity });
+    const writerId = randomUUID(); await tracking.begin(identity, writerId);
+    try { return await this.prepareOwned({ ...input, identity }); }
+    finally { await tracking.finish(identity, writerId); }
+  }
+  private async prepareOwned(input: PrepareRevisionInput): Promise<PreparedRevision> {
     input.signal?.throwIfAborted();
     const identity = identityCopy(input.identity);
     const manifest = canonicalizeManifest(input.source.manifest);
@@ -262,10 +273,11 @@ export class GitRevisionStore implements RevisionStore {
   async deleteCollectible(input: CollectionPermit, now: Timestamp): Promise<void> {
     const permit: CollectionPermit = JSON.parse(canonicalJson(input));
     const stale = (): never => { throw new WorkspaceError("STALE_FENCE", "Collection requires a matching unexpired catalog claim"); };
-    if (!this.options.verifyCollectionPermit || !scopeValid(permit.scope) || !id(permit.candidateId)
+    if (!this.options.verifyCollectionPermit || !this.options.writerTracking || !scopeValid(permit.scope) || !id(permit.candidateId)
       || !Number.isSafeInteger(permit.collectionFence) || permit.collectionFence <= 0
-      || !Number.isFinite(Date.parse(now)) || !Number.isFinite(Date.parse(permit.expiresAt)) || Date.parse(permit.expiresAt) <= Date.parse(now)
-      || permit.privateReference?.storeId !== this.options.storeId
+      || !Number.isFinite(Date.parse(now)) || !Number.isFinite(Date.parse(permit.expiresAt)) || Date.parse(permit.expiresAt) <= Date.parse(now)) return stale();
+    if (permit.kind === "partial") return this.deletePartialCollectible(permit, now);
+    if (permit.privateReference?.storeId !== this.options.storeId
       || !/^v1\/[a-f0-9]{64}\/[a-f0-9]{64}\/[a-f0-9]{40}$/.test(permit.privateReference.opaqueKey)) return stale();
     const [ , scoped, candidate, objectId] = permit.privateReference.opaqueKey.split("/");
     if (scoped !== hash(permit.scope) || candidate !== hash({ scope: permit.scope, candidateId: permit.candidateId })) return stale();
@@ -279,14 +291,16 @@ export class GitRevisionStore implements RevisionStore {
       const identity = identityCopy(tombstone.identity);
       if (canonicalJson(tombstone.permit.privateReference) !== canonicalJson(permit.privateReference)
         || identity.candidateId !== permit.candidateId || canonicalJson(identity.scope) !== canonicalJson(permit.scope)) return stale();
+      if (!await this.options.writerTracking.stopped(identity)) return stale();
       await syncRefDirectories(repository, scoped);
-      await this.removeCollectedRefs(repository, identity, objectId, collected);
+      await this.removeCollectedRefs(repository, identity, objectId, collected, permit, now);
       return;
     }
     if (await this.lookup(repository, candidateRef) !== objectId) return stale();
     const loaded = await this.load(repository, objectId);
     if (loaded.identity.candidateId !== permit.candidateId || canonicalJson(loaded.identity.scope) !== canonicalJson(permit.scope)
       || canonicalJson(loaded.prepared.privateReference) !== canonicalJson(permit.privateReference)) return stale();
+    if (!await this.options.writerTracking.stopped(loaded.identity)) return stale();
     const names = refs(loaded.identity);
     if (await this.lookup(repository, names.revisionRef) !== objectId) return stale();
     const tombstone = await this.blob(repository, Buffer.from(canonicalJson({ identity: loaded.identity, permit })));
@@ -301,16 +315,50 @@ export class GitRevisionStore implements RevisionStore {
       return this.deleteCollectible(permit, now);
     }
     await syncRefDirectories(repository, names.scoped);
-    await this.removeCollectedRefs(repository, loaded.identity, objectId, tombstone);
+    await this.removeCollectedRefs(repository, loaded.identity, objectId, tombstone, permit, now);
   }
 
-  private async removeCollectedRefs(repository: string, identity: CandidateIdentity, objectId: string, tombstone: string): Promise<void> {
+  private async deletePartialCollectible(permit: CollectionPermit & { kind: "partial" }, now: Timestamp): Promise<void> {
+    const stale = (): never => { throw new WorkspaceError("STALE_FENCE", "Partial Git collection requires current exact ownership"); };
+    if (permit.storeId !== this.options.storeId || canonicalJson(permit.identity.scope) !== canonicalJson(permit.scope) || permit.identity.candidateId !== permit.candidateId) return stale();
+    const identity = identityCopy(permit.identity);
+    if (!this.options.writerTracking || !await this.options.writerTracking.stopped(identity)) return stale();
+    const names = refs(identity); const repository = await this.repository();
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const collected = await this.lookup(repository, names.collectedRef);
+      if (collected) {
+        const record = JSON.parse((await gitCommand(repository, ["cat-file", "blob", collected])).bytes.toString("utf8")) as { identity: CandidateIdentity; objectId: string | null; partial: boolean };
+        if (record.partial !== true || canonicalJson(record.identity) !== canonicalJson(identity) || (record.objectId !== null && !oidPattern.test(record.objectId))) return stale();
+        if (!await this.options.verifyCollectionPermit!(permit, now)) return stale();
+        await syncRefDirectories(repository, names.scoped);
+        if (record.objectId) await this.removeCollectedRefs(repository, identity, record.objectId, collected, permit, now);
+        return;
+      }
+      const objectId = await this.lookup(repository, names.candidateRef);
+      const alias = await this.lookup(repository, names.revisionRef);
+      if (objectId) {
+        const loaded = await this.load(repository, objectId);
+        if (canonicalJson(loaded.identity) !== canonicalJson(identity) || alias !== objectId) return stale();
+      } else if (alias) return stale();
+      const tombstone = await this.blob(repository, Buffer.from(canonicalJson({ identity, objectId, partial: true, permit })));
+      if (!await this.options.verifyCollectionPermit!(permit, now)) return stale();
+      try {
+        await gitCommand(repository, ["update-ref", "--stdin"], Buffer.from(`start\nverify ${names.candidateRef} ${objectId ?? zero}\nverify ${names.revisionRef} ${alias ?? zero}\ncreate ${names.collectedRef} ${tombstone}\nprepare\ncommit\n`));
+      } catch (error) { if (attempt === 15 || !await this.lookup(repository, names.collectedRef)) throw error; continue; }
+      await syncRefDirectories(repository, names.scoped);
+      if (objectId) await this.removeCollectedRefs(repository, identity, objectId, tombstone, permit, now);
+      return;
+    }
+  }
+
+  private async removeCollectedRefs(repository: string, identity: CandidateIdentity, objectId: string, tombstone: string, permit: CollectionPermit, now: Timestamp): Promise<void> {
     const names = refs(identity);
     for (let attempt = 0; attempt < 16; attempt++) {
       const candidate = await this.lookup(repository, names.candidateRef);
       const revision = await this.lookup(repository, names.revisionRef);
       if ((candidate && candidate !== objectId) || (revision && revision !== objectId)) return conflict();
       if (!candidate && !revision) { await syncRefDirectories(repository, names.scoped); return; }
+      if (!this.options.verifyCollectionPermit || !this.options.writerTracking || !await this.options.writerTracking.stopped(identity) || !await this.options.verifyCollectionPermit(permit, now)) throw new WorkspaceError("STALE_FENCE", "Git collection fence or writer state changed before reference retirement");
       try {
         await gitCommand(repository, ["update-ref", "--stdin"], Buffer.from(`start\nverify ${names.collectedRef} ${tombstone}\n`
           + (candidate ? `delete ${names.candidateRef} ${objectId}\n` : "")

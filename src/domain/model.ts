@@ -291,14 +291,61 @@ export interface CleanupStatus {
   claim: ProcessingClaim | null;
   nextAttemptAt: Timestamp;
   lastError: string | null;
+  /** Durable round-robin position among this job's remaining targets. */
+  targetCursor?: string | null;
 }
-export interface CollectionPermit {
+interface CandidateCollectionFence {
   scope: BindingScope;
   candidateId: CandidateId;
-  privateReference: PrivateLocator;
   collectionFence: Fence;
   expiresAt: Timestamp;
 }
+export type CollectionPermit = CandidateCollectionFence & (
+  | { kind?: "prepared"; privateReference: PrivateLocator }
+  | { kind: "partial"; privateReference: null; identity: CandidateIdentity; storeId: string }
+);
+export interface CandidateCollectionTarget { identity: CandidateIdentity; prepared: PreparedRevision | null; binding: StorageBinding | null; collection: CollectionPermit | null }
+export interface SubmissionWriter {
+  id: string;
+  scope: RunScope;
+  submissionId: SubmissionId;
+  attemptKey: string;
+  storeId: string;
+  state: "active" | "finished";
+  startedAt: Timestamp;
+  finishedAt: Timestamp | null;
+}
+export interface CandidateWriter {
+  id: string;
+  identity: CandidateIdentity;
+  ownerId: string;
+  processingFence: Fence;
+  state: "active" | "finished";
+  startedAt: Timestamp;
+  finishedAt: Timestamp | null;
+}
+/** An active writer never becomes stopped merely because a lease expires. */
+export interface SubmissionCollectionPermit {
+  scope: RunScope;
+  submissionId: SubmissionId;
+  submissionVersion: Version;
+  collectionFence: Fence;
+  expiresAt: Timestamp;
+}
+export interface SubmissionCollectionAttempt {
+  /** Catalog pagination identity, never an agent-provided storage location. */
+  id: string;
+  attemptKey: string;
+  storeId: string;
+  writerId: string | null;
+  receipt: UploadReceipt | null;
+}
+export interface CleanupTargets {
+  candidates: readonly CandidateCollectionTarget[];
+  submissions: readonly SubmissionCollectionTarget[];
+  nextCursor: string | null;
+}
+export interface SubmissionCollectionTarget { submission: Submission; binding: StorageBinding | null; collection: SubmissionCollectionPermit | null }
 export interface LegacyRevisionAlias { alias: string; revisionId: RevisionId }
 export interface VerifiedRevisionCopy {
   revisionId: RevisionId;

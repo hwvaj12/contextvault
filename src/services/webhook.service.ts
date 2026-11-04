@@ -2,16 +2,13 @@ import { getDb } from "../db";
 import { ulid } from "ulid";
 import * as crypto from "crypto";
 
-export type WebhookEvent =
-  | "workspace.created"
-  | "workspace.deleted"
-  | "workspace.cloned"
-  | "sandbox.checked_out"
-  | "sandbox.destroyed"
-  | "run.started"
-  | "run.completed"
-  | "run.failed"
-  | "commit.created";
+export const WEBHOOK_EVENTS = [
+  "workspace.created", "workspace.deleted", "workspace.cloned", "workspace.creation-failed",
+  "sandbox.checked_out", "sandbox.destroyed",
+  "run.started", "run.completed", "run.failed", "run.finalized", "run.aborted", "run.expired", "run.conflicted",
+  "commit.created",
+] as const;
+export type WebhookEvent = typeof WEBHOOK_EVENTS[number];
 
 export interface Webhook {
   id: string;
@@ -74,15 +71,29 @@ export function registerWebhook(
 export function listWebhooks(customerId: string): Webhook[] {
   const db = getDb();
   const rows = db
-    .prepare("SELECT * FROM webhooks WHERE customer_id = ? ORDER BY created_at DESC")
+    .prepare("SELECT * FROM webhooks WHERE customer_id = ? AND active=1 ORDER BY created_at DESC")
     .all(customerId) as WebhookRow[];
   return rows.map(rowToWebhook);
 }
 
-export function deleteWebhook(id: string): boolean {
+export function getWebhook(id: string, customerId?: string): Webhook | null {
   const db = getDb();
-  const result = db.prepare("DELETE FROM webhooks WHERE id = ?").run(id);
+  const row = (customerId ? db.prepare("SELECT * FROM webhooks WHERE id=? AND customer_id=? AND active=1").get(id, customerId) : db.prepare("SELECT * FROM webhooks WHERE id=? AND active=1").get(id)) as WebhookRow | undefined;
+  return row ? rowToWebhook(row) : null;
+}
+
+export function deleteWebhook(id: string, customerId?: string): boolean {
+  const db = getDb();
+  // Frozen in-flight outbox recipients retain their signing material. New claims see active subscriptions only.
+  const result = customerId ? db.prepare("UPDATE webhooks SET active=0 WHERE id=? AND customer_id=? AND active=1").run(id, customerId) : db.prepare("UPDATE webhooks SET active=0 WHERE id=? AND active=1").run(id);
   return result.changes > 0;
+}
+
+/** Infrastructure resolver; never accept a signing reference from a webhook HTTP body. */
+export async function getWebhookSigningKey(reference: string, customerId: string): Promise<string | null> {
+  if (!reference.startsWith("legacy-webhook:")) return null;
+  const row = getDb().prepare("SELECT secret_hash FROM webhooks WHERE id=? AND customer_id=?").get(reference.slice("legacy-webhook:".length), customerId) as { secret_hash: string | null } | undefined;
+  return row?.secret_hash ?? null;
 }
 
 /**
@@ -94,11 +105,18 @@ export async function deliver(
   payload: Record<string, unknown>
 ): Promise<void> {
   const db = getDb();
-
-  // Find all active webhooks subscribed to this event
+  const workspaceId = typeof payload.workspaceId === "string" ? payload.workspaceId : null;
+  const legacy = workspaceId ? db.prepare("SELECT customer_id FROM workspaces WHERE id=?").get(workspaceId) as { customer_id: string } | undefined : undefined;
+  const hasCatalog = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_records'").get();
+  const catalog = workspaceId && hasCatalog ? db.prepare("SELECT customer_id FROM catalog_records WHERE kind='workspace' AND id=?").get(workspaceId) as { customer_id: string } | undefined : undefined;
+  const declared = typeof payload.customerId === "string" ? payload.customerId : null;
+  const owners = new Set([legacy?.customer_id, catalog?.customer_id, declared].filter((id): id is string => !!id));
+  // A missing or inconsistent owner cannot authorize any recipient lookup.
+  if (owners.size !== 1) return;
+  const customerId = [...owners][0];
   const rows = db
-    .prepare("SELECT * FROM webhooks WHERE active = 1")
-    .all() as WebhookRow[];
+    .prepare("SELECT * FROM webhooks WHERE customer_id=? AND active=1")
+    .all(customerId) as WebhookRow[];
 
   const matching = rows.filter((row) => {
     const events: string[] = JSON.parse(row.events);
@@ -110,8 +128,8 @@ export async function deliver(
   const body = JSON.stringify({ event, payload, timestamp: new Date().toISOString() });
 
   for (const row of matching) {
-    deliverToEndpoint(row, body).catch((err) => {
-      console.error(`[webhook] delivery failed for ${row.id} → ${row.url}: ${err}`);
+    deliverToEndpoint(row, body).catch(() => {
+      console.error(`[webhook] delivery failed for ${row.id}`);
     });
   }
 }
@@ -148,27 +166,29 @@ async function deliverToEndpoint(row: WebhookRow, body: string): Promise<void> {
         headers,
         body,
         signal: AbortSignal.timeout(10_000),
+        redirect: "error",
       });
+      await response.body?.cancel();
 
       if (response.ok) {
-        console.log(`[webhook] delivered ${JSON.parse(body).event} to ${row.url} (${response.status})`);
+        console.log(`[webhook] delivered ${JSON.parse(body).event} to ${row.id} (${response.status})`);
         return;
       }
 
       // 4xx errors are not retryable
       if (response.status >= 400 && response.status < 500) {
-        console.error(`[webhook] ${row.url} returned ${response.status}, not retrying`);
+        console.error(`[webhook] ${row.id} returned ${response.status}, not retrying`);
         return;
       }
 
       // 5xx — retry
-      console.warn(`[webhook] ${row.url} returned ${response.status}, retrying (${attempt + 1}/${maxRetries})`);
-    } catch (err) {
-      console.warn(`[webhook] delivery attempt ${attempt + 1}/${maxRetries} to ${row.url} failed: ${err}`);
+      console.warn(`[webhook] ${row.id} returned ${response.status}, retrying (${attempt + 1}/${maxRetries})`);
+    } catch {
+      console.warn(`[webhook] delivery attempt ${attempt + 1}/${maxRetries} to ${row.id} failed`);
     }
   }
 
-  console.error(`[webhook] exhausted retries for ${row.id} → ${row.url}`);
+  console.error(`[webhook] exhausted retries for ${row.id}`);
 }
 
 function sleep(ms: number): Promise<void> {

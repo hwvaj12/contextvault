@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import * as D from "../../domain";
-import type { ControlStore, CredentialAuthority, CatalogSubscription, CommandResult, PublicationEvents, ResourceLookupContext, ProcessingCAS } from "../../ports/control-store";
+import type { ControlStore, CredentialAuthority, CatalogSubscription, CollectionWork, CommandResult, PublicationEvents, ResourceLookupContext, ProcessingCAS } from "../../ports/control-store";
 import { initSchema } from "../../db";
 import { isCurrentConfiguredAdministrator } from "../../db/configured-administrator";
 import { decideAccess } from "../access/catalog-access-policy";
@@ -17,8 +17,12 @@ type CandidateRecord = {
     identity: D.CandidateIdentity;
     prepared: D.PreparedRevision | null;
     collection: D.CollectionPermit | null;
+    collectedAt?: D.Timestamp;
 };
+type SubmissionCollectionState = { permit: D.SubmissionCollectionPermit; collectedAt: D.Timestamp | null; cursor?: string };
 const same = (left: unknown, right: unknown) => D.canonicalJson(left) === D.canonicalJson(right);
+// Catalog pagination uses SQLite's UTF-8 BINARY ordering, which differs from JavaScript UTF-16 string ordering.
+const compareCursor = (left: string, right: string) => Buffer.compare(Buffer.from(left), Buffer.from(right));
 function fail(code: D.ErrorCode, message: string): never { throw new D.WorkspaceError(code, message); }
 const scopeOf = (workspace: D.Workspace): D.WorkspaceScope => ({ customerId: workspace.customerId, workspaceId: workspace.id });
 const bindingOf = (workspace: D.Workspace): D.BindingScope => ({ ...scopeOf(workspace), storageBindingId: workspace.storageBindingId, bindingGeneration: workspace.bindingGeneration });
@@ -416,6 +420,7 @@ export class SqliteControlStore implements ControlStore {
             operation.error = { code: input.code, message: input.message, retryable: false };
             this.saveOutcome(operation, null);
             this.write("cleanup", input.cleanup.id, operation.scope, input.cleanup, true);
+            this.write("cleanup-owner", input.cleanup.id, operation.scope, { operationId: operation.id }, true);
             this.events(input.events, operation);
             return operation;
         });
@@ -706,7 +711,10 @@ export class SqliteControlStore implements ControlStore {
     }
     async listRecoverableOperations(input: Input<"listRecoverableOperations">) {
         const limit = this.limit(input.limit);
-        return (this.database.prepare("SELECT data FROM catalog_records WHERE kind='operation' AND json_extract(data,'$.kind') IN ('finalize','workspace:create') AND json_extract(data,'$.state')='processing' AND json_extract(data,'$.claim.expiresAt')<=? ORDER BY id LIMIT ?").all(input.now, limit) as {
+        const kinds = [...new Set(input.kinds ?? ["workspace:create", "finalize"])];
+        if (!kinds.length) return [];
+        if (kinds.length > 64 || kinds.some(kind => typeof kind !== "string" || !/^[a-z][a-z:-]{0,63}$/.test(kind))) fail("INVALID_REQUEST", "Recovery kinds must be bounded use-case names");
+        return (this.database.prepare(`SELECT data FROM catalog_records WHERE kind='operation' AND json_extract(data,'$.kind') IN (${kinds.map(() => "?").join(",")}) AND json_extract(data,'$.state')='processing' AND json_extract(data,'$.claim.expiresAt')<=? ORDER BY id LIMIT ?`).all(...kinds, input.now, limit) as {
             data: string;
         }[]).map(row => JSON.parse(row.data) as D.Operation);
     }
@@ -720,8 +728,8 @@ export class SqliteControlStore implements ControlStore {
             const operation = this.load<D.Operation>("operation", input.operationId, input.scope);
             if (!operation)
                 fail("OPERATION_NOT_FOUND", "Operation does not exist");
-            if (operation.kind !== "workspace:create" && operation.kind !== "finalize")
-                fail("INVALID_TRANSITION", "Operation uses a separate maintenance recovery claim");
+            if (input.kind ? operation.kind !== input.kind : operation.kind !== "workspace:create" && operation.kind !== "finalize")
+                fail("INVALID_TRANSITION", "Operation requires its explicitly registered recovery kind");
             if (operation.version !== input.expectedVersion)
                 fail("VERSION_CONFLICT", "Operation version changed");
             if (operation.state !== "processing" || !operation.claim || operation.claim.expiresAt > input.now)
@@ -801,6 +809,18 @@ export class SqliteControlStore implements ControlStore {
     }
     async getSubmission(scope: D.RunScope, id: D.SubmissionId) { const submission = this.load<D.Submission>("submission", id, scope); return submission && same(submission.scope, scope) ? submission : null; }
     async getReceipt(scope: D.RunScope, submissionId: D.SubmissionId, id: D.ReceiptId) { const receipt = this.load<D.UploadReceipt>("receipt", id, scope); return receipt && receipt.submissionId === submissionId && same(receipt.scope, scope) ? receipt : null; }
+    async isUploadReceiptRetired(receipt: D.UploadReceipt, storageMarker?: unknown): Promise<boolean> {
+        return this.transaction(() => {
+            const recorded = this.load<D.UploadReceipt>("receipt", receipt.id, receipt.scope);
+            const submission = this.load<D.Submission>("submission", receipt.submissionId, receipt.scope);
+            const collection = this.load<SubmissionCollectionState>("submission-collection", receipt.submissionId, receipt.scope);
+            if (!recorded || !same(recorded, receipt) || !submission || submission.state !== "expired" || !same(submission.scope, receipt.scope)
+                || !collection || !same(collection.permit.scope, receipt.scope) || collection.permit.submissionId !== receipt.submissionId || collection.permit.submissionVersion !== submission.version) return false;
+            if (collection.cursor && compareCursor(collection.cursor, `receipt:${receipt.id}`) >= 0) return true;
+            // A completed deletion can precede its catalog acknowledgment. Permanent fencing survives permit expiry.
+            return storageMarker !== undefined && same(storageMarker, { scope: receipt.scope, submissionId: receipt.submissionId, attemptKey: receipt.privateReference.opaqueKey, storeId: receipt.privateReference.storeId });
+        });
+    }
     private writableSubmission(scope: D.RunScope, id: D.SubmissionId, expectedVersion: number, now: string): D.Submission {
         const submission = this.load<D.Submission>("submission", id, scope);
         if (!submission || !same(submission.scope, scope))
@@ -891,6 +911,103 @@ export class SqliteControlStore implements ControlStore {
             this.write("submission", submission.id, input.scope, submission, false, input.scope.runId);
             return submission;
         });
+    }
+    async beginSubmissionWrite(input: Input<"beginSubmissionWrite">) {
+        return this.transaction(() => {
+            this.command(input.command, input.principal, input.scope, "submission:file", input.scope.runId);
+            const run = this.run(input.scope, input.principal, "run:upload");
+            this.active(run, input.now);
+            if (run.mode !== "read-write") fail("FORBIDDEN", "Read-only runs cannot upload");
+            const submission = this.load<D.Submission>("submission", input.submissionId, input.scope);
+            if (!submission || !same(submission.scope, input.scope)) fail("SUBMISSION_NOT_FOUND", "Submission does not belong to this run");
+            this.writableSubmission(input.scope, submission.id, submission.version, input.now);
+            if (this.load("submission-collection", submission.id, input.scope)) fail("STALE_FENCE", "Submission is permanently fenced for collection");
+            if (!input.writerId || input.writerId.length > 255 || !input.storeId || input.storeId.length > 1024 || input.attemptKey !== digest({ scope: input.command.idempotencyScope, key: input.command.idempotencyKey })) fail("INVALID_REQUEST", "Upload writer requires exact server-owned identity");
+            const writer: D.SubmissionWriter = { id: input.writerId, scope: input.scope, submissionId: input.submissionId, attemptKey: input.attemptKey, storeId: input.storeId, state: "active", startedAt: input.now, finishedAt: null };
+            this.write("submission-writer", writer.id, input.scope, writer, true, input.scope.runId);
+            return writer;
+        });
+    }
+    async finishSubmissionWrite(input: Input<"finishSubmissionWrite">) {
+        return this.transaction(() => {
+            const writer = this.load<D.SubmissionWriter>("submission-writer", input.writerId, input.scope);
+            if (!writer || writer.submissionId !== input.submissionId || !same(writer.scope, input.scope)) fail("FORBIDDEN", "Upload writer does not belong to this submission");
+            if (writer.state === "finished") return writer;
+            writer.state = "finished"; writer.finishedAt = input.now;
+            this.write("submission-writer", writer.id, writer.scope, writer, false, writer.scope.runId);
+            return writer;
+        });
+    }
+    private submissionCollectable(submission: D.Submission, now: D.Timestamp): boolean {
+        const run = this.load<D.Run>("run", submission.scope.runId, submission.scope);
+        if (!run || !same(run.scope, { customerId: submission.scope.customerId, workspaceId: submission.scope.workspaceId, storageBindingId: submission.scope.storageBindingId, bindingGeneration: submission.scope.bindingGeneration })) return false;
+        if (submission.expiresAt > now && ["active", "finalizing"].includes(run.state)) return false;
+        if (this.database.prepare("SELECT id FROM catalog_records WHERE kind='submission-writer' AND customer_id=? AND workspace_id=? AND run_id=? AND json_extract(data,'$.submissionId')=? AND json_extract(data,'$.state')='active' LIMIT 1").get(submission.scope.customerId, submission.scope.workspaceId, submission.scope.runId, submission.id)) return false;
+        return !this.all<D.Operation>("operation", submission.scope).some(operation => operation.kind === "finalize" && operation.state === "processing" && operation.intent.mode === "read-write" && operation.intent.source.submissionId === submission.id);
+    }
+    async claimSubmissionCollection(input: Input<"claimSubmissionCollection">) {
+        return this.transaction(() => {
+            const submission = this.load<D.Submission>("submission", input.submissionId, input.scope);
+            if (!submission || !same(submission.scope, input.scope)) fail("SUBMISSION_NOT_FOUND", "Submission does not belong to this run");
+            if (!this.submissionCollectable(submission, input.now)) fail("FORBIDDEN", "Active or uncertain writers and recoverable sources retain submission bytes");
+            const existing = this.load<SubmissionCollectionState>("submission-collection", submission.id, input.scope);
+            if (existing && existing.permit.expiresAt > input.now) fail("STALE_FENCE", "Submission already has a collection claim");
+            if (input.expiresAt <= input.now) fail("INVALID_REQUEST", "Collection permit must expire in the future");
+            if (submission.state !== "expired") { submission.state = "expired"; submission.version++; this.write("submission", submission.id, submission.scope, submission, false, submission.scope.runId); }
+            const permit: D.SubmissionCollectionPermit = { scope: input.scope, submissionId: submission.id, submissionVersion: submission.version, collectionFence: (existing?.permit.collectionFence ?? 0) + 1, expiresAt: input.expiresAt };
+            this.write("submission-collection", submission.id, submission.scope, { permit, collectedAt: existing?.collectedAt ?? null, ...(existing?.cursor ? { cursor: existing.cursor } : {}) } satisfies SubmissionCollectionState, false, submission.scope.runId);
+            return permit;
+        });
+    }
+    private submissionPermitValid(permit: D.SubmissionCollectionPermit, now: D.Timestamp): boolean {
+        const collection = this.load<SubmissionCollectionState>("submission-collection", permit.submissionId, permit.scope);
+        const submission = this.load<D.Submission>("submission", permit.submissionId, permit.scope);
+        return !!collection && !!submission && same(collection.permit, permit) && same(submission.scope, permit.scope) && permit.expiresAt > now && submission.version === permit.submissionVersion && submission.state === "expired" && this.submissionCollectable(submission, now);
+    }
+    async verifySubmissionCollectionPermit(permit: D.SubmissionCollectionPermit, now: D.Timestamp) { return this.transaction(() => this.submissionPermitValid(permit, now)); }
+    async completeSubmissionCollection(permit: D.SubmissionCollectionPermit, now: D.Timestamp): Promise<void> {
+        this.transaction(() => {
+            if (!this.submissionPermitValid(permit, now)) fail("STALE_FENCE", "Submission collection fence changed");
+            const state = this.load<SubmissionCollectionState>("submission-collection", permit.submissionId, permit.scope)!;
+            if (this.submissionAttemptRows(permit, state.cursor ?? "", 1).length) fail("INVALID_TRANSITION", "Submission cleanup still has unacknowledged attempts");
+            this.write("submission-collection", permit.submissionId, permit.scope, { ...state, collectedAt: now }, false, permit.scope.runId);
+        });
+    }
+    private submissionAttemptRows(permit: D.SubmissionCollectionPermit, cursor: string, limit: number) {
+        const { scope, submissionId } = permit;
+        return this.database.prepare("SELECT kind || ':' || id AS cursor,kind,data FROM catalog_records WHERE kind IN ('submission-writer','receipt') AND customer_id=? AND workspace_id=? AND run_id=? AND json_extract(data,'$.submissionId')=? AND kind || ':' || id > ? ORDER BY cursor LIMIT ?").all(scope.customerId, scope.workspaceId, scope.runId, submissionId, cursor, limit) as { cursor: string; kind: string; data: string }[];
+    }
+    async listSubmissionCollectionAttempts(input: Input<"listSubmissionCollectionAttempts">) {
+        return this.transaction(() => {
+            if (!this.submissionPermitValid(input.permit, input.now)) fail("STALE_FENCE", "Submission collection fence changed");
+            const limit = this.limit(input.limit);
+            const state = this.load<SubmissionCollectionState>("submission-collection", input.permit.submissionId, input.permit.scope)!;
+            const rows = this.submissionAttemptRows(input.permit, input.cursor ?? state.cursor ?? "", limit + 1);
+            const more = rows.length > limit; if (more) rows.pop();
+            const attempts: D.SubmissionCollectionAttempt[] = rows.map(row => {
+                if (row.kind === "submission-writer") { const writer = JSON.parse(row.data) as D.SubmissionWriter; return { id: row.cursor, attemptKey: writer.attemptKey, storeId: writer.storeId, writerId: writer.id, receipt: null }; }
+                const receipt = JSON.parse(row.data) as D.UploadReceipt;
+                return { id: row.cursor, attemptKey: receipt.privateReference.opaqueKey, storeId: receipt.privateReference.storeId, writerId: null, receipt };
+            });
+            return { attempts, nextCursor: more ? rows.at(-1)!.cursor : null };
+        });
+    }
+    async recordSubmissionCollectionProgress(input: Input<"recordSubmissionCollectionProgress">): Promise<void> {
+        this.transaction(() => {
+            if (!this.submissionPermitValid(input.permit, input.now)) fail("STALE_FENCE", "Submission collection fence changed");
+            const state = this.load<SubmissionCollectionState>("submission-collection", input.permit.submissionId, input.permit.scope)!;
+            if (state.cursor && compareCursor(input.attemptId, state.cursor) <= 0) return;
+            const next = this.submissionAttemptRows(input.permit, state.cursor ?? "", 1)[0];
+            if (!next || next.cursor !== input.attemptId) fail("INVALID_REQUEST", "Collection progress must acknowledge the next exact owned attempt");
+            state.cursor = input.attemptId;
+            this.write("submission-collection", input.permit.submissionId, input.permit.scope, state, false, input.permit.scope.runId);
+        });
+    }
+    async listSubmissionCollectionTargets(input: Input<"listSubmissionCollectionTargets">) {
+        const limit = this.limit(input.limit);
+        const rows = this.database.prepare("SELECT s.id,s.data FROM catalog_records s WHERE s.kind='submission' AND s.id>? AND NOT EXISTS (SELECT 1 FROM catalog_records c WHERE c.kind='submission-collection' AND c.id=s.id AND json_extract(c.data,'$.collectedAt') IS NOT NULL) ORDER BY s.id LIMIT ?").all(input.cursor ?? "", limit + 1) as { id: string; data: string }[];
+        const more = rows.length > limit; if (more) rows.pop();
+        return { submissions: rows.map(row => JSON.parse(row.data) as D.Submission).filter(submission => this.submissionCollectable(submission, input.now)).map(submission => this.submissionTarget(submission)), nextCursor: more ? rows.at(-1)!.id : null };
     }
     async getLegacyRevisionAlias(scope: D.WorkspaceScope, alias: string) { return this.load<D.LegacyRevisionAlias>("alias", this.aliasId(scope, alias), scope); }
     private aliasId(scope: D.WorkspaceScope, alias: string): string { return D.canonicalJson([scope.customerId, scope.workspaceId, alias]); }
@@ -1128,6 +1245,52 @@ export class SqliteControlStore implements ControlStore {
         });
     }
     async getCleanup(scope: D.WorkspaceScope, id: D.CleanupId) { return this.load<D.CleanupStatus>("cleanup", id, scope); }
+    private collectionTarget(candidate: CandidateRecord): D.CandidateCollectionTarget {
+        let binding = this.load<D.StorageBinding>("binding", candidate.identity.scope.storageBindingId, candidate.identity.scope);
+        if (!binding) {
+            const operation = this.load<D.Operation>("operation", candidate.identity.operationId, candidate.identity.scope);
+            if (operation?.kind === "workspace:create" && same(operation.intent.candidateIdentity, candidate.identity)) binding = operation.intent.binding;
+        }
+        return { identity: candidate.identity, prepared: candidate.prepared, binding, collection: candidate.collection };
+    }
+    private submissionTarget(submission: D.Submission): D.SubmissionCollectionTarget {
+        return { submission, binding: this.load<D.StorageBinding>("binding", submission.scope.storageBindingId, submission.scope), collection: this.load<SubmissionCollectionState>("submission-collection", submission.id, submission.scope)?.permit ?? null };
+    }
+    async getCleanupTargets(scope: D.WorkspaceScope, cleanupId: D.CleanupId, limit = 50, cursor = ""): Promise<D.CleanupTargets | null> {
+        this.limit(limit);
+        const cleanup = this.load<D.CleanupStatus>("cleanup", cleanupId, scope);
+        if (!cleanup) return null;
+        const owner = cleanup.runId ? null : this.load<{ operationId: D.OperationId }>("cleanup-owner", cleanupId, scope);
+        if (!cleanup.runId && !owner) fail("STORAGE_UNAVAILABLE", "Cleanup creation ownership is unknown; retain its bytes");
+        if (cleanup.runId && !this.load<D.Run>("run", cleanup.runId, scope)) fail("STORAGE_UNAVAILABLE", "Cleanup run ownership is unknown; retain its bytes");
+        const rows = this.database.prepare("SELECT 'candidate:' || c.id AS cursor,c.data FROM catalog_records c JOIN catalog_records o ON o.kind='operation' AND o.id=json_extract(c.data,'$.identity.operationId') AND o.customer_id=c.customer_id AND o.workspace_id=c.workspace_id WHERE c.kind='candidate' AND c.customer_id=? AND c.workspace_id=? AND 'candidate:' || c.id>? AND json_extract(c.data,'$.collectedAt') IS NULL AND (? IS NOT NULL AND o.run_id=? OR ? IS NOT NULL AND o.id=?) AND NOT EXISTS (SELECT 1 FROM catalog_records r WHERE r.kind='revision' AND r.customer_id=c.customer_id AND r.workspace_id=c.workspace_id AND r.id=json_extract(c.data,'$.identity.revisionId')) ORDER BY c.id LIMIT ?").all(scope.customerId, scope.workspaceId, cursor, cleanup.runId, cleanup.runId, owner?.operationId ?? null, owner?.operationId ?? null, limit) as { cursor: string; data: string }[];
+        const submissions = cleanup.runId ? this.database.prepare("SELECT 'submission:' || s.id AS cursor,s.data FROM catalog_records s WHERE s.kind='submission' AND s.customer_id=? AND s.workspace_id=? AND s.run_id=? AND 'submission:' || s.id>? AND NOT EXISTS (SELECT 1 FROM catalog_records c WHERE c.kind='submission-collection' AND c.id=s.id AND json_extract(c.data,'$.collectedAt') IS NOT NULL) ORDER BY s.id LIMIT ?").all(scope.customerId, scope.workspaceId, cleanup.runId, cursor, limit) as { cursor: string; data: string }[] : [];
+        const page = [...rows, ...submissions].sort((a, b) => compareCursor(a.cursor, b.cursor)).slice(0, limit);
+        return { candidates: page.filter(row => row.cursor.startsWith("candidate:")).map(row => this.collectionTarget(JSON.parse(row.data))), submissions: page.filter(row => row.cursor.startsWith("submission:")).map(row => this.submissionTarget(JSON.parse(row.data))), nextCursor: page.at(-1)?.cursor ?? null };
+    }
+    async nextCollectionWork(input: Input<"nextCollectionWork">): Promise<CollectionWork | null> {
+        return this.transaction(() => {
+            const state = this.load<{ lane: number; cursors: string[] }>("maintenance", "collection-scan") ?? { lane: 0, cursors: ["", "", ""] };
+            const lane = state.lane; const kind = ["cleanup", "candidate", "submission"][lane];
+            const predicate = lane === 0 ? "json_extract(data,'$.state')!='complete' AND json_extract(data,'$.nextAttemptAt')<=? AND (json_extract(data,'$.claim') IS NULL OR json_extract(data,'$.claim.expiresAt')<=?)" : lane === 1 ? "json_extract(data,'$.collectedAt') IS NULL" : "NOT EXISTS (SELECT 1 FROM catalog_records c WHERE c.kind='submission-collection' AND c.id=s.id AND json_extract(c.data,'$.collectedAt') IS NOT NULL)";
+            const parameters = lane === 0 ? [input.now, input.now] : [];
+            const query = this.database.prepare(`SELECT id,data FROM catalog_records s WHERE kind=? AND ${predicate} AND id>? ORDER BY id LIMIT 1`);
+            const row = (query.get(kind, ...parameters, state.cursors[lane]) ?? (state.cursors[lane] ? query.get(kind, ...parameters, "") : undefined)) as { id: string; data: string } | undefined;
+            state.cursors[lane] = row?.id ?? ""; state.lane = (lane + 1) % 3;
+            this.write("maintenance", "collection-scan", { customerId: "" as D.CustomerId }, state);
+            if (!row) return null;
+            if (lane === 0) return { kind: "cleanup", cleanup: JSON.parse(row.data) };
+            if (lane === 1) { const candidate = JSON.parse(row.data) as CandidateRecord; return this.collectable(candidate) ? { kind: "candidate", candidate: this.collectionTarget(candidate) } : null; }
+            const submission = JSON.parse(row.data) as D.Submission;
+            return this.submissionCollectable(submission, input.now) ? { kind: "submission", submission: this.submissionTarget(submission) } : null;
+        });
+    }
+    async listCandidateCollectionTargets(input: Input<"listCandidateCollectionTargets">) {
+        const limit = this.limit(input.limit);
+        const rows = this.database.prepare("SELECT id,data FROM catalog_records WHERE kind='candidate' AND id>? AND json_extract(data,'$.collectedAt') IS NULL ORDER BY id LIMIT ?").all(input.cursor ?? "", limit + 1) as { id: string; data: string }[];
+        const more = rows.length > limit; if (more) rows.pop();
+        return { candidates: rows.map(row => JSON.parse(row.data) as CandidateRecord).filter(candidate => this.collectable(candidate)).map(candidate => this.collectionTarget(candidate)), nextCursor: more ? rows.at(-1)!.id : null };
+    }
     async listDueCleanup(input: Input<"listDueCleanup">) { return this.scan<D.CleanupStatus>("cleanup", "json_extract(data,'$.state')!='complete' AND json_extract(data,'$.nextAttemptAt')<=? AND (json_extract(data,'$.claim') IS NULL OR json_extract(data,'$.claim.expiresAt')<=?)", [input.now, input.now], input.limit); }
     async claimCleanup(input: Input<"claimCleanup">) {
         return this.transaction(() => {
@@ -1159,6 +1322,7 @@ export class SqliteControlStore implements ControlStore {
                 fail("VERSION_CONFLICT", "Cleanup version changed");
             cleanup.state = input.error === null ? "complete" : "failed";
             cleanup.lastError = input.error;
+            if (input.targetCursor !== undefined) cleanup.targetCursor = input.targetCursor;
             cleanup.nextAttemptAt = input.nextAttemptAt;
             if (input.error !== null && cleanup.claim)
                 cleanup.claim.expiresAt = input.now;
@@ -1167,24 +1331,36 @@ export class SqliteControlStore implements ControlStore {
             return cleanup;
         });
     }
+    async releaseCleanupClaim(input: Input<"releaseCleanupClaim">) {
+        return this.transaction(() => {
+            const cleanup = this.load<D.CleanupStatus>("cleanup", input.cleanupId, input.scope);
+            if (!cleanup) fail("OPERATION_NOT_FOUND", "Cleanup does not exist");
+            if (cleanup.claim?.fence !== input.fence || cleanup.claim.expiresAt <= input.now || cleanup.state !== "running") fail("STALE_FENCE", "Cleanup claim is stale");
+            if (cleanup.version !== input.expectedVersion) fail("VERSION_CONFLICT", "Cleanup version changed");
+            if (input.nextAttemptAt < input.now) fail("INVALID_REQUEST", "Cleanup cannot be scheduled in the past");
+            cleanup.state = "pending"; cleanup.lastError = null; cleanup.claim.expiresAt = input.now; cleanup.nextAttemptAt = input.nextAttemptAt; cleanup.version++;
+            if (input.targetCursor !== undefined) cleanup.targetCursor = input.targetCursor;
+            this.write("cleanup", cleanup.id, cleanup.scope, cleanup, false, cleanup.runId);
+            return cleanup;
+        });
+    }
     private collectable(candidate: CandidateRecord): boolean {
-        if (!candidate.prepared)
-            return false;
         const { scope, operationId, revisionId } = candidate.identity;
-        if (this.all<D.Revision>("revision", scope).some(r => same(r.privateReference, candidate.prepared!.privateReference)))
+        if (this.all<D.Revision>("revision", scope).some(r => r.id === revisionId || (candidate.prepared && same(r.privateReference, candidate.prepared.privateReference))))
             return false;
         if (this.all<D.Run>("run", scope).some(r => ["active", "finalizing"].includes(r.state) && r.baseRevisionId === revisionId))
             return false;
         const operation = this.load<D.Operation>("operation", operationId, scope);
         if (operation && ["pending", "processing"].includes(operation.state))
             return false;
+        if (this.database.prepare("SELECT id FROM catalog_records WHERE kind='candidate-writer' AND customer_id=? AND workspace_id=? AND json_extract(data,'$.identity.candidateId')=? AND json_extract(data,'$.state')='active' LIMIT 1").get(scope.customerId, scope.workspaceId, candidate.identity.candidateId)) return false;
         for (const migration of this.all<D.StorageMigration>("migration", scope)) {
             if (migration.copies.some(copy => copy.target.candidateId === candidate.identity.candidateId))
                 return false;
             const guards = this.load<MigrationGuards>("migration-guards", migration.id, scope);
             if (!guards && migration.sourceBindingId === scope.storageBindingId)
                 return false;
-            if (guards?.sourceReferences.some(reference => same(reference.scope, scope) && same(reference.privateReference, candidate.prepared!.privateReference)))
+            if (candidate.prepared && guards?.sourceReferences.some(reference => same(reference.scope, scope) && same(reference.privateReference, candidate.prepared!.privateReference)))
                 return false;
         }
         return true;
@@ -1192,15 +1368,18 @@ export class SqliteControlStore implements ControlStore {
     async claimCandidateCollection(input: Input<"claimCandidateCollection">) {
         return this.transaction(() => {
             const candidate = this.load<CandidateRecord>("candidate", input.candidateId, input.scope);
-            if (!candidate || !same(candidate.identity.scope, input.scope) || !candidate.prepared)
-                fail("REVISION_NOT_FOUND", "Prepared candidate does not exist in this binding scope");
+            if (!candidate || !same(candidate.identity.scope, input.scope))
+                fail("REVISION_NOT_FOUND", "Candidate does not exist in this binding scope");
             if (candidate.collection && candidate.collection.expiresAt > input.now)
                 fail("STALE_FENCE", "Candidate already has an active collection permit");
             if (!this.collectable(candidate))
                 fail("FORBIDDEN", "Candidate is retained by catalog history or recoverable work");
             if (input.expiresAt <= input.now)
                 fail("INVALID_REQUEST", "Collection permit must expire in the future");
-            const permit: D.CollectionPermit = { scope: input.scope, candidateId: input.candidateId, privateReference: candidate.prepared.privateReference, collectionFence: (candidate.collection?.collectionFence ?? 0) + 1, expiresAt: input.expiresAt };
+            const fence = { scope: input.scope, candidateId: input.candidateId, collectionFence: (candidate.collection?.collectionFence ?? 0) + 1, expiresAt: input.expiresAt };
+            const binding = this.collectionTarget(candidate).binding;
+            if (!candidate.prepared && !binding) fail("STORAGE_UNAVAILABLE", "Partial candidate binding ownership is unknown");
+            const permit: D.CollectionPermit = candidate.prepared ? { ...fence, privateReference: candidate.prepared.privateReference } : { ...fence, kind: "partial", privateReference: null, identity: candidate.identity, storeId: binding!.location.storeId };
             candidate.collection = permit;
             this.write("candidate", input.candidateId, input.scope, candidate);
             return permit;
@@ -1210,10 +1389,57 @@ export class SqliteControlStore implements ControlStore {
     async verifyCollectionPermit(permit: D.CollectionPermit, now: D.Timestamp): Promise<boolean> {
         return this.transaction(() => {
             const candidate = this.load<CandidateRecord>("candidate", permit.candidateId, permit.scope);
-            return !!candidate && !!candidate.collection && permit.expiresAt > now && same(candidate.identity.scope, permit.scope) && same(candidate.collection, permit) && !!candidate.prepared && same(candidate.prepared.privateReference, permit.privateReference) && this.collectable(candidate);
+            return !!candidate && !!candidate.collection && permit.expiresAt > now && same(candidate.identity.scope, permit.scope) && same(candidate.collection, permit) && this.collectable(candidate) && (permit.kind === "partial" ? !candidate.prepared && same(candidate.identity, permit.identity) : !!candidate.prepared && same(candidate.prepared.privateReference, permit.privateReference));
         });
     }
-    async listPendingOutbox(input: Input<"listPendingOutbox">) { return this.scan<D.OutboxEvent>("outbox", "json_extract(data,'$.deliveryState')!='complete' AND json_extract(data,'$.nextAttemptAt')<=? AND (json_extract(data,'$.claim') IS NULL OR json_extract(data,'$.claim.expiresAt')<=?)", [input.now, input.now], input.limit); }
+    async completeCandidateCollection(permit: D.CollectionPermit, now: D.Timestamp): Promise<void> {
+        this.transaction(() => {
+            const candidate = this.load<CandidateRecord>("candidate", permit.candidateId, permit.scope);
+            if (!candidate?.collection || !same(candidate.collection, permit) || permit.expiresAt <= now || !this.collectable(candidate)) fail("STALE_FENCE", "Candidate collection fence changed");
+            candidate.collectedAt = now;
+            this.write("candidate", permit.candidateId, permit.scope, candidate);
+        });
+    }
+    async beginCandidateWrite(input: Input<"beginCandidateWrite">) {
+        return this.transaction(() => {
+            const candidate = this.load<CandidateRecord>("candidate", input.identity.candidateId, input.identity.scope);
+            if (!candidate || !same(candidate.identity, input.identity)) fail("REVISION_CONFLICT", "Preparation identity does not match its persisted candidate");
+            if (candidate.collection) fail("REVISION_CONFLICT", "Candidate is permanently retired");
+            const operation = this.load<D.Operation>("operation", input.identity.operationId, input.identity.scope);
+            if (!operation || operation.state !== "processing" || !operation.claim || operation.claim.ownerId !== input.ownerId || operation.claim.expiresAt <= input.now) fail("STALE_FENCE", "Candidate writing requires its current processing owner");
+            if (!input.writerId || input.writerId.length > 255) fail("INVALID_REQUEST", "Candidate writer identity is required");
+            const writer: D.CandidateWriter = { id: input.writerId, identity: input.identity, ownerId: input.ownerId, processingFence: operation.claim.fence, state: "active", startedAt: input.now, finishedAt: null };
+            this.write("candidate-writer", writer.id, input.identity.scope, writer, true, operation.runId);
+            return writer;
+        });
+    }
+    async finishCandidateWrite(input: Input<"finishCandidateWrite">) {
+        return this.transaction(() => {
+            const writer = this.load<D.CandidateWriter>("candidate-writer", input.writerId, input.identity.scope);
+            if (!writer || !same(writer.identity, input.identity)) fail("FORBIDDEN", "Candidate writer belongs to another identity");
+            if (writer.state === "finished") return writer;
+            writer.state = "finished"; writer.finishedAt = input.now;
+            const operation = this.load<D.Operation>("operation", input.identity.operationId, input.identity.scope);
+            this.write("candidate-writer", writer.id, input.identity.scope, writer, false, operation?.runId ?? null);
+            return writer;
+        });
+    }
+    async areCandidateWritersStopped(identity: D.CandidateIdentity, ownerId: string): Promise<boolean> {
+        return this.transaction(() => {
+            const candidate = this.load<CandidateRecord>("candidate", identity.candidateId, identity.scope);
+            if (!candidate || !same(candidate.identity, identity)) return false;
+            const rows = this.database.prepare("SELECT data FROM catalog_records WHERE kind='candidate-writer' AND customer_id=? AND workspace_id=? AND json_extract(data,'$.identity.candidateId')=?").all(identity.scope.customerId, identity.scope.workspaceId, identity.candidateId) as { data: string }[];
+            const writers = rows.map(row => JSON.parse(row.data) as D.CandidateWriter);
+            if (writers.some(writer => writer.state !== "finished" || !same(writer.identity, identity))) return false;
+            if (writers.length) return true;
+            // With mandatory tracking in this incarnation, terminal ownership plus no start proves no storage write began.
+            const operation = this.load<D.Operation>("operation", identity.operationId, identity.scope);
+            return !!operation && ["succeeded", "failed"].includes(operation.state) && operation.claim?.ownerId === ownerId;
+        });
+    }
+    async listPendingOutbox(input: Input<"listPendingOutbox">) {
+        return (this.database.prepare("SELECT data FROM catalog_records WHERE kind='outbox' AND json_extract(data,'$.deliveryState')!='complete' AND json_extract(data,'$.nextAttemptAt')<=? AND (json_extract(data,'$.claim') IS NULL OR json_extract(data,'$.claim.expiresAt')<=?) ORDER BY json_extract(data,'$.nextAttemptAt'),json_extract(data,'$.attempts'),id LIMIT ?").all(input.now, input.now, this.limit(input.limit)) as { data: string }[]).map(row => JSON.parse(row.data) as D.OutboxEvent);
+    }
     async claimOutbox(input: Input<"claimOutbox">) {
         return this.transaction(() => {
             const event = this.load<D.OutboxEvent>("outbox", input.eventId, input.scope);
@@ -1271,6 +1497,29 @@ export class SqliteControlStore implements ControlStore {
         }>("outbox-recipients", eventId, scope);
         return snapshot?.subscriptions ?? [];
     }
+    async listDeliveredSubscriptions(scope: D.WorkspaceScope, eventId: D.EventId): Promise<readonly D.SubscriptionId[]> {
+        return this.all<{ eventId: D.EventId; subscriptionId: D.SubscriptionId; delivered: boolean }>("delivery", scope).filter(receipt => receipt.eventId === eventId && receipt.delivered).map(receipt => receipt.subscriptionId);
+    }
+    async listDueOutboxRecipients(input: Input<"listDueOutboxRecipients">) {
+        const limit = this.limit(input.limit);
+        const rows = this.database.prepare("SELECT s.value AS recipient,COALESCE(json_extract(d.data,'$.attempts'),0) AS attempts FROM catalog_records f,json_each(f.data,'$.subscriptions') s LEFT JOIN catalog_records d ON d.kind='delivery' AND d.customer_id=f.customer_id AND d.workspace_id=f.workspace_id AND json_extract(d.data,'$.eventId')=f.id AND json_extract(d.data,'$.subscriptionId')=json_extract(s.value,'$.id') WHERE f.kind='outbox-recipients' AND f.id=? AND f.customer_id=? AND f.workspace_id=? AND COALESCE(json_extract(d.data,'$.delivered'),0)=0 AND COALESCE(json_extract(d.data,'$.nextAttemptAt'),?)<=? ORDER BY COALESCE(json_extract(d.data,'$.updatedAt'),''),json_extract(s.value,'$.id') LIMIT ?").all(input.eventId, input.scope.customerId, input.scope.workspaceId, input.now, input.now, limit) as { recipient: string; attempts: number }[];
+        return rows.map(row => ({ recipient: JSON.parse(row.recipient) as CatalogSubscription, attempts: row.attempts }));
+    }
+    async releaseOutboxClaim(input: Input<"releaseOutboxClaim">) {
+        return this.transaction(() => {
+            const event = this.load<D.OutboxEvent>("outbox", input.eventId, input.scope);
+            if (!event) fail("OPERATION_NOT_FOUND", "Outbox event does not exist");
+            if (event.claim?.fence !== input.fence || event.claim.expiresAt <= input.now || event.deliveryState !== "running") fail("STALE_FENCE", "Outbox claim is stale");
+            if (event.version !== input.expectedVersion) fail("VERSION_CONFLICT", "Outbox version changed");
+            if (input.nextAttemptAt < input.now) fail("INVALID_REQUEST", "Delivery cannot be scheduled in the past");
+            event.deliveryState = "pending";
+            event.claim.expiresAt = input.now;
+            event.nextAttemptAt = input.nextAttemptAt;
+            event.version++;
+            this.write("outbox", event.id, input.scope, event, false, event.runId);
+            return event;
+        });
+    }
     /** Explicit subscription registration for composition and administration; never infer a recipient across tenants. */
     registerSubscription(subscription: CatalogSubscription): void { this.transaction(() => { this.write("subscription", subscription.id, { customerId: subscription.customerId }, subscription, true); }); }
     async recordDelivery(input: Input<"recordDelivery">) {
@@ -1291,22 +1540,23 @@ export class SqliteControlStore implements ControlStore {
             if (!subscriptions.some(s => s.id === input.subscriptionId))
                 fail("FORBIDDEN", "Subscription is not an active recipient in this event customer scope");
             const deliveryId = D.canonicalJson([event.id, input.subscriptionId]);
-            const previous = this.load<{
-                delivered: boolean;
-            }>("delivery", deliveryId, input.scope);
+            const previous = this.load<{ delivered: boolean; attempts?: number }>("delivery", deliveryId, input.scope);
             const successful = previous?.delivered === true || input.delivered;
-            this.write("delivery", deliveryId, input.scope, { eventId: event.id, subscriptionId: input.subscriptionId, delivered: successful, updatedAt: input.now });
+            this.write("delivery", deliveryId, input.scope, { eventId: event.id, subscriptionId: input.subscriptionId, delivered: successful, attempts: (previous?.attempts ?? 0) + 1, nextAttemptAt: successful ? input.now : input.nextAttemptAt, updatedAt: input.now });
             const receipts = this.database.prepare("SELECT data FROM catalog_records WHERE kind='delivery' AND customer_id=? AND workspace_id=? AND json_extract(data,'$.eventId')=?").all(input.scope.customerId, input.scope.workspaceId, event.id) as {
                 data: string;
             }[];
-            const delivered = new Set(receipts.map(row => JSON.parse(row.data) as {
+            const progress = receipts.map(row => JSON.parse(row.data) as {
                 subscriptionId: string;
                 delivered: boolean;
-            }).filter(receipt => receipt.delivered).map(receipt => receipt.subscriptionId));
-            const complete = subscriptions.every(s => delivered.has(s.id));
-            event.deliveryState = complete ? "complete" : successful ? "running" : "failed";
-            event.nextAttemptAt = input.nextAttemptAt;
-            if (!successful && event.claim)
+                nextAttemptAt?: D.Timestamp;
+            });
+            const remaining = subscriptions.filter(subscription => !progress.some(receipt => receipt.subscriptionId === subscription.id && receipt.delivered))
+                .map(subscription => ({ id: subscription.id, nextAttemptAt: progress.find(receipt => receipt.subscriptionId === subscription.id)?.nextAttemptAt ?? input.now }));
+            event.nextAttemptAt = remaining.map(recipient => recipient.nextAttemptAt).sort()[0] ?? input.now;
+            const canContinue = remaining.some(recipient => recipient.nextAttemptAt <= input.now && (successful || recipient.id !== input.subscriptionId));
+            event.deliveryState = !remaining.length ? "complete" : canContinue ? "running" : "failed";
+            if (event.deliveryState === "failed" && event.claim)
                 event.claim.expiresAt = input.now;
             event.version++;
             this.write("outbox", event.id, input.scope, event, false, event.runId);

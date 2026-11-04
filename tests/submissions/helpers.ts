@@ -24,6 +24,7 @@ export function catalog() {
   const submissions = new Map<string, Submission>();
   const receipts = new Map<string, UploadReceipt>();
   const operations = new Map<string, Operation>();
+  const writers = new Map<string, import("../../src/domain").SubmissionWriter>();
   let runWritable = true;
   let recoverable = false;
   const getOperation = (input: { command: CommandIdentity }) => {
@@ -43,6 +44,20 @@ export function catalog() {
     return submission;
   };
   const control = {
+    beginSubmissionWrite: async (input: Parameters<ControlStore["beginSubmissionWrite"]>[0]) => {
+      const submission = submissions.get(input.submissionId)!;
+      writable(input.submissionId, submission.version);
+      const writer: import("../../src/domain").SubmissionWriter = { id: input.writerId, scope: input.scope, submissionId: input.submissionId, attemptKey: input.attemptKey, storeId: input.storeId, state: "active", startedAt: input.now, finishedAt: null };
+      writers.set(writer.id, writer);
+      return structuredClone(writer);
+    },
+    finishSubmissionWrite: async (input: Parameters<ControlStore["finishSubmissionWrite"]>[0]) => {
+      const writer = writers.get(input.writerId);
+      if (!writer) throw new WorkspaceError("FORBIDDEN", "Unknown writer");
+      writer.state = "finished"; writer.finishedAt = input.now;
+      return structuredClone(writer);
+    },
+    isUploadReceiptRetired: async () => false,
     findOperation: async (_: unknown, key: string) => structuredClone(operations.get(key) ?? null),
     getSubmission: async (_: unknown, id: string) => structuredClone(submissions.get(id) ?? null),
     getReceipt: async (_: unknown, id: string, receiptId: string) => { const receipt = receipts.get(receiptId); return receipt?.submissionId === id ? structuredClone(receipt) : null; },
