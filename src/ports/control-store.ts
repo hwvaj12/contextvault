@@ -229,10 +229,14 @@ export interface ControlStore {
   completeCleanup(input: { scope: WorkspaceScope; cleanupId: CleanupId; expectedVersion: Version; fence: Fence; now: Timestamp; error: string | null; nextAttemptAt: Timestamp }): Promise<CleanupStatus>;
   /** Mark/fence before sweep. Deny accepted history, active bases, operations, migrations, and exports. */
   claimCandidateCollection(input: { scope: BindingScope; candidateId: CandidateIdentity["candidateId"]; now: Timestamp; expiresAt: Timestamp }): Promise<CollectionPermit>;
+  /** Confirm the current scoped collection fence immediately before an adapter deletes bytes. */
+  verifyCollectionPermit(permit: CollectionPermit, now: Timestamp): Promise<boolean>;
   listPendingOutbox(input: { now: Timestamp; limit: number }): Promise<readonly OutboxEvent[]>;
   claimOutbox(input: { scope: WorkspaceScope; eventId: EventId; expectedVersion: Version; ownerId: string; now: Timestamp; expiresAt: Timestamp }): Promise<OutboxEvent>;
   /** Every recipient lookup requires the event's customer scope. Delivery remains at least once with stable IDs. */
   listSubscriptions(scope: CustomerScope, eventType: string): Promise<readonly CatalogSubscription[]>;
+  /** Read the immutable tenant-scoped recipient snapshot established by the first outbox claim. */
+  listOutboxRecipients(scope: WorkspaceScope, eventId: EventId): Promise<readonly CatalogSubscription[]>;
   recordDelivery(input: { scope: WorkspaceScope; eventId: EventId; subscriptionId: SubscriptionId; expectedVersion: Version; fence: Fence; delivered: boolean; now: Timestamp; nextAttemptAt: Timestamp }): Promise<OutboxEvent>;
   listAudit(scope: WorkspaceScope, cursor?: string, limit?: number): Promise<{ events: readonly AuditEvent[]; nextCursor: string | null }>;
 }

@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { migrateCatalog } from "./catalog-schema";
 import * as path from "path";
 import * as fs from "fs";
 
@@ -13,8 +14,14 @@ export function getDb(): Database.Database {
   db = new Database(DB_PATH);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
-  initSchema(db);
-  return db;
+  try {
+    initSchema(db);
+    return db;
+  } catch (error) {
+    db.close();
+    db = null;
+    throw error;
+  }
 }
 
 export function closeDb(): void {
@@ -25,14 +32,20 @@ export function closeDb(): void {
 }
 
 /** For tests: create an in-memory database */
-export function createTestDb(): Database.Database {
-  const testDb = new Database(":memory:");
+export function createTestDb(filename = ":memory:"): Database.Database {
+  const testDb = new Database(filename);
+  if (filename !== ":memory:") testDb.pragma("journal_mode = WAL");
   testDb.pragma("foreign_keys = ON");
-  initSchema(testDb);
-  return testDb;
+  try {
+    initSchema(testDb);
+    return testDb;
+  } catch (error) {
+    testDb.close();
+    throw error;
+  }
 }
 
-function initSchema(database: Database.Database): void {
+export function initSchema(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS workspaces (
       id TEXT PRIMARY KEY,
@@ -129,4 +142,5 @@ function initSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_api_keys_customer ON api_keys(customer_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
   `);
+  migrateCatalog(database);
 }

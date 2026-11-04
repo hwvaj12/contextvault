@@ -1,6 +1,9 @@
 import { FastifyRequest, FastifyReply } from "fastify";
 import { verifyKey } from "../services/apikey.service";
 import { ensureTenantTMK } from "../services/tenant.service";
+import { getDb } from "../db";
+import type { Principal } from "../domain";
+import { principalForVerifiedAdministrator, principalForVerifiedApiKey } from "./catalog-identity";
 
 const MASTER_KEY = process.env.CONTEXTVAULT_API_KEY || "cv-test-api-key-123";
 
@@ -10,6 +13,8 @@ declare module "fastify" {
   interface FastifyRequest {
     customerId?: string;
     isAdmin?: boolean;
+    principal?: Principal;
+    selectedCustomerId?: string;
   }
 }
 
@@ -25,15 +30,24 @@ function extractBasicAuthKey(authHeader: string | undefined): string | null {
 }
 
 async function authenticateKey(key: string, request: FastifyRequest): Promise<boolean> {
-  // Master key = admin bypass (no customer scoping)
+  // A verified master key creates an explicit administrator identity.
   if (key === MASTER_KEY) {
+    const selected = request.headers["x-contextvault-customer-id"];
+    const selectedCustomerId = typeof selected === "string" && selected.trim() ? selected : null;
+    try {
+      request.principal = principalForVerifiedAdministrator(getDb(), key, selectedCustomerId, new Date().toISOString());
+    } catch { return false; }
     request.isAdmin = true;
+    if (selectedCustomerId) request.selectedCustomerId = selectedCustomerId;
     return true;
   }
 
   // Try tenant-scoped key lookup
   const verified = verifyKey(key);
   if (verified) {
+    const principal = await principalForVerifiedApiKey(getDb(), verified, new Date().toISOString());
+    if (!principal) return false;
+    request.principal = principal;
     request.customerId = verified.customerId;
     request.isAdmin = false;
     

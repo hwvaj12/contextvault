@@ -69,6 +69,10 @@ Expiry atomically compares lifecycle and lease versions, checks the stored expir
 A heartbeat or finalization claim that wins the race prevents expiry.
 Processing finalizations remain recovery work and never become active-run expiry candidates.
 
+Cleanup requires caller-stopped agent writers, matching capture's precondition.
+Server staging remains private; local filesystem checks do not provide process isolation.
+Collection verification and frozen outbox recipient lookup use explicit catalog port methods.
+
 Tenant-scoped run and operation resolvers accept IDs without requiring a workspace ID.
 Verified customer and service principals resolve only their own tenant.
 Verified administrators must select one tenant using `X-ContextVault-Customer-Id` and obtain a current scoped lookup permit.
