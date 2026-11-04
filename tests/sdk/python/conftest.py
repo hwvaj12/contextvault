@@ -1,5 +1,6 @@
 """Host-only controller. Installed Python 3.8 sees artifacts and HTTP credentials only."""
 import json
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import selectors
@@ -40,9 +41,9 @@ def installed():
             run(["docker", "rm", "--force", name], timeout=30)
 
 
-@pytest.fixture(scope="module", params=["git", "s3"])
-def server(request):
-    if request.param == "s3":
+@contextmanager
+def workspace_server(backend, lease_ttl_ms):
+    if backend == "s3":
         assert os.environ.get("CV_TEST_S3_PROVIDER") == "localstack", "Explicit selected LocalStack target is required; no backend fallback"
         for name in ("CV_TEST_S3_ENDPOINT", "CV_TEST_S3_BUCKET", "CV_TEST_S3_REGION", "CV_TEST_S3_PREFIX"):
             assert os.environ.get(name), "Missing " + name
@@ -68,7 +69,7 @@ def server(request):
         return result
     started = False
     try:
-        descriptor = command("start", backend=request.param, serverNode=node, serverEnv={"CV_LEASE_TTL_MS": "4000", "CV_MAINTENANCE_INTERVAL_MS": "100"})["client"]
+        descriptor = command("start", backend=backend, serverNode=node, serverEnv={"CV_LEASE_TTL_MS": str(lease_ttl_ms), "CV_MAINTENANCE_INTERVAL_MS": "100"})["client"]
         started = True
         descriptor["baseUrl"] = descriptor["baseUrl"].replace("127.0.0.1", "host.docker.internal")
         yield descriptor
@@ -87,8 +88,20 @@ def server(request):
             assert process.returncode == 0, process.stderr.read()[-2000:]
 
 
-@pytest.fixture
-def consumer(installed, server):
+@pytest.fixture(scope="module", params=["git", "s3"])
+def server(request):
+    # Ordinary journeys must not inherit the deliberately short expiry-test lease.
+    with workspace_server(request.param, 30000) as descriptor:
+        yield descriptor
+
+
+@pytest.fixture(scope="module", params=["git", "s3"])
+def expiry_server(request):
+    with workspace_server(request.param, 4000) as descriptor:
+        yield descriptor
+
+
+def installed_consumer(installed, server):
     def execute(scenario):
         environment = {"CV_URL": server["baseUrl"], "CV_KEY_A": server["keyA"], "CV_KEY_B": server["keyB"], "CV_CUSTOMER_A": server["customerA"], "CV_CUSTOMER_B": server["customerB"]}
         arguments = ["docker", "exec", "--workdir", "/consumer"]
@@ -98,3 +111,13 @@ def consumer(installed, server):
         assert result.returncode == 0, result.stdout + result.stderr
         assert "PASS " + scenario + " Python 3.8" in result.stdout, result.stdout
     return execute
+
+
+@pytest.fixture
+def consumer(installed, server):
+    return installed_consumer(installed, server)
+
+
+@pytest.fixture
+def expiry_consumer(installed, expiry_server):
+    return installed_consumer(installed, expiry_server)
