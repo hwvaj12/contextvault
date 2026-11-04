@@ -15,10 +15,11 @@ async function fixture(run) {
   try {
     await mkdir(path.join(directory, "tests/unit"), { recursive: true });
     await mkdir(path.join(directory, "tests/sdk/typescript"), { recursive: true });
-    await mkdir(path.join(directory, "tests/hosts"), { recursive: true });
+    for (const suite of ["hosts", "mcp", "migrations"]) await mkdir(path.join(directory, "tests", suite), { recursive: true });
     await writeFile(path.join(directory, "tests/unit/default.test.ts"), 'it("default-canary", () => expect(true).toBe(true));\n');
     await writeFile(path.join(directory, "tests/sdk/typescript/installed.test.ts"), 'it("sdk-canary", () => { throw new Error("EXPLICIT_SDK_SENTINEL"); });\n');
     await writeFile(path.join(directory, "tests/hosts/installed.test.ts"), 'it("hosts-canary", () => { throw new Error("EXPLICIT_HOST_SENTINEL"); });\n');
+    for (const suite of ["mcp", "migrations"]) await writeFile(path.join(directory, "tests", suite, "installed.test.ts"), `it("${suite}-canary", () => { throw new Error("EXPLICIT_${suite.toUpperCase()}_SENTINEL"); });\n`);
     await run(directory);
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
@@ -37,11 +38,11 @@ async function vitest(directory, suite, filters = []) {
   }
 }
 
-test("default root tests exclude the explicit installed-SDK and host gates", () => fixture(async directory => {
+test("default root tests exclude explicit installed-client and migration gates", () => fixture(async directory => {
   const result = await vitest(directory);
   assert.equal(result.code, 0, result.output);
   assert.match(result.output, /Tests\s+1 passed/);
-  assert.doesNotMatch(result.output, /EXPLICIT_SDK_SENTINEL|EXPLICIT_HOST_SENTINEL/);
+  assert.doesNotMatch(result.output, /EXPLICIT_(SDK|HOST|MCP|MIGRATIONS)_SENTINEL/);
 }));
 
 test("explicit SDK selection runs its tests and propagates their failure", () => fixture(async directory => {
@@ -73,3 +74,19 @@ test("explicit host selection cannot succeed with no matching tests", () => fixt
   assert.equal(result.code, 1, result.output);
   assert.match(result.output, /No test files found/);
 }));
+
+for (const [suite, directoryName] of [["mcp", "mcp"], ["migration", "migrations"]]) {
+  test(`explicit ${suite} selection propagates its failure`, () => fixture(async directory => {
+    const result = await vitest(directory, suite, [`tests/${directoryName}`]);
+    assert.equal(result.code, 1, result.output);
+    assert.ok(result.output.includes(`EXPLICIT_${directoryName.toUpperCase()}_SENTINEL`), result.output);
+    assert.match(result.output, /Tests\s+1 failed/);
+    assert.doesNotMatch(result.output, /No test files found/);
+  }));
+  test(`explicit ${suite} selection rejects an empty gate`, () => fixture(async directory => {
+    await rm(path.join(directory, "tests", directoryName, "installed.test.ts"));
+    const result = await vitest(directory, suite, [`tests/${directoryName}`]);
+    assert.equal(result.code, 1, result.output);
+    assert.match(result.output, /No test files found/);
+  }));
+}
