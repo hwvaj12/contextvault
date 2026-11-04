@@ -15,8 +15,10 @@ async function fixture(run) {
   try {
     await mkdir(path.join(directory, "tests/unit"), { recursive: true });
     await mkdir(path.join(directory, "tests/sdk/typescript"), { recursive: true });
+    await mkdir(path.join(directory, "tests/hosts"), { recursive: true });
     await writeFile(path.join(directory, "tests/unit/default.test.ts"), 'it("default-canary", () => expect(true).toBe(true));\n');
     await writeFile(path.join(directory, "tests/sdk/typescript/installed.test.ts"), 'it("sdk-canary", () => { throw new Error("EXPLICIT_SDK_SENTINEL"); });\n');
+    await writeFile(path.join(directory, "tests/hosts/installed.test.ts"), 'it("hosts-canary", () => { throw new Error("EXPLICIT_HOST_SENTINEL"); });\n');
     await run(directory);
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
@@ -35,11 +37,11 @@ async function vitest(directory, suite, filters = []) {
   }
 }
 
-test("default root tests exclude the explicit installed-SDK gate", () => fixture(async directory => {
+test("default root tests exclude the explicit installed-SDK and host gates", () => fixture(async directory => {
   const result = await vitest(directory);
   assert.equal(result.code, 0, result.output);
   assert.match(result.output, /Tests\s+1 passed/);
-  assert.doesNotMatch(result.output, /EXPLICIT_SDK_SENTINEL/);
+  assert.doesNotMatch(result.output, /EXPLICIT_SDK_SENTINEL|EXPLICIT_HOST_SENTINEL/);
 }));
 
 test("explicit SDK selection runs its tests and propagates their failure", () => fixture(async directory => {
@@ -53,6 +55,21 @@ test("explicit SDK selection runs its tests and propagates their failure", () =>
 test("explicit SDK selection cannot succeed with no matching tests", () => fixture(async directory => {
   await rm(path.join(directory, "tests/sdk/typescript/installed.test.ts"));
   const result = await vitest(directory, "sdk", ["tests/sdk/typescript"]);
+  assert.equal(result.code, 1, result.output);
+  assert.match(result.output, /No test files found/);
+}));
+
+test("explicit host selection runs its tests and propagates their failure", () => fixture(async directory => {
+  const result = await vitest(directory, "hosts", ["tests/hosts"]);
+  assert.equal(result.code, 1, result.output);
+  assert.match(result.output, /EXPLICIT_HOST_SENTINEL/);
+  assert.match(result.output, /Tests\s+1 failed/);
+  assert.doesNotMatch(result.output, /No test files found/);
+}));
+
+test("explicit host selection cannot succeed with no matching tests", () => fixture(async directory => {
+  await rm(path.join(directory, "tests/hosts/installed.test.ts"));
+  const result = await vitest(directory, "hosts", ["tests/hosts"]);
   assert.equal(result.code, 1, result.output);
   assert.match(result.output, /No test files found/);
 }));

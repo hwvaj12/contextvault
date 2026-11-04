@@ -4,14 +4,15 @@ import { defineConfig } from "vitest/config";
 const s3 = process.env.CV_TEST_BACKEND === "s3" || process.env.CV_TEST_SUITE === "release";
 const acceptance = process.env.CV_TEST_SUITE === "acceptance";
 const sdk = process.env.CV_TEST_SUITE === "sdk";
+const hosts = process.env.CV_TEST_SUITE === "hosts";
 export default defineConfig({
   test: {
     globals: true,
     testTimeout: 30000,
     // Installed clients and S3 fixtures share external resources; keep their test files serial.
-    maxWorkers: sdk || s3 || process.env.CV_TEST_SUITE === "hosts" ? 1 : 4,
+    maxWorkers: sdk || s3 || hosts ? 1 : 4,
     include: acceptance ? ["tests/acceptance/**/*.test.ts"] : ["tests/**/*.test.ts"],
-    exclude: acceptance ? [] : ["tests/acceptance/**", ...(s3 ? [] : ["tests/adapters/s3/**"]), ...(sdk ? [] : ["tests/sdk/**"])],
+    exclude: acceptance ? [] : ["tests/acceptance/**", ...(s3 ? [] : ["tests/adapters/s3/**"]), ...(sdk ? [] : ["tests/sdk/**"]), ...(hosts ? [] : ["tests/hosts/**"])],
     passWithNoTests: false,
   },
 });
