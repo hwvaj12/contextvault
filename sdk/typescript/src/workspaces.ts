@@ -13,7 +13,9 @@ import {
   DestroyResult,
   BulkDeleteResult,
 } from "./types";
-import { NetworkError, mapResponseToError } from "./errors";
+import { ConflictError, NetworkError, localError, mapResponseToError } from "./errors";
+import type { LocalWorkspaceSession, OpenWorkspaceOptions } from "./session";
+import type { WorkspaceView } from "./resources";
 
 export interface HttpConfig {
   baseUrl: string;
@@ -23,8 +25,12 @@ export interface HttpConfig {
 
 export class Workspaces {
   private readonly config: HttpConfig;
+  private readonly sessions = new Map<string, LocalWorkspaceSession>();
+  private readonly opening = new Set<string>();
 
-  constructor(config: HttpConfig) {
+  constructor(config: HttpConfig, private readonly openLocal?: (options: OpenWorkspaceOptions) => Promise<LocalWorkspaceSession>,
+    private readonly createCanonical?: (options: CreateWorkspaceOptions) => Promise<WorkspaceView>,
+    private readonly getCanonical?: (id: string) => Promise<WorkspaceView>) {
     this.config = config;
   }
 
@@ -32,6 +38,7 @@ export class Workspaces {
 
   /** Create a new workspace. */
   async create(options: CreateWorkspaceOptions): Promise<Workspace> {
+    if (this.createCanonical) return legacyWorkspace(await this.createCanonical(options));
     return this.request<Workspace>("POST", "/workspaces", {
       body: { customerId: options.customerId, name: options.name },
     });
@@ -43,11 +50,13 @@ export class Workspaces {
     if (options.customerId) params.set("customerId", options.customerId);
     const qs = params.toString();
     const path = qs ? `/workspaces?${qs}` : "/workspaces";
-    return this.request<Workspace[]>("GET", path);
+    const response = await this.request<Workspace[] | { data: Workspace[] }>("GET", path);
+    return Array.isArray(response) ? response : response.data;
   }
 
   /** Get a single workspace by ID. */
   async get(workspaceId: string): Promise<Workspace> {
+    if (this.getCanonical) return legacyWorkspace(await this.getCanonical(workspaceId));
     return this.request<Workspace>("GET", `/workspaces/${enc(workspaceId)}`);
   }
 
@@ -78,25 +87,34 @@ export class Workspaces {
 
   /** Checkout a workspace (create a sandbox). */
   async checkout(workspaceId: string): Promise<Sandbox> {
-    return this.request<Sandbox>("POST", `/workspaces/${enc(workspaceId)}/sandbox`);
+    if (!this.openLocal) throw localError("INVALID_REQUEST", "Construct ContextVaultClient to use client-local checkout");
+    if (this.sessions.has(workspaceId) || this.opening.has(workspaceId)) throw new ConflictError("A local session already exists for this workspace");
+    this.opening.add(workspaceId);
+    try {
+      const session = await this.openLocal({ workspaceId, mode: "read-write", agentLabel: "legacy-sdk", task: "legacy checkout", reason: "client-local compatibility" });
+      this.sessions.set(workspaceId, session);
+      return { workspaceId, sandboxId: session.run.id, runId: session.run.id, sandboxPath: session.path, path: session.path, baseCommit: session.baseCommit, status: "ready" };
+    } finally { this.opening.delete(workspaceId); }
   }
 
   /** Commit sandbox changes back to the workspace. */
   async commit(workspaceId: string, options: CommitOptions = {}): Promise<CommitResult> {
-    return this.request<CommitResult>("POST", `/workspaces/${enc(workspaceId)}/sandbox/commit`, {
-      body: {
-        ...(options.agentId && { agentId: options.agentId }),
-        ...(options.taskId && { taskId: options.taskId }),
-        ...(options.tags && { tags: options.tags }),
-        ...(options.message && { message: options.message }),
-        ...(options.author && { author: options.author }),
-      },
-    });
+    const session = this.sessions.get(workspaceId);
+    if (!session) throw localError("INVALID_TRANSITION", "Checkout this workspace before committing local files");
+    // Legacy commit has always required the caller to finish writes before invoking it.
+    await session.checkpoint({ writersStopped: true });
+    const receipt = session.checkpointReceipt;
+    if (!receipt?.operation.result?.revisionId) throw localError("INVALID_TRANSITION", "Checkpoint has no accepted publication receipt");
+    return { workspaceId, sandboxId: receipt.runId, commitId: receipt.operation.result.revisionId, parentId: receipt.parentRevisionId, createdAt: receipt.operation.updatedAt };
   }
 
   /** Destroy (tear down) the sandbox for a workspace. */
   async destroy(workspaceId: string): Promise<DestroyResult> {
-    return this.request<DestroyResult>("DELETE", `/workspaces/${enc(workspaceId)}/sandbox`);
+    const session = this.sessions.get(workspaceId);
+    if (!session) throw localError("INVALID_TRANSITION", "Checkout this workspace before destroying local files");
+    if (session.run.state === "active") await session.abort({ writersStopped: true, reason: "legacy destroy" });
+    await session.cleanup({ writersStopped: true }); this.sessions.delete(workspaceId);
+    return { workspaceId, status: session.statusAlias };
   }
 
   // ─── Pull / Files ────────────────────────────────────────────────
@@ -212,6 +230,10 @@ export class Workspaces {
 
 function enc(value: string): string {
   return encodeURIComponent(value);
+}
+
+function legacyWorkspace(value: WorkspaceView): Workspace {
+  return { ...value, latestCommitId: value.currentRevisionId, deletedAt: value.status === "deleted" ? value.updatedAt : null };
 }
 
 function sleep(ms: number): Promise<void> {

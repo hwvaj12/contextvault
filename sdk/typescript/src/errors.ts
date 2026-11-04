@@ -2,12 +2,21 @@
 export class ContextVaultError extends Error {
   public readonly statusCode: number | undefined;
   public readonly responseBody: unknown;
+  public readonly code: string | undefined;
+  public readonly operationId: string | undefined;
+  public readonly retryable: boolean | undefined;
+  /** Present when an initialized durable session can be resumed after this error. */
+  public readonly privateStatePath?: string;
 
   constructor(message: string, statusCode?: number, responseBody?: unknown) {
     super(message);
     this.name = "ContextVaultError";
     this.statusCode = statusCode;
     this.responseBody = responseBody;
+    const detail = errorDetail(responseBody);
+    this.code = typeof detail.code === "string" ? detail.code : undefined;
+    this.operationId = typeof detail.operationId === "string" ? detail.operationId : undefined;
+    this.retryable = typeof detail.retryable === "boolean" ? detail.retryable : undefined;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -55,11 +64,40 @@ export class ConflictError extends ContextVaultError {
   }
 }
 
+export class RunExpiredError extends ContextVaultError {
+  constructor(message = "Run expired", body: unknown = { error: { code: "RUN_EXPIRED" } }) {
+    super(message, 410, body); this.name = "RunExpiredError";
+  }
+}
+
+/** The original command must be reconciled. This error never authorizes abort or cleanup. */
+export class OutcomeUnknownError extends ContextVaultError {
+  public readonly privateStatePath?: string;
+  public readonly idempotencyKey?: string;
+  constructor(message = "Publication outcome is unknown", details: { operationId?: string; privateStatePath?: string; idempotencyKey?: string } = {}) {
+    super(message, undefined, { error: { code: "PUBLICATION_OUTCOME_UNKNOWN", ...details, retryable: true } });
+    this.name = "OutcomeUnknownError"; this.privateStatePath = details.privateStatePath; this.idempotencyKey = details.idempotencyKey;
+  }
+}
+
+export function localError(code: string, message: string): ValidationError {
+  return new ValidationError(message, 400, { error: { code, message, retryable: false } });
+}
+
+function errorDetail(body: unknown): Record<string, unknown> {
+  if (!body || typeof body !== "object") return {};
+  const value = body as Record<string, unknown>;
+  return value.error && typeof value.error === "object" ? value.error as Record<string, unknown> : value;
+}
+
 /**
  * Map an HTTP status code and response body to the appropriate error class.
  */
 export function mapResponseToError(status: number, body: unknown): ContextVaultError {
   const message = extractMessage(body);
+  const code = errorDetail(body).code;
+  if (code === "RUN_EXPIRED") return new RunExpiredError(message, body);
+  if (code === "PUBLICATION_OUTCOME_UNKNOWN") return new OutcomeUnknownError(message, errorDetail(body));
 
   switch (status) {
     case 400:

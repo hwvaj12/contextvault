@@ -6,6 +6,14 @@ export interface ClientOptions {
   baseUrl?: string;
   /** Maximum number of retry attempts for network errors. Defaults to 3. */
   maxRetries?: number;
+  /** Optional transport. It must preserve streaming request bodies. */
+  fetch?: typeof fetch;
+  /** Local portable snapshot limits. The server applies its own limits independently. */
+  limits?: Partial<import("./manifest").WorkspaceLimits>;
+  /** Maximum time to poll a durable operation. An elapsed deadline is an unknown outcome. */
+  operationTimeoutMs?: number;
+  /** Bounds one v1 HTTP request, including its response body. Defaults to 30000 ms. */
+  requestTimeoutMs?: number;
 }
 
 /** A ContextVault workspace. */
@@ -24,6 +32,10 @@ export interface Sandbox {
   workspaceId: string;
   sandboxId: string;
   sandboxPath: string;
+  /** Client-local path and pinned revision; no server directory is returned. */
+  path?: string;
+  baseCommit?: string;
+  runId?: string;
   status?: string;
   createdAt?: string;
 }

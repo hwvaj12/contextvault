@@ -36,7 +36,6 @@ export type {
   BundleFile,
   ExportResult,
   ImportResult,
-  BundleVerificationResult,
   ImportWorkspaceOptions,
 } from "./types";
 
@@ -66,3 +65,8 @@ export {
   type BundleVerificationResult,
   type ImportVerificationResult,
 } from "./bundles";
+
+export * from "./resources";
+export * from "./session";
+export * from "./manifest";
+export { RunExpiredError, OutcomeUnknownError } from "./errors";

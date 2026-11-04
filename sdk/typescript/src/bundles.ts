@@ -211,8 +211,8 @@ export async function verifyWorkspaceBundleSignature(
     const valid = await crypto.subtle.verify(
       { name: "Ed25519" } as any,
       publicKey,
-      signature,
-      content
+      signature as BufferSource,
+      content as BufferSource
     );
 
     return { valid, keyId: key.keyId, errors: valid ? [] : ["Ed25519 signature verification failed"] };
