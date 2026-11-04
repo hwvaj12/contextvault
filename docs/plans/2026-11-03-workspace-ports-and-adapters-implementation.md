@@ -729,7 +729,7 @@ The clean baseline audit found relevant production security advisories.
 Use narrow patched dependency updates, preserve API behavior, and prove the affected boundaries before release.
 CV-14 follows this item to keep package and lockfile writes sequential.
 
-Allowed paths: `package.json`, `package-lock.json`, `tests/security/runtime-dependencies.test.ts`.
+Allowed paths: `package.json`, `package-lock.json`, `tests/security/runtime-dependencies.test.ts`, the five root source files importing simple-git, and the two existing root integration tests importing simple-git.
 
 Proof: production dependency audit has no relevant Critical or High findings, and baseline, contract, build, and regression checks pass.
 
