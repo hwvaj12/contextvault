@@ -62,7 +62,7 @@ The lead relies on read-only briefs and independent source audits, and avoids du
 ## Execution checkout
 
 Integration: /private/tmp/contextvault-01a1a255/integration.
-Branch: codex/contextvault-completion, continuing verified commit 4df9b9360391fdd9013537b5a673dce367053f9a.
+Branch: codex/contextvault-completion. The latest host fixture source was verified at 213cf2bcd680acb3db9e600a9141d6c2c82d296e.
 Worker worktrees live under /private/tmp/contextvault-01a1a255/.
 macOS offloaded files in the Documents checkout. Preserve that checkout and all original changes.
 The lead recovered committed source through Git and verified recovered PHP source against recorded hashes.
@@ -84,3 +84,16 @@ Docker server 28.0.4, Node 24.19.0, Python 3.14.6, PHP 8.4.1, and Composer 2.8.1
 The user selected LocalStack for S3 verification on 2026-11-04.
 The isolated target is recorded in the integration .lead/localstack.json.
 Report LocalStack evidence separately from unperformed AWS verification.
+
+## Documentation wave execution
+
+CV-21 and CV-33 closed after independent canonical Git and LocalStack host gates.
+Each backend passed 44 tests across seven files without skips.
+This proves Docker filesystem and network boundaries, rather than physical remote hardware.
+Native application workers retain cooperative host-process separation.
+CV-26 owns executable documentation and an actual isolated Postman runtime.
+Use Node22.12 through /usr/local/bin before ambient Node24 when running SQLite-backed checks.
+Use the pinned official Postman CLI locally with installation scripts disabled.
+Run collections without accounts, host profiles, cloud reporting, or external network access.
+Keep runtime tooling outside production dependencies.
+The full release matrix, security review, and final milestone outcomes remain open under CV-27 and CV-28.
