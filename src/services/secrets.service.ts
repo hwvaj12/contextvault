@@ -27,13 +27,17 @@ export interface SecretsProvider {
   listTenantIds(): Promise<string[]>;
 }
 
+function isDictionary(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /**
  * Local JSON file-based secrets provider.
  * Stores secrets in a single JSON file for simplicity.
  */
 export class LocalJsonProvider implements SecretsProvider {
   private filePath: string;
-  private data: Record<string, TenantSecrets> = {};
+  private data: Record<string, TenantSecrets> = Object.create(null);
   private loaded = false;
 
   constructor(secretsPath: string) {
@@ -51,11 +55,22 @@ export class LocalJsonProvider implements SecretsProvider {
     
     try {
       const content = await fs.readFile(this.filePath, 'utf8');
-      this.data = JSON.parse(content);
+      const parsed: unknown = JSON.parse(content);
+      if (!isDictionary(parsed)) {
+        throw new Error('Invalid secrets file: expected a tenant dictionary');
+      }
+      const data: Record<string, TenantSecrets> = Object.create(null);
+      for (const [tenantId, tenant] of Object.entries(parsed)) {
+        if (!isDictionary(tenant)) {
+          throw new Error('Invalid secrets file: expected a secret dictionary for each tenant');
+        }
+        data[tenantId] = Object.assign(Object.create(null), tenant);
+      }
+      this.data = data;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         // File doesn't exist yet — start empty
-        this.data = {};
+        this.data = Object.create(null);
       } else {
         throw error;
       }
@@ -83,7 +98,7 @@ export class LocalJsonProvider implements SecretsProvider {
   async setSecret(tenantId: string, key: string, value: string): Promise<void> {
     await this.ensureLoaded();
     if (!this.data[tenantId]) {
-      this.data[tenantId] = {};
+      this.data[tenantId] = Object.create(null);
     }
     (this.data[tenantId] as Record<string, unknown>)[key] = value;
     await this.persist();
