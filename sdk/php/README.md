@@ -146,6 +146,10 @@ No metadata limit silently truncates a manifest or reduces the shared canonical 
 Mutation methods require caller-supplied stable keys. Low-level callers must persist their original requests and upload sources before dispatch.
 Only high-level `WorkspaceSession` methods own the durable session journal.
 Mutations never retry automatically. Read retries have a fixed count.
+Each mutation uses a fresh cURL connection and closes it after the transfer, preventing libcurl's automatic replay on reused connections.
+The SDK also stops incomplete mutation transfers before Guzzle's internal rewind retry. Caller cURL options cannot disable these safeguards.
+This policy covers v1 commands, binary uploads, and legacy mutation requests. It adds a connection setup cost to every mutation.
+Transfer callback counts do not establish how many physical requests reached the server.
 Constructor options `timeout` and `operationTimeout` bound HTTP and durable-operation waits; each must be positive and at most 120 seconds.
 
 ## Existing workspace methods
@@ -191,4 +195,9 @@ Correction coverage includes actual Docker `KILL` during capture, fresh-containe
 Focused controlled-response checks exercise local crash boundaries and checkpoint history separately from the real backend lifecycle assertions.
 Run `node tests/sdk/php/installed.mjs --focus-reopen` with the same environment for installed PHP 8.0 reopen-policy checks on both backends.
 Those checks cover permission restoration, proven rejection abandonment, fabricated rejection after actual acceptance, and lost accepted retries.
+Run `node tests/sdk/php/installed.mjs --focus-transport` for installed PHP 8.0 mutation replay regression checks on both backends.
+The relay accepts a real checkpoint reopen, drops its response, then rejects the original key until authority restoration.
+Checks retain local files and the original command, deny abandonment, and reconcile that same key without another publication.
+Positive controls cover genuine first rejection, legacy mutations, binary uploads, and bounded GET retries.
+Run `node tests/sdk/php/transport.mjs --host` with the same environment for the current host PHP runtime.
 This establishes local installed-package evidence. It does not establish actual AWS or downstream repository compatibility.

@@ -7,11 +7,13 @@ import { promisify } from 'node:util';
 import { createServer, request as httpRequest } from 'node:http';
 import { startWorkspaceServer } from '../../helpers/workspace-server.mjs';
 import { requireS3 } from '../../../scripts/run-workspace-tests.mjs';
+import { transportChecks } from './transport.mjs';
 
 const execute = promisify(execFile);
 const focusedReopen = process.argv.slice(2).includes('--focus-reopen');
 const focusedDeadline = process.argv.slice(2).includes('--focus-deadline');
-if ((focusedReopen && focusedDeadline) || process.argv.slice(2).some(argument => !['--focus-reopen', '--focus-deadline'].includes(argument))) throw new Error('Unknown installed PHP acceptance option');
+const focusedTransport = process.argv.slice(2).includes('--focus-transport');
+if ([focusedReopen, focusedDeadline, focusedTransport].filter(Boolean).length > 1 || process.argv.slice(2).some(argument => !['--focus-reopen', '--focus-deadline', '--focus-transport'].includes(argument))) throw new Error('Unknown installed PHP acceptance option');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const directory = await mkdtemp(path.join(tmpdir(), 'cv-php-installed-'));
 const artifact = path.join(directory, 'artifact');
@@ -93,7 +95,17 @@ try {
     const deadlineOrigin = `http://host.docker.internal:${deadlineProxy.address().port}`;
     const correctionArgs = ['--mount', `type=bind,source=${artifact},target=/artifact,readonly`, '--mount', `type=bind,source=${path.join(root, 'tests/sdk/php')},target=/tests,readonly`,
       '-e', 'CV_PHP_AUTOLOAD=/artifact/vendor/autoload.php'];
+    const checkTransport = () => transportChecks({ fixture, docker: true, runPhp: variables => {
+      container = `cv-php-transport-${fixture.id}`;
+      return run('docker', ['run', '--rm', '--name', container, ...correctionArgs,
+        ...Object.entries(variables).flatMap(([name, value]) => ['-e', `${name}=${value}`]), 'php:8.0-cli', 'php', '/tests/transport.php']);
+    } });
     const reopenArgs = [...correctionArgs, '-e', `CV_TIMEOUT_URL=${deadlineOrigin}`, '-e', `CV_KEY_A=${keyA}`, '-e', `CV_CUSTOMER_A=${customerA}`];
+    if (focusedTransport) {
+      results[backend] = { transport: await checkTransport() };
+      deadlineProxy.closeAllConnections(); await new Promise(resolve => deadlineProxy.close(resolve)); deadlineProxy = undefined;
+      await fixture.dispose(); fixture = undefined; container = undefined; continue;
+    }
     if (focusedReopen) {
       container = `cv-php-reopen-focus-${fixture.id}`;
       const focused = await run('docker', ['run', '--rm', '--name', container, ...reopenArgs, 'php:8.0-cli', 'php', '-d', 'memory_limit=512M', '/tests/corrections.php', 'reopen-policy']);
@@ -121,6 +133,7 @@ try {
     const reopenChecks = JSON.parse((await run('docker', ['run', '--rm', '--name', container, ...reopenArgs, 'php:8.0-cli', 'php', '-d', 'memory_limit=512M', '/tests/corrections.php', 'reopen-policy'])).stdout);
     if (Object.keys(reopenChecks.reopenPolicy ?? {}).length !== 4 || !Object.values(reopenChecks.reopenPolicy).every(value => value === true)) throw new Error('Installed reopen policy checks failed');
     results[backend].reopenPolicy = reopenChecks.reopenPolicy;
+    results[backend].transport = await checkTransport();
     container = `cv-php-corrections-${fixture.id}`;
     const focused = await run('docker', ['run', '--rm', '--name', container, ...correctionArgs, 'php:8.0-cli', 'php', '-d', 'memory_limit=512M', '/tests/corrections.php']);
     const focusedResults = JSON.parse(focused.stdout);

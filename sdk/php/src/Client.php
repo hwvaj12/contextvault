@@ -6,6 +6,7 @@ use ContextVault\Exception\{AuthError, ConflictError, ContextVaultException, Exp
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Handler\CurlHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\TransferStats;
 use GuzzleHttp\Exception\GuzzleException;
 use Psr\Http\Message\ResponseInterface;
 
@@ -76,6 +77,18 @@ class Client
     protected function send(string $method, string $uri, array $options): ResponseInterface
     {
         if ($uri === '' || $uri[0] !== '/' || substr($uri, 0, 2) === '//' || preg_match('/[\r\n]/', $uri)) throw new \InvalidArgumentException('Use a relative API path');
+        if ($method !== 'GET') {
+            // libcurl can replay a mutation on a reused connection inside one transfer callback.
+            // Force both options after caller options; callback counts cannot prove physical request counts.
+            $options['curl'][CURLOPT_FRESH_CONNECT] = true;
+            $options['curl'][CURLOPT_FORBID_REUSE] = true;
+            $observer = $options['on_stats'] ?? null;
+            $options['on_stats'] = static function (TransferStats $stats) use ($observer): void {
+                if ($observer !== null) $observer($stats);
+                // Stop before Guzzle retries a failed rewind or an empty response internally.
+                if (!$stats->hasResponse() || $stats->getHandlerErrorData() !== 0) throw new NetworkError('HTTP response was not received completely');
+            };
+        }
         $this->lastTransportResponse = null; $this->lastTransportRequest = null;
         $this->lastTransportRejection = null; $this->lastTransportRejectionProof = null;
         if ($this->httpAttemptWitness !== null && $this->httpAttemptWitness['method'] === $method && $this->httpAttemptWitness['path'] === $uri
