@@ -1,12 +1,15 @@
 import { FastifyRequest, FastifyReply } from "fastify";
 import { getDb } from "../db";
+import { WorkspaceError } from "../domain";
 
 /**
  * Get the customerId from the request, or null if admin (no scoping).
  */
 export function getRequestCustomerId(request: FastifyRequest): string | null {
-  if ((request as any).isAdmin) return null;
-  return (request as any).customerId ?? null;
+  if (!request.principal) throw new WorkspaceError("UNAUTHENTICATED", "An authenticated principal is required");
+  if (request.principal.kind === "administrator" && request.isAdmin === true) return request.selectedCustomerId ?? null;
+  if (request.principal.kind === "administrator") throw new WorkspaceError("FORBIDDEN", "Verified administrator authority is required");
+  return request.principal.customerId;
 }
 
 /**

@@ -93,3 +93,30 @@ test('rejects ambient local endpoint overrides and strict-gate conflicts', async
     await assert.rejects(planTestRun('release', ['--s3-provider', 'localstack', '--require-real-s3'], { root, env }), /requires AWS/);
   });
 });
+
+test('exports the same strict S3 validator for shared server fixtures', async () => {
+  const { requireS3 } = await launcher();
+  assert.equal(typeof requireS3, 'function');
+  const source = { CV_TEST_S3_BUCKET: 'fixture', CV_TEST_S3_REGION: 'us-east-1', CV_TEST_S3_PREFIX: 'contextvault-tests/fixture-export/', CV_TEST_S3_ENDPOINT: 'http://127.0.0.1:51744', AWS_PROFILE: 'unrelated', AWS_WEB_IDENTITY_TOKEN_FILE: '/not-read', AWS_ACCESS_KEY_ID: 'fixture-inherited' };
+  const env = { ...source };
+  requireS3(env, { s3Provider: 'localstack' });
+  assert.equal(env.AWS_PROFILE, undefined);
+  assert.equal(env.AWS_WEB_IDENTITY_TOKEN_FILE, undefined);
+  assert.equal(env.AWS_ACCESS_KEY_ID, 'test');
+  assert.equal(env.AWS_SECRET_ACCESS_KEY, 'test');
+  assert.equal(source.AWS_PROFILE, 'unrelated');
+  assert.throws(() => requireS3({ ...source, CV_TEST_S3_PREFIX: 'production/' }, { s3Provider: 'localstack' }), /contextvault-tests/);
+  assert.throws(() => requireS3({ ...source }, { s3Provider: 'aws', realS3: true }), /AWS service endpoint/);
+  assert.throws(() => requireS3({ ...source }, { s3Provider: 'localstack', realS3: true }), /requires AWS/);
+});
+
+test('rejects unknown providers before mutating shared fixture credentials', async () => {
+  const { requireS3 } = await launcher();
+  for (const provider of ['localstak', 'AWS', 'unknown']) {
+    const env = { CV_TEST_S3_PROVIDER: provider, CV_TEST_S3_BUCKET: 'fixture', CV_TEST_S3_REGION: 'us-east-1', CV_TEST_S3_PREFIX: 'contextvault-tests/provider-guard/', CV_TEST_S3_ENDPOINT: 'http://127.0.0.1:1', AWS_PROFILE: 'fixture-only-profile', AWS_ACCESS_KEY_ID: 'fixture-only-key' };
+    const before = { ...env };
+    assert.throws(() => requireS3(env, { s3Provider: provider }), /--s3-provider localstack or aws is required/);
+    assert.deepEqual(env, before);
+    assert.throws(() => requireS3({ ...env }, { s3Provider: provider, realS3: true }), /--s3-provider localstack or aws is required/);
+  }
+});

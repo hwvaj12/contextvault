@@ -1,98 +1,58 @@
-import { FastifyRequest, FastifyReply } from "fastify";
+import type { FastifyRequest, FastifyReply } from "fastify";
+import type Database from "better-sqlite3";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { verifyKey } from "../services/apikey.service";
-import { ensureTenantTMK } from "../services/tenant.service";
-import { getDb } from "../db";
-import type { Principal } from "../domain";
+import { getDb, withDatabase } from "../db";
+import { WorkspaceError, type Principal } from "../domain";
 import { principalForVerifiedAdministrator, principalForVerifiedApiKey } from "./catalog-identity";
 
-const MASTER_KEY = process.env.CONTEXTVAULT_API_KEY || "cv-test-api-key-123";
-
-const PUBLIC_PATHS = ["/health", "/docs", "/docs/", "/vault"];
-
 declare module "fastify" {
-  interface FastifyRequest {
-    customerId?: string;
-    isAdmin?: boolean;
-    principal?: Principal;
-    selectedCustomerId?: string;
-  }
+  interface FastifyRequest { customerId?: string; isAdmin?: boolean; principal?: Principal; selectedCustomerId?: string }
 }
-
-function extractBasicAuthKey(authHeader: string | undefined): string | null {
-  if (!authHeader || !authHeader.startsWith("Basic ")) return null;
-  const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
-  const colonIdx = decoded.indexOf(":");
-  if (colonIdx === -1) return decoded;
-  const username = decoded.slice(0, colonIdx);
-  const password = decoded.slice(colonIdx + 1);
-  // Return whichever part looks like a key
-  return password || username;
+export interface AuthenticationOptions {
+  database: Database.Database; masterKey: string | null; now?: () => string;
+  provisionLegacyTenant?: (customerId: string) => Promise<void>;
 }
-
-async function authenticateKey(key: string, request: FastifyRequest): Promise<boolean> {
-  // A verified master key creates an explicit administrator identity.
-  if (key === MASTER_KEY) {
-    const selected = request.headers["x-contextvault-customer-id"];
-    const selectedCustomerId = typeof selected === "string" && selected.trim() ? selected : null;
-    try {
-      request.principal = principalForVerifiedAdministrator(getDb(), key, selectedCustomerId, new Date().toISOString());
-    } catch { return false; }
-    request.isAdmin = true;
-    if (selectedCustomerId) request.selectedCustomerId = selectedCustomerId;
-    return true;
-  }
-
-  // Try tenant-scoped key lookup
-  const verified = verifyKey(key);
-  if (verified) {
-    const principal = await principalForVerifiedApiKey(getDb(), verified, new Date().toISOString());
-    if (!principal) return false;
-    request.principal = principal;
-    request.customerId = verified.customerId;
-    request.isAdmin = false;
-    
-    // Auto-provision TMK for new customers on first authentication
-    // This ensures TMK exists before any workspace operations
-    try {
-      await ensureTenantTMK(verified.customerId);
-    } catch (error) {
-      // Don't fail auth if TMK provisioning fails, but log it
-      console.error('TMK provisioning failed for customer:', verified.customerId, error);
+const matches = (a: string, b: string) => timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
+function basic(header: string | undefined): string | null {
+  if (!header?.startsWith("Basic ")) return null;
+  const decoded = Buffer.from(header.slice(6), "base64").toString("utf8"); const colon = decoded.indexOf(":");
+  return colon < 0 ? decoded : decoded.slice(colon + 1) || decoded.slice(0, colon);
+}
+function pathname(request: FastifyRequest): string { return request.url.split("?", 1)[0]; }
+function publicPath(path: string): boolean { return path === "/" || path === "/health" || path === "/docs" || path.startsWith("/docs/") || path === "/vault" || path.startsWith("/vault/"); }
+export function createAuthMiddleware(options: AuthenticationOptions) {
+  const now = options.now ?? (() => new Date().toISOString());
+  async function authenticate(key: string, request: FastifyRequest): Promise<boolean> {
+    if (options.masterKey && matches(key, options.masterKey)) {
+      const selected = request.headers["x-contextvault-customer-id"];
+      if (selected !== undefined && (typeof selected !== "string" || !selected.trim() || selected.length > 255)) return false;
+      try { request.principal = principalForVerifiedAdministrator(options.database, key, selected ?? null, now()); } catch { return false; }
+      request.isAdmin = true; if (selected) request.selectedCustomerId = selected; return true;
     }
-    
+    const verified = withDatabase(options.database, () => verifyKey(key));
+    if (!verified) return false;
+    const principal = await principalForVerifiedApiKey(options.database, verified, now());
+    if (!principal) return false;
+    request.principal = principal; request.customerId = verified.customerId; request.isAdmin = false;
+    if (!pathname(request).startsWith("/v1/")) {
+      try { await options.provisionLegacyTenant?.(verified.customerId); }
+      catch { request.log.warn("Legacy tenant key provisioning failed"); }
+    }
     return true;
   }
-
-  return false;
+  return async (request: FastifyRequest, reply: FastifyReply) => {
+    if (publicPath(pathname(request))) return;
+    const presented = request.headers["x-api-key"];
+    if (typeof presented === "string" && await authenticate(presented, request)) return;
+    const alternative = basic(request.headers.authorization);
+    if (alternative && await authenticate(alternative, request)) return;
+    if (pathname(request).startsWith("/v1/")) throw new WorkspaceError("UNAUTHENTICATED", "Invalid or missing API key");
+    if (pathname(request).startsWith("/repos/")) reply.header("WWW-Authenticate", 'Basic realm="ContextVault"');
+    return reply.code(401).send({ error: "Unauthorized", message: "Invalid or missing API key" });
+  };
 }
-
-export async function authMiddleware(
-  request: FastifyRequest,
-  reply: FastifyReply
-) {
-  if (
-    PUBLIC_PATHS.some((p) => request.url.startsWith(p)) ||
-    request.url === "/"
-  ) {
-    return;
-  }
-
-  // Check X-API-Key header first
-  const apiKey = request.headers["x-api-key"] as string | undefined;
-  if (apiKey && (await authenticateKey(apiKey, request))) return;
-
-  // Fall back to HTTP Basic Auth (used by git clone/push)
-  const basicKey = extractBasicAuthKey(request.headers.authorization);
-  if (basicKey && (await authenticateKey(basicKey, request))) return;
-
-  // For git requests, send WWW-Authenticate to trigger credential prompt
-  if (request.url.startsWith("/repos/")) {
-    reply
-      .code(401)
-      .header("WWW-Authenticate", 'Basic realm="ContextVault"')
-      .send({ error: "Unauthorized" });
-    return;
-  }
-
-  reply.code(401).send({ error: "Unauthorized", message: "Invalid or missing API key" });
+/** Compatibility entrypoint; normal application composition supplies explicit per-instance authentication. */
+export async function authMiddleware(request: FastifyRequest, reply: FastifyReply) {
+  return createAuthMiddleware({ database: getDb(), masterKey: process.env.CONTEXTVAULT_API_KEY?.trim() ? process.env.CONTEXTVAULT_API_KEY : null })(request, reply);
 }

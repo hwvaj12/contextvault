@@ -9,13 +9,15 @@ vi.mock("../../src/db", async (importOriginal) => {
 });
 
 let app: FastifyInstance;
+const fixtureMasterKey = "cv-factory-explicit-test-master";
 async function testApp() {
+  vi.stubEnv("CONTEXTVAULT_API_KEY", fixtureMasterKey);
   const factory = await import("../../src/app");
   expect(factory, "The application module must export a reusable factory").toHaveProperty("createApp");
   if (!app) app = await (factory as typeof import("../../src/app")).createApp({ logger: false });
   return app;
 }
-afterAll(async () => { if (app) await app.close(); });
+afterAll(async () => { if (app) await app.close(); vi.unstubAllEnvs(); });
 
 it("constructs the existing HTTP routes without opening a listener", async () => {
   const app = await testApp();
@@ -43,7 +45,7 @@ it("preserves the legacy authentication error and paginated workspace response",
   const unauthorized = await app.inject({ method: "GET", url: "/workspaces" });
   expect(unauthorized.statusCode).toBe(401);
   expect(unauthorized.json()).toEqual({ error: "Unauthorized", message: "Invalid or missing API key" });
-  const authorized = await app.inject({ method: "GET", url: "/workspaces?customerId=cv-factory-isolated", headers: { "X-API-Key": process.env.CONTEXTVAULT_API_KEY || "cv-test-api-key-123" } });
+  const authorized = await app.inject({ method: "GET", url: "/workspaces?customerId=cv-factory-isolated", headers: { "X-API-Key": fixtureMasterKey } });
   expect(authorized.statusCode).toBe(200);
   expect(authorized.json()).toEqual({ data: [], pagination: { total: 0, limit: 50, offset: 0, hasMore: false } });
 });

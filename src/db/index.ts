@@ -2,26 +2,37 @@ import Database from "better-sqlite3";
 import { migrateCatalog } from "./catalog-schema";
 import * as path from "path";
 import * as fs from "fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const DB_PATH = path.join(DATA_DIR, "contextvault.db");
 
 let db: Database.Database | null = null;
+const context = new AsyncLocalStorage<Database.Database>();
 
-export function getDb(): Database.Database {
+/** Keep legacy repositories inside the owning application's connection, including asynchronous callbacks. */
+export function withDatabase<T>(database: Database.Database, work: () => T): T { return context.run(database, work); }
+
+function openPrivateDatabase(filename: string): Database.Database {
+  if (!path.isAbsolute(filename)) throw new Error("Catalog path must be absolute");
+  fs.mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
+  try { const fd = fs.openSync(filename, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_RDWR, 0o600); fs.closeSync(fd); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  const stat = fs.lstatSync(filename);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("Catalog must be a private regular file");
+  fs.chmodSync(filename, 0o600);
+  const database = new Database(filename);
+  try { database.pragma("journal_mode = WAL"); database.pragma("foreign_keys = ON"); initSchema(database); return database; }
+  catch (error) { database.close(); throw error; }
+}
+
+export function getDb(filename?: string): Database.Database {
+  if (filename !== undefined) return openPrivateDatabase(filename);
+  const scoped = context.getStore();
+  if (scoped) return scoped;
   if (db) return db;
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  db = new Database(DB_PATH);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  try {
-    initSchema(db);
-    return db;
-  } catch (error) {
-    db.close();
-    db = null;
-    throw error;
-  }
+  db = openPrivateDatabase(DB_PATH);
+  return db;
 }
 
 export function closeDb(): void {

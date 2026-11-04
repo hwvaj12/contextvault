@@ -41,9 +41,9 @@ function optionsFor(suite, args) {
   if (options.realS3 && !options.s3Provider) options.s3Provider = "aws";
   return options;
 }
-function requireS3(env, options) {
+export function requireS3(env, options) {
   const provider = options.s3Provider;
-  if (!provider) throw new Error("--s3-provider localstack or aws is required");
+  if (!["localstack", "aws"].includes(provider)) throw new Error("--s3-provider localstack or aws is required");
   if (env.CV_TEST_S3_PROVIDER && env.CV_TEST_S3_PROVIDER !== provider) throw new Error("S3 provider conflicts with CV_TEST_S3_PROVIDER");
   if ((options.realS3 || env.CV_REQUIRE_REAL_S3 === "1") && provider !== "aws") throw new Error("--require-real-s3 requires AWS");
   for (const name of ["CV_TEST_S3_BUCKET", "CV_TEST_S3_REGION", "CV_TEST_S3_PREFIX"]) if (!env[name]?.trim()) throw new Error(`S3 verification requires ${name}`);
