@@ -459,8 +459,8 @@ Planning items CV-1 through CV-4 describe this planning effort only.
 | 4 | CV-17 |
 | 5 | CV-16 |
 | 6 | CV-18, CV-19, CV-20, CV-23 |
-| 7 | CV-21, CV-22, CV-24 |
-| 8 | CV-25 |
+| 7 | CV-21, CV-24 |
+| 8 | CV-22, CV-25 |
 | 9 | CV-26 |
 | 10 | CV-27 |
 | 11 | CV-28 |
@@ -484,8 +484,8 @@ The helper computes readiness from dependency closure, rather than the suggested
 | CV-18 | Add TypeScript run resources and local workspace materialization | CV-16 | A08, A09, A10 |
 | CV-19 | Add Python run resources and local workspace materialization | CV-16 | A08, A09, A10 |
 | CV-20 | Add PHP run resources and local workspace materialization | CV-16 | A08, A09, A10 |
-| CV-21 | Deliver local CLI and all agent-host launch examples | CV-18 | A08 |
-| CV-22 | Unify MCP tools around authenticated ContextVault clients | CV-18 | A05, A09, A10 |
+| CV-21 | Deliver local CLI and all agent-host launch examples | CV-18, CV-19, CV-20 | A08 |
+| CV-22 | Unify MCP tools around authenticated ContextVault clients | CV-18, CV-24 | A05, A09, A10 |
 | CV-23 | Converge legacy mutation routes and direct Git access | CV-16, CV-17 | A05, A10 |
 | CV-24 | Move revision reads, workspace administration, and bundles onto ports | CV-23 | A05, A07, A10 |
 | CV-25 | Add legacy inventory and resumable backend migration | CV-24, CV-17 | A11 |
