@@ -163,8 +163,11 @@ export class LocalSubmissionStore implements SubmissionStore {
       if (operation?.state === "succeeded" && operation.result?.kind === "submission:file") {
         const receipt = await this.control.getReceipt(input.scope, input.submissionId, operation.result.receiptId);
         if (!receipt || !receiptMatches(receipt, input.scope, input.submissionId, { path: input.path, sha256: input.declaredSha256, byteLength: input.declaredByteLength })) throw new WorkspaceError("RECEIPT_MISMATCH", "Recorded receipt does not match upload");
-        await this.verifyReceipt(receipt, { signal: input.signal });
-        return receipt;
+        const current = await this.required(input.scope, input.submissionId);
+        // Successful retries still require the catalog's current authority check.
+        const replayed = (await this.control.registerUploadReceipt({ scope: input.scope, principal: input.principal, command: input.command, expectedSubmissionVersion: current.version, receipt, now: this.now() })).value;
+        await this.verifyReceipt(replayed, { signal: input.signal });
+        return replayed;
       }
       const submission = await this.required(input.scope, input.submissionId);
       if (submission.state !== "uploading") throw new WorkspaceError("SUBMISSION_SEALED", "Submission does not accept uploads");
@@ -190,7 +193,7 @@ export class LocalSubmissionStore implements SubmissionStore {
     if (operation?.state === "succeeded" && operation.result?.kind === "submission:seal") {
       const submission = await this.required(input.scope, input.submissionId);
       if (submission.manifestDigest !== digest || operation.result.manifestDigest !== digest) throw new WorkspaceError("IDEMPOTENCY_KEY_REUSED", "Seal key already binds another manifest");
-      return submission;
+      return (await this.control.sealSubmission({ ...input, manifest, manifestDigest: digest, expectedSubmissionVersion: submission.version, now: input.sealedAt })).value;
     }
     for (const selection of input.receipts) {
       const receipt = await this.control.getReceipt(input.scope, input.submissionId, selection.receiptId);
