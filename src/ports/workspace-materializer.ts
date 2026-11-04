@@ -26,6 +26,6 @@ export interface WorkspaceMaterializer {
   /** Atomically persist and sync the original command/key/request/selection before HTTP dispatch, outside workspace contents. */
   savePrivateState(state: LocalClientSessionState): Promise<void>;
   loadPrivateState(privateStatePath: string): Promise<LocalClientSessionState>;
-  /** Explicit cleanup validates ancestry and never follows links or silently aborts uncertain publication. */
+  /** Caller stops all agent writers first. Validate ancestry; retain files when writer state or publication is uncertain. */
   cleanup(handle: LocalWorkspaceHandle): Promise<void>;
 }
