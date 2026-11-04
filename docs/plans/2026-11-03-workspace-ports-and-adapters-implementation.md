@@ -56,7 +56,7 @@ It does not establish live exploitation, current customer data state, production
 
 The primary acceptance test belongs in `tests/acceptance/lifecycle.test.ts`.
 It uses public HTTP and a separate client process with no shared server data directory.
-The same assertions run against real Git and real S3.
+The same assertions run against real Git and the user-selected LocalStack S3 service.
 
 1. Create customer A and a workspace containing text and binary files.
 2. Open a run and materialize its exact base revision beside the agent.
@@ -477,7 +477,7 @@ The helper computes readiness from dependency closure, rather than the suggested
 | CV-11 | Add transactional catalog, policy identity, and versioned migrations | CV-10 | A03, A04, A05, A12 |
 | CV-12 | Implement canonical validation and sealed local submissions | CV-10 | A06 |
 | CV-13 | Implement immutable Git revision storage | CV-10 | A07 |
-| CV-14 | Implement S3 revision and submission storage | CV-10, CV-29 | A06, A07 |
+| CV-14 | Implement S3 revision and submission storage | CV-10, CV-11, CV-12, CV-13, CV-29 | A06, A07 |
 | CV-15 | Implement workspace open, finalize, abort, and expiry use cases | CV-11, CV-12, CV-13, CV-14 | A01, A02, A03, A04, A05 |
 | CV-16 | Expose authenticated lifecycle and binary transfer over HTTP | CV-15, CV-17 | A01, A05, A06, A08 |
 | CV-17 | Implement fenced recovery, tenant outbox, and controlled cleanup | CV-15 | A02, A05, A12 |
@@ -548,11 +548,11 @@ Add the server-only AWS SDK dependency. Use scoped revision-local immutable obje
 
 Allowed paths: `src/adapters/revisions/s3/**`, `src/adapters/submissions/s3/**`, `tests/adapters/s3/**`, `package.json`, `package-lock.json`.
 
-Proof: The shared contract passes against real S3. Failed uploads, mismatched retry objects, and interrupted manifests never become accepted workspace contents.
+Proof: The shared contract passes through the AWS SDK against the user-selected LocalStack S3 service. Failed uploads, mismatched retry objects, and interrupted manifests never become accepted workspace contents.
 
 Tests to add: tests/adapters/s3/revision-store.test.ts; submissions.test.ts; retry-and-integrity.test.ts.
 
-Proving commands: `npm run test:adapters -- --backend s3 --require-real-s3`.
+Proving commands: `npm run test:adapters -- --backend s3 --s3-provider localstack`.
 
 ### CV-15: Implement workspace open, finalize, abort, and expiry use cases
 
@@ -636,7 +636,7 @@ Proof: Workers, containers, local CLI sessions, and separate machines access cli
 
 Tests to add: tests/hosts/worker.test.ts; container.test.ts; cli.test.ts; remote-machine.test.ts.
 
-Proving commands: `npm run test:hosts -- --backend git; npm run test:hosts -- --backend s3 --require-real-s3`.
+Proving commands: `npm run test:hosts -- --backend git; npm run test:hosts -- --backend s3 --s3-provider localstack`.
 
 ### CV-22: Unify MCP tools around authenticated ContextVault clients
 
@@ -700,15 +700,15 @@ Proving commands: `npm run test:docs`.
 
 ### CV-27: Prove backend parity, host access, packaging, and failure recovery
 
-Implement the release matrix and hard gates. Include process kills around acceptance, revoked actors, stale workers, upload/seal races, tenant webhooks, GC races, and migration interruption. Do not replace real S3 or host boundaries with mocks. Keep all cloud fixtures inside an explicit nonproduction prefix.
+Implement the release matrix and hard gates. Include process kills around acceptance, revoked actors, stale workers, upload/seal races, tenant webhooks, GC races, and migration interruption. Use network requests against the selected LocalStack S3 service and real host boundaries. Keep fixtures inside an explicit test prefix.
 
 Allowed paths: `tests/acceptance/**`, `tests/faults/**`, `tests/hosts/**`, `tests/sdk/**`, `scripts/verify-workspace-release.mjs`, `.github/workflows/workspace-contract.yml`, `docs/verification/**`, `package.json`, `package-lock.json`.
 
-Proof: Required real Git/S3, host, SDK-package, MCP, compatibility, migration, and fault checks pass. Missing credentials or host capacity prevent a complete release verdict.
+Proof: Required Git, LocalStack S3, host, SDK-package, MCP, compatibility, migration, and fault checks pass. Missing target services or host capacity prevent closure.
 
 Tests to add: tests/acceptance/lifecycle.test.ts; tests/faults/*.test.ts; host/SDK/MCP matrix; migration round-trip.
 
-Proving commands: `npm run verify:workspace-release -- --require-real-s3 --require-all-hosts --require-all-sdks`.
+Proving commands: `npm run verify:workspace-release -- --s3-provider localstack --require-all-hosts --require-all-sdks`.
 
 ### CV-28: Independently review and close the workspace milestone
 
@@ -720,7 +720,7 @@ Proof: A fresh reviewer finds no unresolved contract defects. An independent che
 
 Tests to add: Independent reproduction of release matrix and documentation examples.
 
-Proving commands: `npm run verify:workspace-release -- --require-real-s3 --require-all-hosts --require-all-sdks`.
+Proving commands: `npm run verify:workspace-release -- --s3-provider localstack --require-all-hosts --require-all-sdks`.
 
 
 ### CV-29: Repair affected runtime dependency advisories
@@ -777,11 +777,11 @@ Intermediate tasks may leave acceptance red until their required behavior exists
 ```sh
 npm run test:contracts
 npm run test:adapters -- --backend git
-npm run test:adapters -- --backend s3 --require-real-s3
+npm run test:adapters -- --backend s3 --s3-provider localstack
 npm run test:acceptance -- --backend git
-npm run test:acceptance -- --backend s3 --require-real-s3
+npm run test:acceptance -- --backend s3 --s3-provider localstack
 npm run test:hosts -- --backend git
-npm run test:hosts -- --backend s3 --require-real-s3
+npm run test:hosts -- --backend s3 --s3-provider localstack
 npm run test:sdk -- --language typescript
 npm run test:sdk -- --language python
 npm run test:sdk -- --language php
@@ -790,7 +790,7 @@ npm run test:legacy
 npm run test:recovery
 npm run test:migration
 npm run test:docs
-npm run verify:workspace-release -- --require-real-s3 --require-all-hosts --require-all-sdks
+npm run verify:workspace-release -- --s3-provider localstack --require-all-hosts --require-all-sdks
 ```
 
 Use package tarball installation, isolated Python wheel installation, and Composer installation for SDK proof.
@@ -801,7 +801,7 @@ Real S3 verification requires `CV_TEST_S3_BUCKET`, `CV_TEST_S3_REGION`, and a un
 Credentials use the standard AWS chain; never put secrets in fixtures or logs.
 The runner refuses empty, bucket-root, or unapproved test prefixes.
 It removes only objects and multipart uploads that it created inside its recorded prefix.
-Missing S3 access fails required release verification; local emulator success cannot replace it.
+Missing LocalStack S3 access fails this milestone verification. A separate --require-real-s3 gate requires AWS and rejects emulator targets.
 
 ### Host and package matrix
 
@@ -856,3 +856,18 @@ Current direct Git users and deployed webhook receivers need inventory before di
 Accepted-history purge remains outside initial orphan GC until a retention policy exists.
 
 No product code, customer data, Git branch, commit, remote publication, or deployment is changed by this planning deliverable.
+
+## Selected S3 verification target, 2026-11-04
+
+The user selected LocalStack in response to the S3 verification target question.
+This instruction replaces the earlier real-AWS requirement for this milestone.
+Git checks use real Git; S3 checks send network requests through the AWS SDK to LocalStack.
+Reports record the provider, image version, endpoint, and test prefix.
+LocalStack evidence establishes the selected emulator behavior; AWS service parity remains unverified.
+The optional --require-real-s3 gate remains strict and cannot accept a LocalStack target.
+All application-worker, container, local-CLI, separate-machine, SDK, and recovery gates remain required.
+CV-14 owns the launcher and Vitest selection changes needed for explicit provider profiles.
+
+CV-14 consumes the closed catalog, shared file helpers, and backend-neutral Git contract fixtures.
+CV-17 owns the additional catalog/submission cleanup seams required by actual byte collection.
+CV-16 synchronizes configured administrator authority before automatic recovery starts.

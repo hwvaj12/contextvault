@@ -79,4 +79,6 @@ Host HTTP listeners and Docker require authorized host execution in this sandbox
 
 The clean integration baseline passed 83 tests across nine files and npm run build.
 Docker server 28.0.4, Node 24.19.0, Python 3.14.6, PHP 8.4.1, and Composer 2.8.12 are available.
-Real S3 bucket, region, and prefix remain pending user input.
+The user selected LocalStack for S3 verification on 2026-11-04.
+The isolated target is recorded in the integration .lead/localstack.json.
+Report LocalStack evidence separately from unperformed AWS verification.

@@ -10,7 +10,8 @@ Existing agents run in application workers, containers, local CLIs, and separate
 A workspace client materializes temporary files beside each agent.
 AgentCore and S3 Files mounts are optional future adapters.
 
-The user requested an implementation plan, rather than product implementation in this turn.
+The initial approval requested an implementation plan.
+The user subsequently approved implementation through the dependency waves with subagents.
 
 Design: [approved design](../plans/2026-11-03-workspace-ports-and-adapters-design.md).
 Plan: [implementation plan](../plans/2026-11-03-workspace-ports-and-adapters-implementation.md).
