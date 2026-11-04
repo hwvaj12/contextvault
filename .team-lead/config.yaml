@@ -1,0 +1,16 @@
+# team-lead settings for this project. Paths are relative to the repo root.
+
+# Work item IDs look like CV-1, CV-2, ...
+prefix: CV
+
+items: docs/items
+decisions: docs/decisions
+runs: docs/runs
+status: docs/status.md
+lead: .lead
+
+# The branch finished items merge into during a milestone.
+branch: codex/contextvault-ports
+
+# Compatibility field retained from Claude; the Codex helper does not auto-detect test runs.
+runners: []
