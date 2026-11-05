@@ -16,6 +16,11 @@ const languages = ['typescript','python','php'];
 const environments = ['worker','container','remote-machine'];
 const digestPattern = /^[a-f0-9]{64}$/;
 
+export function validateController({platform=process.platform,node=process.versions.node}={}) {
+  const [major,minor]=node.split('.').map(Number);
+  if(!['linux','darwin'].includes(platform)||!Number.isInteger(major)||!Number.isInteger(minor)||major<22||(major===22&&minor<12)) throw Error('Release verification requires Linux or macOS, Node22.12+, and a local Docker Engine');
+}
+
 export function parseReleaseOptions(args) {
   const options = {s3Provider:undefined,allHosts:false,allSdks:false,realS3:false}, seen = new Set();
   for (let index=0;index<args.length;index++) {
@@ -272,11 +277,10 @@ async function main() {
   const options=parseReleaseOptions(process.argv.slice(2)),env=releaseEnvironment(process.env);requireS3(env,options);
   const directory=await mkdtemp(path.join(await realpath(tmpdir()),'cv-release-'));await chmod(directory,0o700);
   const identity=randomUUID();await writeFile(path.join(directory,'owner.json'),JSON.stringify({identity,purpose:'ContextVault nonproduction release verification'}),{mode:0o600});
-  const report={schemaVersion:1,identity,startedAt:new Date().toISOString(),status:'running',controller:{node:process.versions.node,platform:process.platform,arch:process.arch},target:{provider:options.s3Provider,endpoint:env.CV_TEST_S3_ENDPOINT,bucket:env.CV_TEST_S3_BUCKET,region:env.CV_TEST_S3_REGION,prefix:env.CV_TEST_S3_PREFIX},gates:[],exclusions:['AWS service parity','Windows','physical remote hardware','hosted CI execution','native Linux release controller','historical ad-hoc tests/e2e/api.test.mjs and webhooks.test.mjs; maintained supported outcomes remain required through public HTTP, compat, revision, and security gates'],namespaceEvidence:'Caller prefix is unchanged. Emitted host/docs API fixture UUIDs identify verified http-<UUID>/ child prefixes. Other fixtures use owned UUID children without a complete emitted namespace ledger.'};
+  const report={schemaVersion:1,identity,startedAt:new Date().toISOString(),status:'running',controller:{node:process.versions.node,platform:process.platform,arch:process.arch},target:{provider:options.s3Provider,endpoint:env.CV_TEST_S3_ENDPOINT,bucket:env.CV_TEST_S3_BUCKET,region:env.CV_TEST_S3_REGION,prefix:env.CV_TEST_S3_PREFIX},gates:[],exclusions:['AWS service parity','Windows','physical remote hardware','historical ad-hoc tests/e2e/api.test.mjs and webhooks.test.mjs; maintained supported outcomes remain required through public HTTP, compat, revision, and security gates'],namespaceEvidence:'Caller prefix is unchanged. Emitted host/docs API fixture UUIDs identify verified http-<UUID>/ child prefixes. Other fixtures use owned UUID children without a complete emitted namespace ledger.'};
   try {
     const gates=await createReleasePlan({root:rootDirectory,directory,options,env});
-    const [major,minor]=process.versions.node.split('.').map(Number);
-    if(process.platform!=='darwin'||major<22||(major===22&&minor<12)) throw Error('The current release controller requires macOS, Node22.12+, and Docker Desktop; other controllers are unverified');
+    validateController();
     report.source=await sourceSnapshot(rootDirectory,env);
     const target=await noGitTarget(env);Object.assign(gates.find(gate=>gate.id==='no-git-s3').env,target);Object.assign(report.target,{container:target.CV_TEST_S3_CONTAINER,containerEndpoint:target.CV_TEST_S3_CONTAINER_ENDPOINT,network:target.CV_TEST_DOCKER_NETWORK});
     report.requiredGates=gates.map(gate=>gate.id);

@@ -36,6 +36,8 @@ A fresh process reconciles that command and restores its immutable captured byte
 
 The relay fixes its upstream API origin and rejects alternate destinations, CONNECT, and upgrades.
 S3 container cells test direct connections to the actual storage-container IP and actual host endpoint.
+On Linux, the host probe uses the inspected gateway of the owned API network.
+On macOS, the host probe resolves Docker Desktop's `host.docker.internal` address.
 They also inspect mounts and networks and verify an unmounted host sentinel remains inaccessible.
 Agents receive no canonical storage credentials, server source, server volumes, or Docker socket.
 Native worker and CLI cells do not establish hostile same-user containment.

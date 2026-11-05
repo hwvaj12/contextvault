@@ -18,6 +18,16 @@ async function fixture(callback) {
 const flags = ['--s3-provider','localstack','--require-all-hosts','--require-all-sdks'];
 const goodReport = () => ({success:true,numTotalTests:1,numPassedTests:1,numFailedTests:0,numPendingTests:0,numTodoTests:0,testResults:[{name:'/repo/tests/a.test.ts',status:'passed',assertionResults:[{fullName:'required cell',title:'required cell',status:'passed'}]}]});
 
+test('supports native Linux and macOS controllers with the required Node runtime', async () => {
+  const {validateController} = await api();
+  assert.equal(typeof validateController, 'function');
+  for (const platform of ['linux', 'darwin']) {
+    for (const node of ['22.12.0', '22.23.4', '24.0.0']) assert.doesNotThrow(() => validateController({platform,node}));
+    for (const node of ['20.20.0', '22.11.0']) assert.throws(() => validateController({platform,node}));
+  }
+  assert.throws(() => validateController({platform:'win32',node:'24.0.0'}));
+});
+
 test('requires an explicit complete release and rejects unknown, duplicate, missing, and conflicting options', async () => {
   const {parseReleaseOptions} = await api();
   assert.deepEqual(parseReleaseOptions(flags),{s3Provider:'localstack',allHosts:true,allSdks:true,realS3:false});

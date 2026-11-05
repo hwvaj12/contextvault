@@ -33,7 +33,7 @@ def installed():
         shutil.copy2(Path(__file__).with_name("consumer.py"), artifact / "consumer.py")
         shutil.copy2(ROOT / "tests/fixtures/workspaces/canonical.v1.json", artifact / "canonical.json")
         name = "cv-python-proof-" + uuid.uuid4().hex
-        run(["docker", "run", "--detach", "--name", name, "--mount", "type=bind,src={},dst=/proof,readonly".format(artifact), "python:3.8-slim", "sleep", "3600"])
+        run(["docker", "run", "--detach", "--name", name, "--add-host=host.docker.internal:host-gateway", "--mount", "type=bind,src={},dst=/proof,readonly".format(artifact), "python:3.8-slim", "sleep", "3600"])
         try:
             run(["docker", "exec", name, "sh", "-c", "python -m pip install --no-index --find-links=/proof/wheels contextvault && mkdir /consumer"])
             yield name
@@ -47,7 +47,7 @@ def workspace_server(backend, lease_ttl_ms):
         assert os.environ.get("CV_TEST_S3_PROVIDER") == "localstack", "Explicit selected LocalStack target is required; no backend fallback"
         for name in ("CV_TEST_S3_ENDPOINT", "CV_TEST_S3_BUCKET", "CV_TEST_S3_REGION", "CV_TEST_S3_PREFIX"):
             assert os.environ.get(name), "Missing " + name
-    node = os.environ.get("CV_TEST_SERVER_NODE", "/usr/local/bin/node")
+    node = os.environ.get("CV_TEST_SERVER_NODE", "node")
     process = subprocess.Popen([node, str(ROOT / "tests/helpers/workspace-server.mjs"), "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os.environ.copy())
     count = 0
 

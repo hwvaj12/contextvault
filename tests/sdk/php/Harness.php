@@ -10,7 +10,7 @@ final class PhpSdkHarness
     {
         if (self::$results !== null) return self::$results;
         if (self::$failure !== null) throw self::$failure;
-        $command = [getenv('CV_TEST_SERVER_NODE') ?: '/usr/local/bin/node', __DIR__ . '/installed.mjs'];
+        $command = [getenv('CV_TEST_SERVER_NODE') ?: 'node', __DIR__ . '/installed.mjs'];
         $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', 'php://stderr', 'w']], $pipes);
         if (!is_resource($process)) throw new RuntimeException('Could not start installed PHP acceptance');
         fclose($pipes[0]);

@@ -4,10 +4,10 @@ The release command checks the selected Git and LocalStack behavior through real
 It does not close the milestone by itself.
 CV-28 requires fresh review and independent reproduction.
 
-1. Select a dedicated macOS controller with Node.js 22.12 or later and Docker Desktop.
+1. Select Linux with a local Docker Engine, or macOS with Docker Desktop, and Node.js 22.12 or later.
 2. Install the controller dependencies described in [development](../DEVELOPMENT.md).
 3. Provide Python 3.9 or later, PHP with cURL and JSON, and Composer 2.
-4. Provide `/usr/local/bin/composer` for the existing installed PHP acceptance fixture.
+4. Select tool paths through `PATH` or the `CV_TEST_PYTHON_BINARY`, `CV_TEST_PHP_BINARY`, and `CV_TEST_COMPOSER_BINARY` variables.
 5. Select the documented nonproduction LocalStack target and unique test prefix.
 6. Run every required matrix cell.
 
@@ -97,24 +97,27 @@ The runner requires compatibility and recovery checks on both backends.
 
 The automatic CI workflow runs on GitHub-hosted Ubuntu for pushes and pull requests.
 It validates workflow semantics with pinned actionlint, builds the server and packages, and runs the default Git tests.
-The custom release-runner label is declared in `.github/actionlint.yaml`.
-This automatic gate does not run the full LocalStack and Docker Desktop release matrix.
+This automatic gate does not run the full LocalStack and Docker release matrix.
 
-The manual workflow uses a dedicated self-hosted runner labeled `macOS`, `ARM64`, and `contextvault-docker`.
-It accepts only the trusted default branch.
-It grants read-only repository access and disables persisted checkout credentials and global safe-directory changes.
-The pinned GitHub actions require a current runner supporting their Node24 action runtime.
-Actions Runner 2.329.0 or later covers the documented checkout runtime requirement.
-Controller Node remains independently selected through the runner's `PATH`.
+The manual **Workspace contract release** workflow uses GitHub-hosted `ubuntu-24.04`.
+It selects Node22.12 and checks Docker Engine, Python, PHP with cURL and JSON, and Composer before installation.
+Each run gets a disposable VM; no dedicated runner registration or macOS host is required.
+Run the workflow through GitHub Actions or the CLI:
 
+```sh
+gh workflow run workspace-contract.yml --ref main
+```
+
+The workflow grants read-only repository access and disables persisted checkout credentials and global safe-directory changes.
 The CI helper creates one labeled LocalStack container, network, disposable bucket, and unique test prefix.
-The workflow derives its state directory from runner environment variables in its first step and persists it through `GITHUB_ENV`.
-Cleanup verifies the ownership receipt and Docker labels before removing those resources.
-The helper exposes the verified container endpoint and dedicated network for the existing Node20 no-Git runtime gate.
-It does not restart Docker or inspect customer buckets.
-The workflow definition does not prove a hosted run occurred.
+The first step derives its private state directory from runner environment variables and persists it through `GITHUB_ENV`.
+Cleanup verifies the ownership receipt and Docker labels before removing those resources, including after failed gates.
+The helper exposes the verified container endpoint and dedicated network for the Node20 no-Git runtime gate.
+The workflow uploads only the sanitized release summary and never uses production AWS credentials.
 
-Existing controller fixtures use `host.docker.internal` and Docker Desktop port forwarding.
-See the official [Docker Desktop networking guidance](https://docs.docker.com/desktop/features/networking/networking-how-tos/).
-The matrix proves Linux clients and a Linux API through those boundaries.
-It does not certify a native Linux controller, Windows, physical remote hardware, or production AWS IAM.
+Installed SDK and MCP containers receive an explicit Docker host-gateway alias on Linux.
+The isolated host matrix uses direct API network aliases and obtains denial-probe addresses from the inspected owned network.
+Those agents retain isolated networks and cannot access the controller filesystem or canonical storage.
+Workers retain cooperative host-process separation.
+Container boundaries simulate separate machines; they do not establish physical remote hardware or production AWS IAM behavior.
+See [GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) and [Docker networking](https://docs.docker.com/engine/network/).

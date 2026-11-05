@@ -106,6 +106,7 @@ it('serves authoritative HTTP through a private Linux API and direct Docker rela
     expect(proof.sourceHash).toMatch(/^[a-f0-9]{64}$/);
     const api = JSON.parse((await run('docker', ['inspect', proof.containerName])).stdout)[0];
     const relay = JSON.parse((await run('docker', ['inspect', 'cv-host-relay-' + f.id])).stdout)[0];
+    if (process.platform === 'linux') expect(f.environment.CV_STORAGE_PROBE_HOST_IP).toBe(relay.NetworkSettings.Networks[proof.network].Gateway);
     expect(api.Id).toBe(proof.containerId); expect(api.Mounts).toEqual([]);
     expect(Object.keys(api.NetworkSettings.Networks)).toContain(proof.network);
     expect(Object.keys(api.NetworkSettings.Networks)).not.toContain(f.network);

@@ -39,7 +39,7 @@ try {
     config: { platform: { php: '8.0.30' } },
     repositories: [{ type: 'package', package: { ...metadata, version: '1.0.0', dist: { type: 'tar', url: `file://${directory}/package.tar.gz` } } }],
   }));
-  await run('php', ['-d', 'error_reporting=8191', '/usr/local/bin/composer', 'install', '--no-dev', '--no-plugins', '--no-scripts', '--no-interaction', '--no-progress'], { cwd: artifact });
+  await run(process.env.CV_TEST_COMPOSER_BINARY ?? 'composer', ['install', '--no-dev', '--no-plugins', '--no-scripts', '--no-interaction', '--no-progress'], { cwd: artifact });
   await cp(path.join(root, 'tests/fixtures/workspaces/canonical.v1.json'), path.join(artifact, 'canonical.v1.json'));
   const results = {};
   for (const backend of ['git', 's3']) {
@@ -97,7 +97,7 @@ try {
       '-e', 'CV_PHP_AUTOLOAD=/artifact/vendor/autoload.php'];
     const checkTransport = () => transportChecks({ fixture, docker: true, runPhp: variables => {
       container = `cv-php-transport-${fixture.id}`;
-      return run('docker', ['run', '--rm', '--name', container, ...correctionArgs,
+      return run('docker', ['run', '--rm', '--name', container, '--add-host=host.docker.internal:host-gateway', ...correctionArgs,
         ...Object.entries(variables).flatMap(([name, value]) => ['-e', `${name}=${value}`]), 'php:8.0-cli', 'php', '/tests/transport.php']);
     } });
     const reopenArgs = [...correctionArgs, '-e', `CV_TIMEOUT_URL=${deadlineOrigin}`, '-e', `CV_KEY_A=${keyA}`, '-e', `CV_CUSTOMER_A=${customerA}`];
@@ -108,14 +108,14 @@ try {
     }
     if (focusedReopen) {
       container = `cv-php-reopen-focus-${fixture.id}`;
-      const focused = await run('docker', ['run', '--rm', '--name', container, ...reopenArgs, 'php:8.0-cli', 'php', '-d', 'memory_limit=512M', '/tests/corrections.php', 'reopen-policy']);
+      const focused = await run('docker', ['run', '--rm', '--name', container, '--add-host=host.docker.internal:host-gateway', ...reopenArgs, 'php:8.0-cli', 'php', '-d', 'memory_limit=512M', '/tests/corrections.php', 'reopen-policy']);
       results[backend] = JSON.parse(focused.stdout);
       if (Object.keys(results[backend].reopenPolicy ?? {}).length !== 4 || !Object.values(results[backend].reopenPolicy).every(value => value === true)) throw new Error('Installed reopen policy checks failed');
       deadlineProxy.closeAllConnections(); await new Promise(resolve => deadlineProxy.close(resolve)); deadlineProxy = undefined;
       await fixture.dispose(); fixture = undefined; await run('docker', ['rm', '-f', container]).catch(() => {}); container = undefined;
       continue;
     }
-    const { stdout } = await run('docker', ['run', '--rm', '--name', container,
+    const { stdout } = await run('docker', ['run', '--rm', '--name', container, '--add-host=host.docker.internal:host-gateway',
       '--mount', `type=bind,source=${artifact},target=/artifact,readonly`,
       '--mount', `type=bind,source=${path.join(root, 'tests/sdk/php')},target=/tests,readonly`,
       '--tmpfs', '/scratch:rw,mode=0700', '-e', `CV_URL=${origin}`, '-e', `CV_KEY_A=${keyA}`,
@@ -130,18 +130,18 @@ try {
       await fixture.dispose(); fixture = undefined; await run('docker', ['rm', '-f', container]).catch(() => {}); container = undefined; continue;
     }
     container = `cv-php-reopen-${fixture.id}`;
-    const reopenChecks = JSON.parse((await run('docker', ['run', '--rm', '--name', container, ...reopenArgs, 'php:8.0-cli', 'php', '-d', 'memory_limit=512M', '/tests/corrections.php', 'reopen-policy'])).stdout);
+    const reopenChecks = JSON.parse((await run('docker', ['run', '--rm', '--name', container, '--add-host=host.docker.internal:host-gateway', ...reopenArgs, 'php:8.0-cli', 'php', '-d', 'memory_limit=512M', '/tests/corrections.php', 'reopen-policy'])).stdout);
     if (Object.keys(reopenChecks.reopenPolicy ?? {}).length !== 4 || !Object.values(reopenChecks.reopenPolicy).every(value => value === true)) throw new Error('Installed reopen policy checks failed');
     results[backend].reopenPolicy = reopenChecks.reopenPolicy;
     results[backend].transport = await checkTransport();
     container = `cv-php-corrections-${fixture.id}`;
-    const focused = await run('docker', ['run', '--rm', '--name', container, ...correctionArgs, 'php:8.0-cli', 'php', '-d', 'memory_limit=512M', '/tests/corrections.php']);
+    const focused = await run('docker', ['run', '--rm', '--name', container, '--add-host=host.docker.internal:host-gateway', ...correctionArgs, 'php:8.0-cli', 'php', '-d', 'memory_limit=512M', '/tests/corrections.php']);
     const focusedResults = JSON.parse(focused.stdout);
     if (!Object.values(focusedResults).every(value => value.passed === true)) throw new Error('Installed correction checks failed');
     const clientDirectory = path.join(directory, `capture-client-${backend}`); await mkdir(clientDirectory); await chmod(clientDirectory, 0o777);
-    const captureArgs = [...correctionArgs, '--user', '501:20', '--mount', `type=bind,source=${clientDirectory},target=/client`, '-e', `CV_URL=${origin}`, '-e', `CV_KEY_A=${keyA}`, '-e', 'CV_CORRECTION_REAL_HTTP=1'];
+    const captureArgs = [...correctionArgs, '--user', `${process.getuid()}:${process.getgid()}`, '--mount', `type=bind,source=${clientDirectory},target=/client`, '-e', `CV_URL=${origin}`, '-e', `CV_KEY_A=${keyA}`, '-e', 'CV_CORRECTION_REAL_HTTP=1'];
     container = `cv-php-capture-${fixture.id}`;
-    const captureExecution = run('docker', ['run', '--rm', '--name', container, ...captureArgs, 'php:8.0-cli', 'php', '/tests/corrections.php', 'capture-worker', results[backend].correctionWorkspaceId, '/client']).then(result => ({ result }), error => ({ error }));
+    const captureExecution = run('docker', ['run', '--rm', '--name', container, '--add-host=host.docker.internal:host-gateway', ...captureArgs, 'php:8.0-cli', 'php', '/tests/corrections.php', 'capture-worker', results[backend].correctionWorkspaceId, '/client']).then(result => ({ result }), error => ({ error }));
     const captureDeadline = Date.now() + 15_000; let captureReady = false;
     while (Date.now() < captureDeadline) {
       try { await access(path.join(clientDirectory, 'capture-ready')); captureReady = true; break; } catch { await new Promise(resolve => setTimeout(resolve, 10)); }
@@ -154,7 +154,7 @@ try {
     await run('docker', ['rm', '-f', container]).catch(() => {});
     if (capturedJournal.workflow.capture !== null || capturedJournal.workflow.captures.length !== 1) throw new Error('Capture ownership was not durable before actual Docker KILL');
     container = `cv-php-capture-resume-${fixture.id}`;
-    const recoveredCapture = await run('docker', ['run', '--rm', '--name', container, ...captureArgs, 'php:8.0-cli', 'php', '/tests/corrections.php', 'capture-resume', `/client/${privateName}/session.json`]);
+    const recoveredCapture = await run('docker', ['run', '--rm', '--name', container, '--add-host=host.docker.internal:host-gateway', ...captureArgs, 'php:8.0-cli', 'php', '/tests/corrections.php', 'capture-resume', `/client/${privateName}/session.json`]);
     if (JSON.parse(recoveredCapture.stdout).captureCrashRecovered !== true) throw new Error('Interrupted installed capture cleanup did not complete');
     results[backend].corrections = true; results[backend].correctionChecks = focusedResults; results[backend].actualDockerCaptureKill = true;
     deadlineProxy.closeAllConnections(); await new Promise(resolve => deadlineProxy.close(resolve)); deadlineProxy = undefined;

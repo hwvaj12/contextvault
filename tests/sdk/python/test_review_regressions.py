@@ -47,7 +47,7 @@ def limited_rejection_server(request):
         assert os.environ.get("CV_TEST_S3_PROVIDER") == "localstack"
         for name in ("CV_TEST_S3_ENDPOINT", "CV_TEST_S3_BUCKET", "CV_TEST_S3_REGION", "CV_TEST_S3_PREFIX"):
             assert os.environ.get(name), "Missing explicit LocalStack target: " + name
-    node = os.environ.get("CV_TEST_SERVER_NODE", "/usr/local/bin/node")
+    node = os.environ.get("CV_TEST_SERVER_NODE", "node")
     process = subprocess.Popen([node, str(root / "tests/helpers/workspace-server.mjs"), "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os.environ.copy())
     counter = 0
     def command(name, **options):

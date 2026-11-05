@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { access, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
+import { isIP } from 'node:net';
 import { basename, dirname, join, resolve } from 'node:path';
 import { startContainerWorkspaceServer } from './server';
 
@@ -141,7 +142,10 @@ export async function fixture() {
       await writeFile(join(root, 'tests/hosts/server/relay-startup-' + id + '.log'), JSON.stringify({ recordedAt: new Date().toISOString(), error: (error as Error).message }) + '\n', { mode: 0o600 });
       throw error;
     });
-    const hostAddress = (await run('docker', ['exec', relay, 'node', '-e', 'require("node:dns").lookup("host.docker.internal",(e,a)=>{if(e)throw e;console.log(a)})'])).stdout.trim();
+    const relayInspection = JSON.parse((await run('docker', ['inspect', relay])).stdout)[0];
+    const hostAddress = process.platform === 'linux'
+      ? relayInspection.NetworkSettings.Networks[api.proof.network]?.Gateway
+      : (await run('docker', ['exec', relay, 'node', '-e', 'require("node:dns").lookup("host.docker.internal",(e,a)=>{if(e)throw e;console.log(a)})'])).stdout.trim();
     let storageIp = '127.0.0.1'; let storagePort = '0';
     if (backend === 's3') {
       if (process.env.CV_TEST_S3_PROVIDER !== 'localstack') throw new Error('Host isolation gate requires the explicitly selected LocalStack service');
@@ -153,9 +157,8 @@ export async function fixture() {
       if (!published.some((port: any) => port.HostPort === endpoint.port) || !addresses.length) throw new Error('Configured endpoint does not identify the inspected canonical storage service');
       storageIp = addresses[0] as string; storagePort = endpoint.port;
     }
-    if (!hostAddress) throw new Error('An actual host gateway address is required');
+    if (typeof hostAddress !== 'string' || isIP(hostAddress) !== 4) throw new Error('An actual IPv4 host gateway address is required');
     const environment = { CV_API_URL: origin, CV_API_KEY: api.client.keyA, CV_CUSTOMER_ID: api.client.customerA, CV_HOST_ONLY_FILE: hostOnlyFile, CV_STORAGE_PROBE_IP: storageIp, CV_STORAGE_PROBE_HOST_IP: hostAddress, CV_STORAGE_PROBE_HOST_PORT: storagePort, CV_STORAGE_PROBE_REQUIRED: backend === 's3' ? '1' : '0' };
-    const relayInspection = JSON.parse((await run('docker', ['inspect', relay])).stdout)[0];
     const serverProof = { ...api.proof, relayContainerName: relay, relayNetworks: Object.keys(relayInspection.NetworkSettings.Networks).sort(), clientNetwork: network };
     await recordEvidence('server-' + id, serverProof);
     return {
