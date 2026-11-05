@@ -24,7 +24,7 @@ The current installed SDK and host fixtures require LocalStack, so this full run
 
 | Gates | Required observations |
 |---|---|
-| Server, TypeScript SDK, MCP builds | Current source compiles before package installation |
+| Server, TypeScript SDK, MCP, both browser builds | Current source compiles before package installation |
 | Release and documentation self-tests | Failures, empty reports, skipped assertions, missing coverage, and deadlines remain failures |
 | Core and contracts | Application, control, HTTP, revisions, security, submissions, legacy unit and integration checks |
 | Git and S3 adapters | Actual immutable revisions and sealed upload behavior |
@@ -40,7 +40,7 @@ The current installed SDK and host fixtures require LocalStack, so this full run
 | Executable documentation, both backends | Three installed examples and actual Postman assertions, scripts, and failure probes |
 | Migration | Explicit Git-to-S3-to-Git history transfer, aliases, interruption, and cutover |
 
-The complete matrix contains 29 sequential gates.
+The complete matrix contains 31 sequential gates.
 Vitest reports must cover every discovered required test file and every named matrix cell.
 The runner also checks emitted host, MCP, documentation, and physical fault receipts.
 Python and PHP gates produce JUnit reports, which the Python standard library parses.

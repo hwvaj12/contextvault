@@ -135,7 +135,8 @@ test('plans every backend gate and each internally dual-backend SDK gate exactly
     for(const file of paths){await mkdir(path.dirname(path.join(directory,file)),{recursive:true});await writeFile(path.join(directory,file),'');}
     const env={PATH:process.env.PATH,CV_TEST_S3_PROVIDER:'localstack',CV_TEST_S3_ENDPOINT:'http://127.0.0.1:4566',CV_TEST_S3_BUCKET:'test-only',CV_TEST_S3_REGION:'us-east-1',CV_TEST_S3_PREFIX:'contextvault-tests/selected/',AWS_PROFILE:'foreign',AWS_SESSION_TOKEN:'foreign-token',CV_DATA_DIR:'/foreign',CV_STORAGE_BACKEND:'s3'};
     const gates=await createReleasePlan({root:directory,directory,options:{s3Provider:'localstack',allHosts:true,allSdks:true,realS3:false},env});
-    assert.equal(gates.length,29);assert.equal(new Set(gates.map(g=>g.id)).size,29);
+    assert.equal(gates.length,31);assert.equal(new Set(gates.map(g=>g.id)).size,31);
+    for(const id of ['vault-browser-build','secondary-ui-build'])assert.equal(gates.filter(g=>g.id===id).length,1);
     assert.equal(gates.filter(g=>g.id==='revisions-s3').length,1);assert.equal(gates.filter(g=>g.id==='no-git-s3').length,1);
     for(const backend of ['git','s3'])for(const name of ['adapters','acceptance','recovery','legacy','mcp','faults','hosts','docs'])assert.equal(gates.filter(g=>g.id===name+'-'+backend).length,1);
     for(const language of ['typescript','python','php'])assert.equal(gates.filter(g=>g.language===language).length,1);

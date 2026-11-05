@@ -14,15 +14,20 @@ it('rejects canonical Git writes and scopes advertisements to catalog authority'
   } finally { await server.dispose(); }
 });
 
-it.skipIf(backend !== 'git')('serves an advertised accepted head after another authorized publication advances main', async () => {
+it('serves an advertised accepted Git head after publication or rejects unsupported S3 wire reads', async () => {
   const server = await fixture();
   try {
     const c = server.client; const w = await workspace(c);
-    const advertisement = await fetch(`${c.baseUrl}/repos/${w.id}/info/refs?service=git-upload-pack`, { headers: { 'X-API-Key': c.keyA } }); const text = await advertisement.text(); const head = text.match(/([a-f0-9]{40}) HEAD\0/)![1];
+    const advertisement = await fetch(`${c.baseUrl}/repos/${w.id}/info/refs?service=git-upload-pack`, { headers: { 'X-API-Key': c.keyA } });
+    expect(advertisement.status).toBe(backend === 'git' ? 200 : 409);
+    const text = await advertisement.text(); const head = backend === 'git' ? text.match(/([a-f0-9]{40}) HEAD\0/)![1] : w.latestCommitId;
+    if (backend === 's3') expect(JSON.parse(text).error.code).toBe('UNSUPPORTED_CAPABILITY');
     const { push } = await import('./helpers'); expect((await push(c, w.id, [{ path: 'new.txt', content: 'new accepted head' }])).status).toBe(201);
     const packet = (text: string) => (Buffer.byteLength(text) + 4).toString(16).padStart(4, '0') + text;
     const response = await fetch(`${c.baseUrl}/repos/${w.id}/git-upload-pack`, { method: 'POST', headers: { 'X-API-Key': c.keyA, 'Content-Type': 'application/x-git-upload-pack-request' }, body: packet(`want ${head} no-progress\n`) + '0000' + packet('done\n') });
-    expect(response.status).toBe(200); await response.body?.cancel();
+    expect(response.status).toBe(backend === 'git' ? 200 : 409);
+    if (backend === 's3') expect((await response.json()).error.code).toBe('UNSUPPORTED_CAPABILITY');
+    else await response.body?.cancel();
   } finally { await server.dispose(); }
 });
 

@@ -196,6 +196,8 @@ export async function createReleasePlan({root=rootDirectory,directory,options,en
   addCommand('server-build','npm',['run','build']);
   addCommand('typescript-build','npm',['--prefix','sdk/typescript','run','build']);
   addCommand('mcp-build','npm',['--prefix','mcp','run','build']);
+  addCommand('vault-browser-build','npm',['--prefix','src/vault-browser','run','build']);
+  addCommand('secondary-ui-build','npm',['--prefix','ui','run','build']);
   const noGitScript=path.join(root,'tests/http/no-git-server.mjs');
   try{if(!(await lstat(noGitScript)).isFile())throw Error();}catch{throw Error('Required Node20 no-Git runtime gate is missing: tests/http/no-git-server.mjs');}
   addCommand('no-git-s3',process.execPath,[noGitScript],{backend:'s3',format:'no-git'});

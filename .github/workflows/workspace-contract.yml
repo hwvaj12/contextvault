@@ -40,6 +40,8 @@ jobs:
           npm ci --no-audit --no-fund
           npm --prefix sdk/typescript ci --ignore-scripts --no-audit --no-fund
           npm --prefix mcp ci --ignore-scripts --no-audit --no-fund
+          npm --prefix src/vault-browser ci --ignore-scripts --no-audit --no-fund
+          npm --prefix ui ci --ignore-scripts --no-audit --no-fund
           php /usr/local/bin/composer --working-dir=sdk/php install --no-interaction --no-scripts --no-plugins
           python3 -m venv "$RUNNER_TEMP/contextvault-python-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           verification_python="$RUNNER_TEMP/contextvault-python-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/bin/python3"

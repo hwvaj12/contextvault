@@ -28,7 +28,7 @@ it('requires current scoped read grants for run listing and rejects revoked HTTP
   } finally { await server.dispose(); }
 });
 
-it.skipIf(backend !== 'git')('never serves candidate refs or private object IDs through Git, including direct object wants', async () => {
+it('never serves private candidates through Git, including object wants against unsupported S3 storage', async () => {
   let reached!: () => void; let release!: () => void; const ready = new Promise<void>(resolve => { reached = resolve; }); const held = new Promise<void>(resolve => { release = resolve; }); let privateOid = '';
   const server = await faultFixture({ lifecycle: { hook: async (stage, operation) => { if (stage === 'after-record-prepared' && operation.kind === 'finalize' && operation.intent.mode === 'read-write') { privateOid = operation.candidate!.privateReference.opaqueKey.split('/').at(-1)!; reached(); await held; } } } });
   try {
@@ -39,12 +39,16 @@ it.skipIf(backend !== 'git')('never serves candidate refs or private object IDs 
     const upload = await fetch(`${c.baseUrl}/v1/runs/${run.body.id}/submissions/${submission.body.id}/files?path=private.txt`, { method: 'PUT', headers: { 'X-API-Key': c.keyA, 'Content-Type': 'application/octet-stream', 'Idempotency-Key': 'upload', 'X-Content-SHA256': sha256 }, body: bytes }); expect(upload.status).toBe(201); const receipt: any = await upload.json();
     expect((await call(c, `/v1/runs/${run.body.id}/submissions/${submission.body.id}/seal`, 'POST', { manifest: { schemaVersion: 1, entries: [{ path: 'private.txt', kind: 'file', byteLength: bytes.length, sha256 }] }, receipts: [{ path: 'private.txt', receiptId: receipt.id }] }, c.keyA, 'seal')).status).toBe(200);
     expect((await call(c, `/v1/runs/${run.body.id}/finalize`, 'POST', { expectedRunVersion: run.body.version, submissionId: submission.body.id }, c.keyA, 'finalize')).status).toBe(202); await ready;
-    const advertisement = await fetch(`${c.baseUrl}/repos/${w.id}/info/refs?service=git-upload-pack`, { headers: { 'X-API-Key': c.keyA } }); expect(advertisement.status).toBe(200); const advertised = await advertisement.text(); expect(advertised).not.toContain(privateOid); expect(advertised).not.toContain('contextvault/');
+    const advertisement = await fetch(`${c.baseUrl}/repos/${w.id}/info/refs?service=git-upload-pack`, { headers: { 'X-API-Key': c.keyA } }); expect(advertisement.status).toBe(backend === 'git' ? 200 : 409); const advertised = await advertisement.text(); expect(advertised).not.toContain(privateOid); expect(advertised).not.toContain('contextvault/');
+    if (backend === 's3') expect(JSON.parse(advertised).error.code).toBe('UNSUPPORTED_CAPABILITY');
     const packet = (text: string) => (Buffer.byteLength(text) + 4).toString(16).padStart(4, '0') + text;
-    const want = await fetch(`${c.baseUrl}/repos/${w.id}/git-upload-pack`, { method: 'POST', headers: { 'X-API-Key': c.keyA, 'Content-Type': 'application/x-git-upload-pack-request' }, body: packet(`want ${privateOid} no-progress\n`) + '0000' + packet('done\n') }); expect(want.status).toBe(400); expect(await want.text()).not.toContain('never-published-secret');
-    const checkout = await mkdtemp(join(server.directory, 'clone-'));
-    try { await execute('git', ['-c', `http.extraHeader=X-API-Key: ${c.keyA}`, 'clone', `${c.baseUrl}/repos/${w.id}`, checkout], { timeout: 10_000, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' } }); await expect(readFile(join(checkout, 'private.txt'))).rejects.toMatchObject({ code: 'ENOENT' }); }
-    finally { await rm(checkout, { recursive: true, force: true }); }
+    const want = await fetch(`${c.baseUrl}/repos/${w.id}/git-upload-pack`, { method: 'POST', headers: { 'X-API-Key': c.keyA, 'Content-Type': 'application/x-git-upload-pack-request' }, body: packet(`want ${privateOid} no-progress\n`) + '0000' + packet('done\n') }); expect(want.status).toBe(backend === 'git' ? 400 : 409); const wanted = await want.text(); expect(wanted).not.toContain('never-published-secret');
+    if (backend === 's3') expect(JSON.parse(wanted).error.code).toBe('UNSUPPORTED_CAPABILITY');
+    else {
+      const checkout = await mkdtemp(join(server.directory, 'clone-'));
+      try { await execute('git', ['-c', `http.extraHeader=X-API-Key: ${c.keyA}`, 'clone', `${c.baseUrl}/repos/${w.id}`, checkout], { timeout: 10_000, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' } }); await expect(readFile(join(checkout, 'private.txt'))).rejects.toMatchObject({ code: 'ENOENT' }); }
+      finally { await rm(checkout, { recursive: true, force: true }); }
+    }
     // Revoke before releasing: the prepared private object must never become accepted.
     expect((await fetch(`${c.baseUrl}/api-keys/${server.keys[0].id}`, { method: 'DELETE', headers: { 'X-API-Key': server.master } })).status).toBe(204);
     release();
