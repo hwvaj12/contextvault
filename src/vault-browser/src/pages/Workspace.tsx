@@ -233,7 +233,7 @@ export default function Workspace({ workspaceId, onBack, onDiff }: WorkspaceProp
         <div className="flex-1 flex flex-col min-w-0">
           <div className="flex-1 min-h-0 overflow-auto">
             {selectedFile ? (
-              <FileViewer path={selectedFile.path} content={selectedFile.content} />
+              <FileViewer path={selectedFile.path} content={selectedFile.content} encoding={selectedFile.encoding} />
             ) : (
               <div className="flex items-center justify-center h-full text-gray-500 text-sm">
                 Select a file to view

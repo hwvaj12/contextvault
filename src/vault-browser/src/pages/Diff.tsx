@@ -160,10 +160,12 @@ export default function Diff({ workspaceId, onBack }: DiffProps) {
                     </span>
                     <span className="text-sm text-white font-mono">{file.path}</span>
                     <div className="flex-1" />
-                    <span className="text-xs text-green-400">+{file.additions}</span>
-                    <span className="text-xs text-red-400">-{file.deletions}</span>
+                    {file.binary ? <span className="text-xs text-gray-400">Binary file changed</span> : <>
+                      <span className="text-xs text-green-400">+{file.additions}</span>
+                      <span className="text-xs text-red-400">-{file.deletions}</span>
+                    </>}
                   </div>
-                  {file.hunks && file.hunks.length > 0 && (
+                  {!file.binary && file.hunks && file.hunks.length > 0 && (
                     <div className="font-mono text-xs overflow-x-auto">
                       {viewMode === "unified" ? (
                         <UnifiedDiff hunks={file.hunks} />

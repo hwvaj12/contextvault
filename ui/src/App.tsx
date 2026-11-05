@@ -386,6 +386,7 @@ function App() {
                 {pullResult.files?.map((f, i) => (
                   <div key={i} className="file-display">
                     <div className="file-path">{f.path}</div>
+                    {f.encoding === 'base64' && <p className="subtitle">Binary file (base64)</p>}
                     <pre>{f.content}</pre>
                   </div>
                 ))}

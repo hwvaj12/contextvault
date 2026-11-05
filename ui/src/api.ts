@@ -23,6 +23,7 @@ export interface Workspace {
 export interface FileEntry {
   path: string;
   content: string;
+  encoding?: 'utf8' | 'base64';
 }
 
 export interface Commit {

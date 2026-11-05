@@ -31,6 +31,7 @@ export interface DiffFile {
   status: "added" | "modified" | "deleted";
   additions: number;
   deletions: number;
+  binary?: boolean;
   hunks?: DiffHunk[];
 }
 

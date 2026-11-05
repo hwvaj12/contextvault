@@ -32,6 +32,7 @@ hljs.registerLanguage("arduino", arduino);
 interface FileViewerProps {
   path: string;
   content: string;
+  encoding?: "utf8" | "base64";
 }
 
 function detectLanguage(path: string): string {
@@ -71,13 +72,14 @@ function detectLanguage(path: string): string {
   return map[ext] || "plaintext";
 }
 
-export default function FileViewer({ path, content }: FileViewerProps) {
+export default function FileViewer({ path, content, encoding }: FileViewerProps) {
   const codeRef = useRef<HTMLElement>(null);
+  const binary = encoding === "base64";
   const lang = detectLanguage(path);
   const lines = content.split("\n");
 
   useEffect(() => {
-    if (codeRef.current) {
+    if (!binary && codeRef.current) {
       codeRef.current.removeAttribute("data-highlighted");
       codeRef.current.className = `hljs language-${lang}`;
       try {
@@ -86,7 +88,7 @@ export default function FileViewer({ path, content }: FileViewerProps) {
         // fallback to plain text if highlighting fails
       }
     }
-  }, [content, lang]);
+  }, [content, lang, binary]);
 
   const supportedLang = lang !== "plaintext";
 
@@ -95,12 +97,14 @@ export default function FileViewer({ path, content }: FileViewerProps) {
       <div className="flex items-center gap-2 px-4 py-2 bg-gray-900 border-b border-gray-800 text-sm">
         <span className="text-gray-400">{path}</span>
         <span className="text-gray-600">|</span>
-        <span className="text-gray-500">{lang}</span>
-        <span className="text-gray-600">|</span>
-        <span className="text-gray-500">{lines.length} lines</span>
+        <span className="text-gray-500">{binary ? "Binary file (base64)" : lang}</span>
+        {!binary && <><span className="text-gray-600">|</span>
+          <span className="text-gray-500">{lines.length} lines</span></>}
       </div>
       <div className="flex-1 overflow-auto">
-        {supportedLang ? (
+        {binary ? (
+          <pre className="m-0 px-4 py-2 whitespace-pre-wrap break-all">{content}</pre>
+        ) : supportedLang ? (
           <pre className="h-full m-0">
             <code ref={codeRef} className={`hljs language-${lang}`}>
               {content}
