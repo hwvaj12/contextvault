@@ -118,3 +118,11 @@ Independent probes found MCP controller interruptions before complete markers or
 CV-35 fixes explicit stopped-controller recovery and preserves authorization and uncertain journals.
 These bounded product repairs are prerequisites for CV-27.
 Other CV-27 writers keep their existing nonoverlapping scopes and recorded bases.
+
+## Final local verification
+
+The independent release at b38c512 passed all 31 required gates with zero skipped tests.
+The lead verified the same maintained-source identity in the integration checkout.
+Source review, security review, and simplification review found no unresolved confirmed defect.
+Use docs/status.md and docs/verification/workspace-release.md for current closure and explicit runtime limits.
+The original checkout and user changes remain preserved.
