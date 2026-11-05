@@ -95,6 +95,11 @@ The runner requires compatibility and recovery checks on both backends.
 
 ## CI controller boundary
 
+The automatic CI workflow runs on GitHub-hosted Ubuntu for pushes and pull requests.
+It validates workflow semantics with pinned actionlint, builds the server and packages, and runs the default Git tests.
+The custom release-runner label is declared in `.github/actionlint.yaml`.
+This automatic gate does not run the full LocalStack and Docker Desktop release matrix.
+
 The manual workflow uses a dedicated self-hosted runner labeled `macOS`, `ARM64`, and `contextvault-docker`.
 It accepts only the trusted default branch.
 It grants read-only repository access and disables persisted checkout credentials and global safe-directory changes.
@@ -103,6 +108,7 @@ Actions Runner 2.329.0 or later covers the documented checkout runtime requireme
 Controller Node remains independently selected through the runner's `PATH`.
 
 The CI helper creates one labeled LocalStack container, network, disposable bucket, and unique test prefix.
+The workflow derives its state directory from runner environment variables in its first step and persists it through `GITHUB_ENV`.
 Cleanup verifies the ownership receipt and Docker labels before removing those resources.
 The helper exposes the verified container endpoint and dedicated network for the existing Node20 no-Git runtime gate.
 It does not restart Docker or inspect customer buckets.

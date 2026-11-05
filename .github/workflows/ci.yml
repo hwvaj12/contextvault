@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.3'
+          cache: false
+      - name: Validate GitHub workflow semantics
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint" -color
+
+  build-and-test:
+    needs: workflow-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22.12.0'
+          cache: npm
+      - name: Install locked dependencies
+        run: |
+          npm ci --no-audit --no-fund
+          npm --prefix sdk/typescript ci --ignore-scripts --no-audit --no-fund
+          npm --prefix mcp ci --ignore-scripts --no-audit --no-fund
+          npm --prefix src/vault-browser ci --ignore-scripts --no-audit --no-fund
+          npm --prefix ui ci --ignore-scripts --no-audit --no-fund
+      - name: Build server and packages
+        run: |
+          npm run build
+          npm --prefix sdk/typescript run build
+          npm --prefix mcp run build
+          npm --prefix src/vault-browser run build
+          npm --prefix ui run build
+      - name: Run default Git tests
+        run: npm test -- --maxWorkers=2
