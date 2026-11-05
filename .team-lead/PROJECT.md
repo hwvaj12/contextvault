@@ -97,3 +97,15 @@ Use the pinned official Postman CLI locally with installation scripts disabled.
 Run collections without accounts, host profiles, cloud reporting, or external network access.
 Keep runtime tooling outside production dependencies.
 The full release matrix, security review, and final milestone outcomes remain open under CV-27 and CV-28.
+
+## Release verification wave
+
+CV-26 closed after fresh independent Git and LocalStack documentation checks at f2f3376.
+Both gates passed two required tests, 89 links, three installed examples, and 22 requests with 45 assertions.
+The checker also verified eight real Postman runtime outcomes and preserved all tracked source.
+CV-27 owns strict matrix orchestration, permanent full MCP schemas, CI definition, and physical server-kill tests.
+Use separate nonoverlapping writers for orchestration and physical fault fixtures.
+Existing language SDK gates internally test both backends; run each language once.
+CI must state its actual controller requirements and cannot claim an unperformed hosted run.
+CV-28 retains final security, simplification, fresh whole-changeset review, and independent release closure.
+The business discussion identifies open-source infrastructure as a recommendation, rather than an approved licensing or publication change.
