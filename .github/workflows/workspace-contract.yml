@@ -1,0 +1,74 @@
+name: Workspace contract release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workspace-contract-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # A dedicated trusted runner provides Docker Desktop and the documented controller tools.
+    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, macOS, ARM64, contextvault-docker]
+    timeout-minutes: 90
+    env:
+      CV_CI_STATE_DIR: ${{ runner.temp }}/contextvault-release-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out the trusted default branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          set-safe-directory: false
+      - name: Verify controller prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e 'const [a,b]=process.versions.node.split(".").map(Number);if(process.platform!=="darwin"||a<22||(a===22&&b<12))process.exit(1)'
+          docker version
+          python3 --version
+          php -r 'if(!extension_loaded("curl")||!extension_loaded("json"))exit(1);echo PHP_VERSION,PHP_EOL;'
+          php /usr/local/bin/composer --version
+      - name: Install locked controller dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm --prefix sdk/typescript ci --ignore-scripts --no-audit --no-fund
+          npm --prefix mcp ci --ignore-scripts --no-audit --no-fund
+          php /usr/local/bin/composer --working-dir=sdk/php install --no-interaction --no-scripts --no-plugins
+          python3 -m venv "$RUNNER_TEMP/contextvault-python-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          verification_python="$RUNNER_TEMP/contextvault-python-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/bin/python3"
+          "$verification_python" -m pip install -r tests/sdk/python/requirements.txt
+          printf '%s\n' "$(dirname "$verification_python")" >> "$GITHUB_PATH"
+          printf '%s\n' "CV_TEST_PYTHON_BINARY=$verification_python" >> "$GITHUB_ENV"
+      - name: Pull explicit fixture images
+        shell: bash
+        run: |
+          set -euo pipefail
+          for image in node:18-bookworm-slim node:20-bookworm-slim node:22-bookworm-slim node:24-bookworm-slim python:3.8-slim php:8.0-cli alpine:3.20 localstack/localstack:4.14.0; do
+            docker pull "$image"
+          done
+      - name: Create an owned LocalStack target
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/acceptance/release-ci.mjs setup "$CV_CI_STATE_DIR"
+          cat "$CV_CI_STATE_DIR/environment" >> "$GITHUB_ENV"
+      - name: Verify every required release cell
+        run: npm run verify:workspace-release -- --s3-provider localstack --require-all-hosts --require-all-sdks
+      - name: Retain the sanitized release summary
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: workspace-contract-${{ github.run_id }}-${{ github.run_attempt }}
+          path: tests/acceptance/release-evidence.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Remove only this workflow's LocalStack resources
+        if: always()
+        run: node tests/acceptance/release-ci.mjs teardown "$CV_CI_STATE_DIR"

@@ -5,6 +5,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Protocol, canonicalWorkspace, fixture, root } from './protocol';
+// @ts-ignore The release validator is shared test tooling, outside the published package.
+import { validateMcpSchemas } from '../../scripts/verify-workspace-release.mjs';
 const execute = promisify(execFile);
 const image = 'node:20-bookworm-slim';
 const label = 'io.contextvault.mcp-test.owner';
@@ -39,6 +41,9 @@ it('standalone MCP-only artifact installs on Node20 and shares authenticated too
     const production = await new Protocol(join(consumer, 'node_modules/.bin/contextvault-mcp'), [], { cwd: f.directory, env: { ...env, CV_MCP_STATE_DIR: join(f.directory, 'production-state') } }).initialize(); peers.push(production);
     const minimum = await new Protocol('docker', ['run', '--rm', '-i', '--pull=never', '--name', runtime, '--label', label + '=' + id, '--user', uid + ':' + gid, '--mount', `type=bind,src=${consumer}/node_modules,dst=/installed/node_modules,readonly`, '--mount', `type=bind,src=${state},dst=/state`, '--workdir', '/tmp', '-e', 'CV_API_URL=' + f.server.client.baseUrl.replace('127.0.0.1', 'host.docker.internal'), '-e', 'CV_API_KEY=' + f.server.client.keyA, '-e', 'CV_MCP_STATE_DIR=/state', image, 'node', '/installed/node_modules/contextvault-mcp/bin/contextvault-mcp.mjs'], { cwd: f.directory, env: {} }).initialize(); peers.push(minimum);
     const toolSets = await Promise.all(peers.map(peer => peer.call('tools/list'))); const namesAt = (index: number) => toolSets[index].tools.map((tool: any) => tool.name).sort(); expect(namesAt(1)).toEqual(namesAt(0)); expect(namesAt(2)).toEqual(namesAt(0));
+    const schema = validateMcpSchemas(toolSets);
+    const completeAt = (index: number) => [...toolSets[index].tools].sort((left: any, right: any) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    expect(completeAt(1)).toEqual(completeAt(0)); expect(completeAt(2)).toEqual(completeAt(0));
     await expect(lstat(join(f.directory, 'data'))).rejects.toMatchObject({ code: 'ENOENT' });
     await command('docker', ['exec', runtime, 'node', '-e', 'if(require("node:fs").existsSync("/tmp/data"))process.exit(1)']);
     const workspace = await canonicalWorkspace(f.server);
@@ -57,7 +62,7 @@ it('standalone MCP-only artifact installs on Node20 and shares authenticated too
       expect((await peer.tool('cleanup_workspace', { workspaceHandle: readbackHandle, writersStopped: true })).value.cleanupState).toBe('complete');
     }
     const version = (await command('docker', ['run', '--rm', '--network=none', '--pull=never', image, '/bin/sh', '-c', 'if command -v git >/dev/null 2>&1; then exit 1; fi; exec node -p process.versions.node'])).stdout.trim(); expect(version).toMatch(/^20\./);
-    const evidence = { backend: process.env.CV_TEST_BACKEND ?? 'git', currentNode: process.versions.node, minimumNode: version, archive: packed.filename, sha256: hash(await readFile(join(directory, packed.filename))), bundledSdk: hash(archiveBefore), tools: namesAt(0), sourceSiblingRequired: false, minimumImageHasGit: false };
+    const evidence = { backend: process.env.CV_TEST_BACKEND ?? 'git', currentNode: process.versions.node, minimumNode: version, archive: packed.filename, sha256: hash(await readFile(join(directory, packed.filename))), bundledSdk: hash(archiveBefore), tools: namesAt(0), schema, sourceSiblingRequired: false, minimumImageHasGit: false };
     await writeFile(join(tooling, 'package-evidence-' + evidence.backend + '.json'), JSON.stringify(evidence, null, 2) + '\n');
     console.info('MCP_PACKAGE_EVIDENCE ' + JSON.stringify(evidence));
   } finally {
