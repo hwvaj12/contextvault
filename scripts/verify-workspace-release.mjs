@@ -213,6 +213,8 @@ export async function createReleasePlan({root=rootDirectory,directory,options,en
   const docsReport=path.join(directory,'docs-selftests.xml');
   const docsFiles=await testFiles(root,['tests/docs'],'.test.mjs');
   addCommand('docs-selftests',process.execPath,['--test','--test-reporter=junit','--test-reporter-destination='+docsReport,...docsFiles],{format:'junit',report:docsReport});
+  // Installed client runtimes expose platform failures early; every later gate remains mandatory.
+  for(const language of languages) await suite('sdk-'+language,'sdk',['--language',language],{}, {language,...(language==='typescript'?{requiredTitles:['installed TypeScript package: git','installed TypeScript package: s3','installed TypeScript lifecycle: git','installed TypeScript lifecycle: s3','installed TypeScript checkpoints: git','installed TypeScript checkpoints: s3','installed TypeScript recovery: git','installed TypeScript recovery: s3']}: {})});
   await vitest('core',['tests/unit','tests/application','tests/control','tests/http','tests/integration','tests/revisions','tests/security','tests/submissions'],{CV_TEST_BACKEND:'git',CV_TEST_SUITE:'core'});
   await suite('contracts','contracts',[],{CV_TEST_BACKEND:'git'});
   await vitest('revisions-s3',['tests/revisions'],{CV_TEST_BACKEND:'s3',CV_TEST_SUITE:'revisions'},{backend:'s3'});
@@ -225,7 +227,6 @@ export async function createReleasePlan({root=rootDirectory,directory,options,en
     await suite('hosts-'+backend,'hosts',selection,{}, {backend,requiredTitles:[...languages.flatMap(language=>[`installed ${language} worker recovers a killed controller`,`installed ${language} client and independent container agent`,`installed ${language} remote-machine boundary`]),'installed CLI separates submit from publication','the supplied container launcher publishes','typescript worker preserves its first unknown heartbeat']});
     addCommand('docs-'+backend,process.execPath,[path.join(root,'scripts/verify-workspace-docs.mjs'),...selection],{backend});
   }
-  for(const language of languages) await suite('sdk-'+language,'sdk',['--language',language],{}, {language,...(language==='typescript'?{requiredTitles:['installed TypeScript package: git','installed TypeScript package: s3','installed TypeScript lifecycle: git','installed TypeScript lifecycle: s3','installed TypeScript checkpoints: git','installed TypeScript checkpoints: s3','installed TypeScript recovery: git','installed TypeScript recovery: s3']}: {})});
   await suite('migration','migration',[],{CV_TEST_BACKEND:'git'},{requiredTitles:['moves exact accepted history Git to S3 and back through an explicit operator command with HTTP readback']});
   return gates;
 }

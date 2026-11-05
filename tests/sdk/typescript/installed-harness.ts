@@ -29,7 +29,8 @@ async function runContainer(args: string[], options: { timeout: number; env?: No
   const identity = options.identity ?? randomUUID();
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(identity)) throw new Error("Container identity must be an owned UUID");
   try {
-    return await execute("docker", ["run", "--name", `cv-ts-${identity}`, "--label", `${ownerLabel}=${identity}`, "--rm", "--pull=never", ...args], {
+    return await execute("docker", ["run", "--name", `cv-ts-${identity}`, "--label", `${ownerLabel}=${identity}`, "--rm", "--pull=never",
+      "--user", `${process.getuid!()}:${process.getgid!()}`, "--env", "HOME=/tmp", "--env", "npm_config_cache=/tmp/contextvault-npm-cache", ...args], {
       ...commandOptions, timeout: options.timeout, ...(options.env ? { env: options.env } : {}),
     });
   } finally { await removeContainer(identity); }
