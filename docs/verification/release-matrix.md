@@ -73,6 +73,8 @@ Package receipts distinguish the host, documentation, and MCP build recipes.
 Different build recipes can produce different archive hashes from the same source.
 Installed SDK language gates create their own artifacts; the host matrix supplies retained per-language package fingerprints.
 The source digest covers maintained product, package, test, and documentation inputs.
+The runner prevents Python bytecode writes and checks source after every gate and at completion.
+On mismatch, the summary records the resulting source identity and at most 100 changed paths, without file contents.
 Lead status and run records do not affect that digest.
 
 ## Historical HTTP scripts
@@ -121,3 +123,5 @@ Those agents retain isolated networks and cannot access the controller filesyste
 Workers retain cooperative host-process separation.
 Container boundaries simulate separate machines; they do not establish physical remote hardware or production AWS IAM behavior.
 See [GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) and [Docker networking](https://docs.docker.com/engine/network/).
+
+The [verified hosted Linux run](hosted-linux-release.md) passed all 31 gates and every source-integrity check.

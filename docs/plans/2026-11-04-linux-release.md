@@ -9,9 +9,11 @@ This is a bounded portability change; ContextVault storage and authorization con
 - [x] Replace Docker Desktop address assumptions in SDK, MCP, and isolated host fixtures.
 - [x] Preserve all 31 gates, installed client minima, actual crashes, isolation assertions, and zero-skip validation.
 - [x] Run actionlint, focused fixture checks, and independent source review.
-- [ ] Run the complete 31-gate command on GitHub-hosted Linux with owned LocalStack cleanup.
-- [ ] Retain the exact run and source identity, update verification evidence, and land reviewed changes.
+- [x] Run the complete 31-gate command on GitHub-hosted Linux with owned LocalStack cleanup.
+- [x] Retain the exact run and source identity, update verification evidence, and land reviewed changes.
 
 The full hosted workflow is the acceptance test.
 Local macOS checks validate compatibility only.
 Windows, physical remote hardware, and production AWS parity remain outside this change.
+
+[Hosted evidence](../verification/hosted-linux-release.md): all 31 gates, all 18 agent cells, and every source-integrity check passed.

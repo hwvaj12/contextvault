@@ -2,6 +2,7 @@
 
 Date: 2026-11-04, America/Chicago.
 Status: verified locally.
+Later [GitHub-hosted Linux verification](hosted-linux-release.md) is recorded separately.
 Branch: `codex/contextvault-completion`.
 Tested product commit: `b38c51264ac352a0a3ed76fcdc85956e48584dba`.
 Planning baseline: `7f46cd7a1aedb38a09477b9fd949bbecf35e9e61`.

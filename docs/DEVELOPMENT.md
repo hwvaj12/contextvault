@@ -219,7 +219,8 @@ A skipped or unavailable required cell is incomplete verification.
 A source review, compilation, or mock executor test cannot replace runtime evidence.
 
 The current verification boundary includes local Git, selected LocalStack, and isolated Docker client environments.
-Physical remote hardware, Windows, AWS IAM, and hosted CI need their own recorded evidence.
+The [GitHub-hosted Linux release](verification/hosted-linux-release.md) passed the full matrix without a dedicated macOS runner.
+Physical remote hardware, Windows, and production AWS IAM remain outside that evidence.
 Preserve failed runs and distinguish their causes from later successful checks.
 
 ## Troubleshooting
