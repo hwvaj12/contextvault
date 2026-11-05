@@ -1,224 +1,160 @@
-# ContextVault — Storage Layer
+# Storage and adapter configuration
 
-> **Storage Architecture — Updated 2026-03-28**
+ContextVault separates authoritative workspace state from immutable content storage.
+The catalog selects accepted revisions and storage bindings.
+Git and S3 adapters prepare and read the selected bytes.
 
-## Overview
+## Storage contracts
 
-ContextVault uses **Git-native storage** with a **sandbox model** for agent execution.
+`RevisionStore.prepare` receives a candidate identity already persisted by the catalog.
+A retry must preserve that identity and exact contents.
+`inspectCandidate` supports recovery; it does not establish publication.
+`deleteCollectible` requires a current fenced collection permit.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  ContextVault                                                │
-│                                                              │
-│  ┌─────────────┐         ┌─────────────┐                   │
-│  │  Sandboxes  │◄───────►│   Agents    │                   │
-│  │  (temp)     │          │             │                   │
-│  └──────┬──────┘          └─────────────┘                   │
-│         │                                                   │
-│         │ commit                                            │
-│         ▼                                                   │
-│  ┌─────────────┐                                            │
-│  │ Workspaces  │  (persistent Git repos)                   │
-│  │             │                                            │
-│  └─────────────┘                                            │
-└─────────────────────────────────────────────────────────────┘
-```
+`SubmissionStore` stores immutable upload attempts and coordinates their catalog receipts.
+Sealing chooses exact receipts in one transaction.
+Unregistered or late bytes remain unpublished cleanup candidates.
 
-## Storage Layout
+The Git profile pairs Git revision storage with local submission storage.
+The S3 profile pairs S3 revision storage with S3 submission storage.
+Both profiles use the same domain manifest and application publication rules.
 
-```
-data/
-├── workspace-meta/              # Workspace metadata (JSON)
-│   └── {workspaceId}.json
-├── workspaces/                 # Persistent Git repos (source of truth)
-│   └── {workspaceId}/
-│       └── .git/
-└── sandboxes/                   # Temporary agent workspaces
-    └── {workspaceId}/          # Clone of workspace
-        └── .git/
-```
+See the [port definitions](../src/ports/index.ts) and [runtime composition](../src/config/runtime.ts).
 
-## Sandbox Model
+## Core configuration
 
-### Lifecycle
+Configuration is read from environment variables by [loadConfiguration](../src/config/index.ts).
+Explicit private filesystem paths must be absolute.
+The default data directory resolves `data` under the service's working directory.
+Operators should set an explicit path.
 
-```
-1. CHECKOUT
-   Source: data/workspaces/{id}/.git
-   Dest:   data/sandboxes/{id}/
-   Action: git clone (or git init + pull)
-   Result: Agent can read/write files
+| Variable | Default | Purpose |
+|---|---|---|
+| `CV_DATA_DIR` | Resolved `./data` | Private service data root |
+| `CV_DATABASE_PATH` | `$CV_DATA_DIR/contextvault.db` | Authoritative SQLite catalog |
+| `CV_STORAGE_BACKEND` | `git` | Default backend for new workspace bindings |
+| `CV_GIT_ROOT` | `$CV_DATA_DIR/revisions/git` | Git revision storage |
+| `CV_SUBMISSION_ROOT` | `$CV_DATA_DIR/submissions/git` | Local upload-attempt storage |
+| `CV_STORAGE_PROFILES` | None | JSON array of retained Git or S3 profiles; at most 32 extras |
+| `CV_WORKSPACE_LIMITS` | Shared v1 limits | JSON object lowering supported ceilings |
+| `CV_LEASE_TTL_MS` | `300000` | Active run lease duration |
+| `CV_PROCESSING_TTL_MS` | `300000` | Processing claim duration |
+| `CV_MAINTENANCE_INTERVAL_MS` | `1000` | Maintenance scheduling interval |
+| `CV_REQUEST_TIMEOUT_MS` | `120000` | Service request timeout |
 
-2. AGENT EXECUTES
-   Agent works in data/sandboxes/{id}/
-   Normal filesystem operations
-   No impact on persistent storage
+`CONTEXTVAULT_DATA_DIR` is an older name outside this configuration contract.
+Use `CV_DATA_DIR` in new deployments and migration commands.
+The Git revision root and local submission root must differ.
 
-3. COMMIT
-   Source: data/sandboxes/{id}/
-   Dest:   data/workspaces/{id}/
-   Action: git add + git commit + git push
-   Result: Changes persisted to workspace
+## S3 configuration
 
-4. DESTROY
-   Target: data/sandboxes/{id}/
-   Action: rm -rf
-   Result: Sandbox removed, workspace intact
-```
+| Variable | Meaning |
+|---|---|
+| `CV_S3_PROVIDER` | `aws` or `localstack`; defaults to `aws` when configuring S3 |
+| `CV_S3_BUCKET` | Explicit bucket |
+| `CV_S3_REGION` | Explicit region |
+| `CV_S3_PREFIX` | Explicit private prefix ending with `/` |
+| `CV_S3_ENDPOINT` | Optional AWS service endpoint; required for LocalStack |
+| `CV_S3_KMS_KEY_ID` | Selects `aws:kms`; absence selects `AES256` |
 
-### Why Sandboxes?
+Setting `CV_S3_BUCKET` adds an S3 profile even when Git remains the default backend.
+That profile still requires complete valid S3 configuration.
 
-| Without Sandbox | With Sandbox |
-|----------------|-------------|
-| Agent works directly in workspace | Agent works in temp clone |
-| No isolation between agents | Full isolation |
-| Failed run corrupts history | Failed run = discard sandbox |
-| Agent must understand Git | Agent sees normal files |
-| No room for experimentation | Agent can try anything |
+AWS uses the standard server-side AWS credential chain.
+LocalStack uses explicit dummy credentials in runtime composition.
+Provider validation rejects an AWS hostname selected as LocalStack.
+Explicit AWS endpoints require HTTPS and an AWS service hostname.
+The runtime ignores ambient configured endpoint overrides.
 
-## Git Operations
+An S3 prefix must contain nonempty safe components and end with `/`.
+A bucket-root prefix is not an acceptable configuration.
+Credentials and locations remain private to service configuration.
+Agents receive authenticated HTTP access instead.
 
-### Workspace (Persistent)
+S3 objects carry configured server-side encryption.
+Immutable creation and receipt checks preserve exact candidate contents across retries.
+The catalog still decides acceptance.
+S3 listings and object presence do not identify the workspace head.
 
-```typescript
-// Create workspace
-git init data/workspaces/{id}/
-git config receive.denyCurrentBranch updateInstead
+Operators must scope bucket, prefix, listing, cleanup, and KMS permissions to required service operations.
+LocalStack evidence does not prove AWS IAM or KMS behavior.
 
-// Push to workspace
-git add -A
-git commit -m "message"
-git log --oneline  // history
+## Retained profiles
 
-// Pull from workspace
-git show {commit}:{file}  // specific file
-git checkout {commit} -- .  // entire state
-```
+A profile's validated physical configuration determines its `configurationRef` and `storeId`.
+Changing paths, bucket, prefix, endpoint, provider, or encryption can produce a new identity.
+Accepted revisions retain their original binding and profile reference.
+Keep those profiles available while retained history needs them.
 
-### Sandbox (Temporary)
-
-```typescript
-// Checkout workspace to sandbox
-git clone data/workspaces/{id}/ data/sandboxes/{id}/
-
-// Agent works... (read/write files normally)
-
-// Commit changes from sandbox to workspace
-cd data/sandboxes/{id}/
-git add -A
-git commit -m "message"
-git push  // pushes to workspace's .git
-
-// Destroy sandbox
-rm -rf data/sandboxes/{id}/
-```
-
-## Workspace Metadata
-
-Each workspace has metadata in `workspace-meta/{id}.json`:
+A retained Git profile has this shape:
 
 ```json
 {
-  "id": "ws_01HXXXXXXXX",
-  "customerId": "meta-profile",
-  "name": "LeBron James",
-  "createdAt": "2024-02-28T21:00:00Z",
-  "updatedAt": "2024-02-28T21:00:00Z",
-  "deletedAt": null
+  "backend": "git",
+  "rootDirectory": "/srv/contextvault/revisions/git",
+  "submissionRoot": "/srv/contextvault/submissions/git"
 }
 ```
 
-## Commit Message Format
+A retained S3 profile has this shape:
 
-```
-{agentId}: {taskId} | tags: {tag1,tag2}
----
-{"agentId":"...","taskId":"...","files":["summary.md"],"sizeBytes":1024}
-```
-
-## File Structure Example
-
-```
-data/workspaces/ws_01HXXXXXXXX/
-├── .git/
-├── profile/
-│   └── summary.md
-├── games/
-│   ├── 2024_001.json
-│   └── 2024_001.md
-└── analysis/
-    └── shooting-improvement.md
-
-data/sandboxes/ws_01HXXXXXXXX/  (temporary)
-├── profile/
-│   └── summary.md
-├── games/
-│   └── 2024_001.json
-└── analysis/
-    └── new-analysis.md  (agent added this)
-```
-
-## API vs MCP vs Direct Git
-
-| Access Method | Use Case |
-|-------------|----------|
-| **MCP Server** | AI agents (Claude, Codex) |
-| **REST API** | Developers, webhooks, CLI |
-| **Direct Git** | Advanced operations, scripting |
-
-All three ultimately use the same Git storage.
-
-## Implementation Notes
-
-### Creating a Sandbox
-
-```typescript
-async function createSandbox(workspaceId: string): Promise<string> {
-  const workspacePath = path.join(WORKSPACES_DIR, workspaceId);
-  const sandboxPath = path.join(SANDBOX_DIR, workspaceId);
-  
-  // Clone workspace to sandbox
-  await fs.mkdir(sandboxPath, { recursive: true });
-  const git = simpleGit(workspacePath);
-  await git.clone(workspacePath, sandboxPath);
-  
-  return sandboxPath;
+```json
+{
+  "backend": "s3",
+  "provider": "aws",
+  "bucket": "your-private-bucket",
+  "region": "us-east-1",
+  "prefix": "contextvault/revisions/",
+  "encryption": { "algorithm": "AES256" }
 }
 ```
 
-### Committing Sandbox Changes
+`CV_STORAGE_PROFILES` contains an array of these objects.
+Profiles contain configuration, not embedded access keys.
 
-```typescript
-async function commitSandbox(workspaceId: string, message: string): Promise<string> {
-  const sandboxPath = path.join(SANDBOX_DIR, workspaceId);
-  const workspacePath = path.join(WORKSPACES_DIR, workspaceId);
-  
-  const sandboxGit = simpleGit(sandboxPath);
-  
-  // Commit in sandbox
-  await sandboxGit.add("-A");
-  const result = await sandboxGit.commit(message);
-  
-  // Push to workspace
-  await sandboxGit.push();
-  
-  return result.commit;
-}
-```
+## Switching versus migration
 
-### Destroying a Sandbox
+Changing the default backend affects new workspace bindings.
+It does not copy existing revision content or move an accepted workspace head.
+The explicit migration command verifies every retained revision before one catalog cutover.
+Revision IDs, accepted history, ownership, and aliases remain stable during adapter transfer.
 
-```typescript
-async function destroySandbox(workspaceId: string): Promise<void> {
-  const sandboxPath = path.join(SANDBOX_DIR, workspaceId);
-  await fs.rm(sandboxPath, { recursive: true, force: true });
-}
-```
+Legacy adoption is a separate operation.
+It inventories older Git repositories and metadata before creating catalog authority.
+Legacy Git hashes become workspace-scoped aliases of opaque canonical revision IDs.
+Ambiguous, dirty, filtered, or incompatible source data stops adoption.
 
-## Environment Variables
+See [migration and recovery](quickstart/operations.md).
 
-```bash
-CONTEXTVAULT_DATA_DIR=./data           # Root data directory
-CONTEXTVAULT_WORKSPACES_DIR=data/workspaces  # Persistent storage
-CONTEXTVAULT_SANDBOX_DIR=data/sandboxes     # Temporary storage
-```
+## Filesystem and manifest limits
+
+| Limit | Shared v1 ceiling |
+|---|---|
+| Entries | 10,000 |
+| Path bytes | 1,024 UTF-8 bytes |
+| Component bytes | 255 UTF-8 bytes |
+| File bytes | 64 MiB |
+| Total file bytes | 512 MiB |
+| Concurrent streams | 4 |
+| Chunk bytes | 64 KiB |
+
+The server can lower these ceilings through `CV_WORKSPACE_LIMITS`.
+Client limits can be stricter; the server remains authoritative.
+Paths require valid Unicode NFC and portable relative names.
+Validation rejects traversal, reserved Windows names, case/compatibility collisions, and unsupported characters.
+Regular files and directories are supported.
+Symlinks, hardlinks, and special files are rejected by materialization and capture checks.
+
+Capture excludes `.git` and `.contextvault` components using canonical name matching.
+`.gitignore` is ordinary submitted content and does not control capture selection.
+Cleanup validates excluded metadata before removing owned files.
+
+## Retention and backup
+
+Current orphan collection protects accepted history and recoverable operations.
+A tombstone denies normal workspace content access while retaining history.
+Accepted-history purge requires a separate retention policy.
+
+A useful recovery set includes the catalog, selected immutable content, retained profiles, credentials, signing keys, and legacy secret material.
+S3 content alone cannot reconstruct catalog authority or durable operation outcomes.
+Operators supply disk encryption, backup encryption, access control, and restoration procedures.

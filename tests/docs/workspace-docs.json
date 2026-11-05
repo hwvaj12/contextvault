@@ -1,0 +1,72 @@
+{
+  "requiredEnvironment": [
+    "CV_API_URL",
+    "CV_API_KEY",
+    "CV_CUSTOMER_ID"
+  ],
+  "markdown": [
+    "README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/STORAGE_LAYER.md",
+    "docs/SECURITY_MODEL.md",
+    "docs/REST_API.md",
+    "docs/SDK_PLAN.md",
+    "docs/DEVELOPMENT.md",
+    "docs/quickstart/clients.md",
+    "docs/quickstart/typescript.md",
+    "docs/quickstart/python.md",
+    "docs/quickstart/php.md",
+    "docs/examples/basic/typescript.md",
+    "docs/examples/basic/python.md",
+    "docs/examples/basic/php.md",
+    "docs/examples/langchain/typescript.md",
+    "docs/examples/langchain/python.md",
+    "docs/api/compatibility.md",
+    "docs/api/workspaces.md",
+    "docs/quickstart/hosts.md",
+    "docs/quickstart/operations.md",
+    "tests/docs/README.md",
+    "sdk/typescript/README.md",
+    "sdk/php/README.md",
+    "cli/README.md"
+  ],
+  "quickstarts": [
+    {
+      "file": "docs/quickstart/clients.md",
+      "block": "typescript-lifecycle",
+      "display": "node docs/examples/typescript-lifecycle.mjs",
+      "command": [
+        "node",
+        "docs/examples/typescript-lifecycle.mjs"
+      ]
+    },
+    {
+      "file": "docs/quickstart/clients.md",
+      "block": "python-lifecycle",
+      "display": "python3 docs/examples/python-lifecycle.py",
+      "command": [
+        "python3",
+        "docs/examples/python-lifecycle.py"
+      ]
+    },
+    {
+      "file": "docs/quickstart/clients.md",
+      "block": "php-lifecycle",
+      "display": "php docs/examples/php-lifecycle.php",
+      "command": [
+        "php",
+        "docs/examples/php-lifecycle.php"
+      ]
+    }
+  ],
+  "postman": [
+    {
+      "file": "docs/ContextVault-API.postman_collection.json",
+      "environment": {
+        "baseUrl": "CV_API_URL",
+        "apiKey": "CV_API_KEY",
+        "customerId": "CV_CUSTOMER_ID"
+      }
+    }
+  ]
+}

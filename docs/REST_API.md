@@ -1,681 +1,202 @@
-# ContextVault REST API
+# HTTP API reference
 
-REST API for ContextVault — HTTP interface for managing workspaces, sandboxes, and webhooks.
+The `/v1` API exposes backend-neutral workspace lifecycle and accepted revision operations.
+The service owns authority and publication.
+Clients own temporary files on their own hosts.
 
-## Base URL
+Interactive documentation is available at `/docs`.
+The registered handlers and strict validation schemas remain authoritative.
+Relevant sources are [lifecycle routes](../src/routes/v1/index.ts), [revision routes](../src/routes/v1/revisions.ts), and [administration routes](../src/routes/v1/admin.ts).
 
-```
-http://localhost:3000
-```
+## Authentication and command identity
 
-## Authentication
+Protected requests use `X-API-Key`.
+Customer credentials select their own customer.
+Administrator workspace requests require `X-ContextVault-Customer-Id`.
+`customerId` in workspace creation must match the authenticated selection.
 
-All endpoints require `X-API-Key` header:
-```
-X-API-Key: your-api-key
-```
+Every v1 mutation requires a nonempty `Idempotency-Key` of at most 256 characters.
+Retain that key and the exact request before dispatch.
+A lifecycle command identity binds the customer, actor, operation kind, resource, and canonical request digest.
+Reusing a lifecycle key with changed input returns `IDEMPOTENCY_KEY_REUSED`.
+A new key represents a new command, not reconciliation.
 
-For development, use the master key (set via `CONTEXTVAULT_API_KEY` env var). In production, create scoped API keys via `/api-keys`.
+A configured administrator can bootstrap a customer key with `POST /api-keys` and `{customerId,name}`.
+The response contains `plainKey`; store it through your credential provider.
+`GET /api-keys` and `DELETE /api-keys/:id` require current credential-management authority.
+Agents should use the resulting scoped key instead of the administrator key.
 
----
+## Workspace and run routes
 
-## API Keys
+| Method | Path | Request or result |
+|---|---|---|
+| `POST` | `/v1/workspaces` | `{customerId,name}`; `201` workspace or `202` creation operation |
+| `GET` | `/v1/workspaces` | `offset`, `limit`; scoped workspace page |
+| `GET` | `/v1/workspaces/:id` | Workspace metadata |
+| `DELETE` | `/v1/workspaces/:id` | Optional `{expectedWorkspaceVersion,reason}`; `204` tombstone |
+| `POST` | `/v1/workspaces/:id/runs` | `{mode,agentLabel,task,reason}`; `201` pinned run |
+| `GET` | `/v1/runs/:id` | Current run, lease, outcome, and cleanup metadata |
+| `GET` | `/v1/runs/:id/workspace/manifest` | Pinned base manifest |
+| `GET` | `/v1/runs/:id/workspace/files?path=...` | Exact pinned file stream |
+| `POST` | `/v1/runs/:id/heartbeat` | `{expectedLeaseVersion}`; renewed run view |
+| `POST` | `/v1/runs/:id/finalize` | `{expectedRunVersion,submissionId?}`; `202` operation |
+| `POST` | `/v1/runs/:id/abort` | `{expectedRunVersion,reason}`; aborted run |
+| `GET` | `/v1/operations/:id` | Durable operation status and result |
 
-### Create API Key
-```
-POST /api-keys
-```
+`mode` is `read-only` or `read-write`.
+The run records its actor context, task, agent label, and reason.
+A read-write finalization requires a sealed submission.
+A read-only finalization omits `submissionId` and does not publish content.
 
-**Request:**
+Run responses contain `baseRevisionId`, `version`, `leaseVersion`, `expiresAt`, `operationId`, `outcome`, `cleanup`, and `_links`.
+They contain no server filesystem path, storage credential, private locator, or processing fence.
+Action links reflect lifecycle availability; server authorization still checks every request.
+
+## Submission routes
+
+| Method | Path | Request or result |
+|---|---|---|
+| `POST` | `/v1/runs/:id/submissions` | `{}`; `201` upload session |
+| `GET` | `/v1/runs/:id/submissions/:sid` | Submission state and version |
+| `PUT` | `/v1/runs/:id/submissions/:sid/files?path=...` | Binary file stream; `201` receipt |
+| `POST` | `/v1/runs/:id/submissions/:sid/seal` | Complete manifest and exact receipt selections |
+
+Uploads use `Content-Type: application/octet-stream` and lowercase `X-Content-SHA256`.
+An optional `Content-Length` must contain the exact nonnegative byte count.
+Each upload command needs its own stable idempotency key.
+A completed receipt contains `id`, `path`, `byteLength`, `sha256`, and `completedAt`.
+
+A seal body has this shape:
+
 ```json
 {
-  "customerId": "my-customer",
-  "name": "production-key"
-}
-```
-
-**Response (201):**
-```json
-{
-  "id": "ak_01HXXXXXXXX",
-  "customerId": "my-customer",
-  "name": "production-key",
-  "key": "cv_key_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "createdAt": "2024-02-28T21:00:00Z"
-}
-```
-> ⚠️ The `key` field is only returned on creation. Store it securely.
-
----
-
-### List API Keys
-```
-GET /api-keys
-```
-
-**Response (200):**
-```json
-{
-  "keys": [
-    {
-      "id": "ak_01HXXXXXXXX",
-      "customerId": "my-customer",
-      "name": "production-key",
-      "createdAt": "2024-02-28T21:00:00Z",
-      "lastUsedAt": "2024-02-28T22:00:00Z"
-    }
-  ]
-}
-```
-
----
-
-### Revoke API Key
-```
-DELETE /api-keys/{keyId}
-```
-
-**Response (200):**
-```json
-{
-  "success": true
-}
-```
-
----
-
-## Workspaces
-
-### Create Workspace
-```
-POST /workspaces
-```
-
-**Request:**
-```json
-{
-  "customerId": "my-customer",
-  "name": "LeBron James"
-}
-```
-
-**Response (201):**
-```json
-{
-  "id": "ws_01HXXXXXXXX",
-  "customerId": "my-customer",
-  "name": "LeBron James",
-  "createdAt": "2024-02-28T21:00:00Z",
-  "latestCommitId": null
-}
-```
-
----
-
-### List Workspaces
-```
-GET /workspaces
-```
-
-Returns workspaces scoped to the authenticated customer.
-
-**Response (200):**
-```json
-{
-  "workspaces": [
-    {
-      "id": "ws_01HXXXXXXXX",
-      "customerId": "my-customer",
-      "name": "LeBron James",
-      "createdAt": "2024-02-28T21:00:00Z",
-      "latestCommitId": "abc123"
-    }
-  ],
-  "pagination": {
-    "total": 1,
-    "limit": 20,
-    "offset": 0,
-    "hasMore": false
-  }
-}
-```
-
----
-
-### Get Workspace
-```
-GET /workspaces/{workspaceId}
-```
-
-**Response (200):**
-```json
-{
-  "id": "ws_01HXXXXXXXX",
-  "customerId": "my-customer",
-  "name": "LeBron James",
-  "createdAt": "2024-02-28T21:00:00Z",
-  "updatedAt": "2024-02-28T21:00:00Z",
-  "latestCommitId": "abc123"
-}
-```
-
----
-
-### Delete Workspace (Soft)
-```
-DELETE /workspaces/{workspaceId}
-```
-
-**Response (200):**
-```json
-{
-  "success": true,
-  "deletedAt": "2024-02-28T21:00:00Z"
-}
-```
-
----
-
-### Bulk Delete Workspaces
-```
-POST /workspaces/bulk-delete
-```
-
-**Request:**
-```json
-{
-  "workspaceIds": ["ws_01HXXXXXXXX", "ws_01HYYYYYYYY"]
-}
-```
-
-**Response (200):**
-```json
-{
-  "deleted": 2,
-  "failed": []
-}
-```
-
-**With failures:**
-```json
-{
-  "deleted": 1,
-  "failed": [
-    { "id": "ws_01HYYYYYYYY", "error": "Workspace not found" }
-  ]
-}
-```
-
----
-
-### Clone Workspace
-```
-POST /workspaces/{workspaceId}/clone
-```
-
-Create a copy of a workspace for a target customer.
-
-**Request:**
-```json
-{
-  "targetCustomerId": "other-customer",
-  "name": "LeBron James (Copy)"
-}
-```
-
-**Response (201):**
-```json
-{
-  "id": "ws_01HZZZZZZZ",
-  "workspaceId": "ws_01HZZZZZZZ",
-  "customerId": "other-customer",
-  "name": "LeBron James (Copy)",
-  "createdAt": "2024-02-28T21:00:00Z"
-}
-```
-
----
-
-## Version Control
-
-### Push (Create Commit)
-```
-POST /workspaces/{workspaceId}/push
-```
-
-**Request:**
-```json
-{
-  "files": [
-    {
-      "path": "profile/summary.md",
-      "content": "# LeBron James\n\n..."
-    }
-  ],
-  "agentId": "meta-profile",
-  "taskId": "game-recap-001",
-  "tags": ["game", "recap", "nba"]
-}
-```
-
-**Response (201):**
-```json
-{
-  "commitId": "def456",
-  "parentId": "abc123",
-  "sizeBytes": 4096,
-  "createdAt": "2024-02-28T21:00:00Z"
-}
-```
-
----
-
-### Pull (Get Files)
-```
-GET /workspaces/{workspaceId}/pull
-```
-
-**Query params:**
-- `v` (optional) — Commit hash. Defaults to HEAD.
-
-**Response (200):**
-```json
-{
-  "commitId": "def456",
-  "parentId": "abc123",
-  "files": [
-    {
-      "path": "profile/summary.md",
-      "content": "# LeBron James\n\n..."
-    }
-  ],
-  "metadata": {
-    "agentId": "meta-profile",
-    "taskId": "game-recap-001",
-    "tags": ["game", "recap"]
+  "manifest": {
+    "schemaVersion": 1,
+    "entries": [
+      { "path": "empty-directory", "kind": "directory" },
+      {
+        "path": "result.bin",
+        "kind": "file",
+        "byteLength": 3,
+        "sha256": "replace-with-the-exact-lowercase-sha256"
+      }
+    ]
   },
-  "createdAt": "2024-02-28T21:00:00Z"
-}
-```
-
----
-
-### Get History
-```
-GET /workspaces/{workspaceId}/history
-```
-
-**Query params:**
-- `limit` (optional, default 20) — Max commits to return
-
-**Response (200):**
-```json
-{
-  "commits": [
-    {
-      "id": "def456",
-      "parentId": "abc123",
-      "metadata": {
-        "agentId": "meta-profile",
-        "taskId": "game-recap-001",
-        "tags": ["game", "recap"]
-      },
-      "sizeBytes": 4096,
-      "createdAt": "2024-02-28T21:00:00Z"
-    }
-  ],
-  "count": 1
-}
-```
-
----
-
-### Diff
-```
-GET /workspaces/{workspaceId}/diff
-```
-
-Compare two commits and get structured file changes.
-
-**Query params:**
-- `from` — Source commit hash
-- `to` — Target commit hash
-
-**Response (200):**
-```json
-{
-  "from": "abc123",
-  "to": "def456",
-  "files": [
-    {
-      "path": "profile/summary.md",
-      "status": "modified",
-      "additions": 12,
-      "deletions": 3,
-      "hunks": [
-        {
-          "header": "@@ -1,5 +1,8 @@",
-          "lines": ["...", "+new line", "..."]
-        }
-      ]
-    },
-    {
-      "path": "games/2024_002.md",
-      "status": "added",
-      "additions": 45,
-      "deletions": 0,
-      "hunks": []
-    }
-  ],
-  "summary": {
-    "filesChanged": 2,
-    "additions": 57,
-    "deletions": 3
-  }
-}
-```
-
----
-
-### Rollback
-```
-POST /workspaces/{workspaceId}/rollback
-```
-
-**Request:**
-```json
-{
-  "toVersion": "abc123",
-  "agentId": "meta-profile",
-  "message": "Rolling back to previous state"
-}
-```
-
-**Response (201):**
-```json
-{
-  "commitId": "ghi789",
-  "parentId": "def456",
-  "rollbackFrom": "abc123",
-  "createdAt": "2024-02-28T21:00:00Z"
-}
-```
-
----
-
-## Sandboxes
-
-Sandboxes are temporary working directories. Use them for agent workflows.
-
-### Checkout (Create Sandbox)
-```
-POST /workspaces/{workspaceId}/sandbox
-```
-
-**Response (201):**
-```json
-{
-  "workspaceId": "ws_01HXXXXXXXX",
-  "sandboxId": "sb_01HXXXXXXXX",
-  "sandboxPath": "/tmp/contextvault-sandbox/ws_01HXXXXXXXX",
-  "createdAt": "2024-02-28T21:00:00Z"
-}
-```
-
----
-
-### Get Sandbox Status
-```
-GET /workspaces/{workspaceId}/sandbox
-```
-
-**Response (200):**
-```json
-{
-  "workspaceId": "ws_01HXXXXXXXX",
-  "sandboxId": "sb_01HXXXXXXXX",
-  "sandboxPath": "/tmp/contextvault-sandbox/ws_01HXXXXXXXX",
-  "status": "ready",
-  "hasChanges": true,
-  "createdAt": "2024-02-28T21:00:00Z"
-}
-```
-
----
-
-### Commit Sandbox (Save Changes)
-```
-POST /workspaces/{workspaceId}/sandbox/commit
-```
-
-**Request:**
-```json
-{
-  "agentId": "meta-profile",
-  "taskId": "game-analysis-001",
-  "tags": ["analysis", "game-recap"]
-}
-```
-
-**Response (201):**
-```json
-{
-  "commitId": "jkl012",
-  "workspaceId": "ws_01HXXXXXXXX",
-  "sandboxId": "sb_01HXXXXXXXX",
-  "parentId": "def456",
-  "filesChanged": ["analysis/shooting.md"],
-  "sizeBytes": 1024,
-  "createdAt": "2024-02-28T21:00:00Z"
-}
-```
-
----
-
-### Destroy Sandbox
-```
-DELETE /workspaces/{workspaceId}/sandbox
-```
-
-**Response (200):**
-```json
-{
-  "success": true,
-  "workspaceId": "ws_01HXXXXXXXX"
-}
-```
-
----
-
-## Webhooks
-
-### Register Webhook
-```
-POST /webhooks
-```
-
-**Request:**
-```json
-{
-  "url": "https://my-app.com/webhooks/contextvault",
-  "events": ["workspace.created", "workspace.deleted", "sandbox.committed"],
-  "secret": "my-webhook-secret"
-}
-```
-
-**Response (201):**
-```json
-{
-  "id": "wh_01HXXXXXXXX",
-  "url": "https://my-app.com/webhooks/contextvault",
-  "events": ["workspace.created", "workspace.deleted", "sandbox.committed"],
-  "secret": "cv_whsec_xxxxxxxxxxxxxxxx",
-  "active": true,
-  "createdAt": "2024-02-28T21:00:00Z"
-}
-```
-
-**Available events:**
-- `workspace.created`
-- `workspace.deleted`
-- `sandbox.checked_out`
-- `sandbox.destroyed`
-- `sandbox.committed`
-- `run.started`
-- `run.completed`
-- `run.failed`
-
----
-
-### List Webhooks
-```
-GET /webhooks
-```
-
-**Response (200):**
-```json
-{
-  "webhooks": [
-    {
-      "id": "wh_01HXXXXXXXX",
-      "url": "https://my-app.com/webhooks/contextvault",
-      "events": ["workspace.created", "sandbox.committed"],
-      "active": true,
-      "createdAt": "2024-02-28T21:00:00Z"
-    }
+  "receipts": [
+    { "path": "result.bin", "receiptId": "receipt-from-the-upload-response" }
   ]
 }
 ```
 
----
+The digest placeholder above is explanatory, not a valid submission.
+Every file entry must select its completed matching receipt.
+Directories do not have file receipts.
+The manifest describes the entire resulting workspace.
+Omitted paths are deleted, and an empty manifest removes all previous contents.
 
-### Delete Webhook
-```
-DELETE /webhooks/{webhookId}
-```
+Sealing selects immutable registered attempts atomically.
+Later uploads cannot alter the sealed source.
+The [installed client examples](quickstart/clients.md) perform capture, upload, and sealing for ordinary files.
 
-**Response (200):**
-```json
-{
-  "success": true
-}
-```
+## Versions and outcomes
 
----
+| Field | Meaning |
+|---|---|
+| Workspace `version` | Accepted workspace administration and current-head concurrency |
+| Run `version` | Run lifecycle transitions |
+| Run `leaseVersion` | Heartbeat concurrency |
+| Submission `version` | Upload and seal progress |
+| Operation `version` | Durable command progress |
 
-### Webhook Payload
+A heartbeat changes lease state without changing the run lifecycle version.
+Upload and seal progress do not substitute for a run version.
+The service defaults active leases to five minutes.
+An expired run cannot be revived by heartbeat.
 
-When an event fires, your endpoint receives:
-```json
-{
-  "event": "sandbox.committed",
-  "timestamp": "2024-02-28T21:00:00Z",
-  "workspaceId": "ws_01HXXXXXXXX",
-  "data": {
-    "commitId": "jkl012",
-    "sandboxId": "sb_01HXXXXXXXX",
-    "parentId": "def456",
-    "filesChanged": ["profile/summary.md"]
-  }
-}
-```
+Run states are `active`, `finalizing`, `finalized`, `aborted`, `conflicted`, `failed`, and `expired`.
+Operation states are `pending`, `processing`, `succeeded`, and `failed`.
+Operation phases are `claimed`, `preparing`, `prepared`, `accepting`, and `complete`.
+Cleanup states are `pending`, `running`, `complete`, and `failed`.
+Cleanup cannot change a recorded terminal run outcome.
 
-**Headers:**
-- `X-CV-Signature` — HMAC-SHA256 signature of payload using your secret
-- `X-CV-Event` — Event type
-- `X-CV-Webhook-ID` — Webhook ID
+`202` means the operation remains inspectable through its returned ID.
+Poll `GET /v1/operations/:id` until the operation reaches a known terminal state.
+Inspect the result's `kind`, run state, revision ID, and `changed` value.
+An operation reaching `succeeded` is distinct from an HTTP request merely returning successfully.
 
-Verify signature:
-```bash
-echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$SECRET"
-```
+A transport failure or `PUBLICATION_OUTCOME_UNKNOWN` requires reconciliation.
+Retain the original key, exact request, and immutable captured source.
+Read a known operation ID, or replay the original command when its ID remains unknown.
+Do not infer failure from a timeout, disconnect, or later authorization denial.
 
----
+## Accepted revision routes
 
-## Health & Info
+| Method | Path | Request or result |
+|---|---|---|
+| `GET` | `/v1/workspaces/:id/revisions` | `cursor`, `limit`; ancestry page and `nextCursor` |
+| `GET` | `/v1/workspaces/:id/revisions/:rid/manifest` | Exact accepted manifest |
+| `GET` | `/v1/workspaces/:id/revisions/:rid/files?path=...` | Accepted binary file stream |
+| `GET` | `/v1/workspaces/:id/diff` | Required `from` and `to` revision IDs |
+| `GET` | `/v1/workspaces/:id/search` | `q`, optional `revisionId` and `limit` |
+| `POST` | `/v1/workspaces/:id/restore` | `{revisionId,expectedRevisionId,expectedWorkspaceVersion,reason}`; `202` operation |
 
-### Health Check
-```
-GET /health
-```
+Revision IDs are opaque on every backend.
+Workspace-scoped retained aliases can resolve older Git identifiers.
+Restore publishes selected accepted contents through a new operation with current-head checks.
+Search is a bounded text operation over selected accepted contents, not semantic memory retrieval.
 
-**Response (200):**
-```json
-{
-  "status": "healthy",
-  "version": "0.2.0",
-  "timestamp": "2024-02-28T21:00:00Z"
-}
-```
+File responses use `application/octet-stream`, `Content-Length`, and `X-Content-SHA256`.
+A consumer must finish and verify the stream before treating the download as complete.
 
----
+## Clone and bundles
 
-## Error Responses
+| Method | Path | Request or result |
+|---|---|---|
+| `POST` | `/v1/workspaces/:id/clone` | `{targetCustomerId,name?,targetWorkspaceId?}`; workspace or pending operation |
+| `POST` | `/v1/workspaces/:id/export` | Optional `{revisionId}`; opaque bundle metadata |
+| `POST` | `/v1/bundles` | `{}`; customer-scoped upload handle |
+| `PUT` | `/v1/bundles/:bid` | `application/vnd.contextvault.bundle` stream |
+| `GET` | `/v1/bundles/:bid` | Signed bundle stream |
+| `POST` | `/v1/workspaces/import` | `{bundlePath,customerId?,name?,targetWorkspaceId?}`; import result or pending operation |
 
-All errors follow this format:
+`bundlePath` names a customer-scoped opaque handle, not a server filesystem path.
+The binary bundle begins with `CVBNDL1` plus newline, a four-byte big-endian header length, a signed JSON header, and selected file bytes.
+Configured Ed25519 signing keys, exact hashes, limits, and secret scanning gate bundle readiness.
+`skipHashVerification:true` is rejected.
+
+Clone requires source read authority and destination create authority.
+Import handles require the destination customer scope.
+Tombstoning retains accepted history and denies ordinary content access.
+The initial orphan collector does not purge retained accepted history.
+
+## Errors
+
+V1 domain failures use this envelope:
 
 ```json
 {
   "error": {
-    "code": "WORKSPACE_NOT_FOUND",
-    "message": "Workspace ws_01HXXXXXXXX not found",
-    "details": {}
+    "code": "PUBLICATION_OUTCOME_UNKNOWN",
+    "message": "The operation requires reconciliation",
+    "operationId": "opaque-operation-id",
+    "retryable": true
   }
 }
 ```
 
-### Error Codes
+| HTTP | Representative codes |
+|---|---|
+| `400` | `INVALID_REQUEST` |
+| `401` | `UNAUTHENTICATED` |
+| `403` | `FORBIDDEN`, `CREDENTIAL_REVOKED` |
+| `404` | `WORKSPACE_NOT_FOUND`, `RUN_NOT_FOUND`, `SUBMISSION_NOT_FOUND`, `OPERATION_NOT_FOUND`, `REVISION_NOT_FOUND` |
+| `409` | `IDEMPOTENCY_KEY_REUSED`, `REVISION_CONFLICT`, `VERSION_CONFLICT`, `STALE_FENCE`, `STORAGE_BINDING_CHANGED`, `WORKSPACE_INACTIVE`, `FINALIZATION_IN_PROGRESS`, `INVALID_TRANSITION`, `SUBMISSION_SEALED`, `CAPTURE_CHANGED`, `UNSUPPORTED_CAPABILITY` |
+| `410` | `RUN_EXPIRED` |
+| `413` | `QUOTA_EXCEEDED` |
+| `422` | `INVALID_MANIFEST`, `RECEIPT_MISMATCH` |
+| `503` | `PUBLICATION_OUTCOME_UNKNOWN`, `STORAGE_UNAVAILABLE` |
 
-| HTTP Status | Code | Description |
-|-------------|------|-------------|
-| 400 | `INVALID_REQUEST` | Malformed request body |
-| 400 | `NO_CHANGES` | No changes to commit |
-| 403 | `FORBIDDEN` | Access denied (wrong customer) |
-| 404 | `WORKSPACE_NOT_FOUND` | Workspace does not exist |
-| 404 | `SANDBOX_NOT_FOUND` | Sandbox does not exist |
-| 404 | `FILE_NOT_FOUND` | File not found in workspace |
-| 409 | `SANDBOX_EXISTS` | Sandbox already exists for workspace |
-| 409 | `WORKSPACE_EXISTS` | Workspace already exists |
-| 500 | `GIT_ERROR` | Git operation failed |
-| 500 | `INTERNAL_ERROR` | Unexpected server error |
-
----
-
-## Example: Full Sandbox Workflow
-
-```bash
-# 1. Create API key
-curl -X POST http://localhost:3000/api-keys \
-  -H "X-API-Key: cv-test-api-key-123" \
-  -d '{"customerId":"my-customer","name":"dev-key"}'
-# Returns: { "key": "cv_key_xxx", ... }
-
-# 2. Create workspace
-curl -X POST http://localhost:3000/workspaces \
-  -H "X-API-Key: cv_key_xxx" \
-  -d '{"customerId":"my-customer","name":"LeBron James"}'
-
-# 3. Checkout to sandbox
-curl -X POST http://localhost:3000/workspaces/ws_01HXXXXXXXX/sandbox \
-  -H "X-API-Key: cv_key_xxx"
-
-# 4. Agent works in sandbox at /tmp/contextvault-sandbox/ws_01HXXXXXXXX/
-
-# 5. Commit sandbox changes
-curl -X POST http://localhost:3000/workspaces/ws_01HXXXXXXXX/sandbox/commit \
-  -H "X-API-Key: cv_key_xxx" \
-  -d '{"agentId":"meta-profile","taskId":"analysis-001"}'
-
-# 6. Check diff between commits
-curl "http://localhost:3000/workspaces/ws_01HXXXXXXXX/diff?from=abc123&to=def456" \
-  -H "X-API-Key: cv_key_xxx"
-
-# 7. Register webhook for commits
-curl -X POST http://localhost:3000/webhooks \
-  -H "X-API-Key: cv_key_xxx" \
-  -d '{"url":"https://my-app.com/cv-webhook","events":["sandbox.committed"]}'
-
-# 8. Destroy sandbox
-curl -X DELETE http://localhost:3000/workspaces/ws_01HXXXXXXXX/sandbox \
-  -H "X-API-Key: cv_key_xxx"
-```
+An error's `retryable` field does not authorize a new idempotency key or automatic cleanup.
+Public messages may omit internal failure details.
+Legacy routes retain selected different status and field shapes.
+See the [compatibility guide](api/compatibility.md) before migrating an existing consumer.

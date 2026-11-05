@@ -10,7 +10,13 @@ async function fixture(callback) {
   try { await callback(root); } finally { await rm(root, { recursive: true, force: true }); }
 }
 async function harness() { return import(runner.href); }
-const runtime = (run) => ({ run, resolveRuntime: () => "/fixture/newman.js" });
+const runtime = (run) => ({ run: async (command, args, options) => {
+  await run(command, args, options);
+  const report = args[args.indexOf("--reporter-json-export") + 1];
+  const input = JSON.parse(await (await import("node:fs/promises")).readFile(args[2], "utf8"));
+  const name = input.item[0].name;
+  await writeFile(report, JSON.stringify({ run: { stats: { requests: { total: 1, failed: 0 }, assertions: { total: 1, failed: 0, pending: 0 } }, failures: [], executions: [{ item: { name }, response: { code: 200 }, assertions: [{ assertion: "status", skipped: false }] }] } }));
+}, resolveRuntime: () => "postman" });
 
 test("reports missing configuration instead of passing an empty documentation gate", async () => {
   const { verifyDocumentation } = await harness();
@@ -34,6 +40,54 @@ test("checks local inline links, reference links, and anchor targets", async () 
   });
 });
 
+for (const [name, code] of [
+  ["single-backtick", "`recovery()['workflow']['acceptedCheckpoint']` and `state['progress']['runView']`"],
+  ["multiple-backtick", "``recovery()['workflow'][`acceptedCheckpoint`]`` and ```state[``progress``]['runView']```"],
+]) {
+  test(`ignores ${name} code spans without dropping real links or heading anchors`, async () => {
+    const { checkMarkdownLinks } = await harness();
+    await fixture(async root => {
+      await writeFile(path.join(root, "guide.md"), `${code}\n[inline](target.md#recovery-acceptedcheckpoint)\n[reference][target]\n[target]: target.md#recovery-acceptedcheckpoint\n`);
+      await writeFile(path.join(root, "target.md"), "# Recovery `acceptedCheckpoint`\n");
+      assert.equal(await checkMarkdownLinks(root, ["guide.md"]), 2);
+      await rm(path.join(root, "target.md"));
+      await assert.rejects(checkMarkdownLinks(root, ["guide.md"]), /Missing local link/);
+    });
+  });
+}
+
+test("keeps real links visible when backtick delimiter lengths do not match", async () => {
+  const { checkMarkdownLinks } = await harness();
+  await fixture(async root => {
+    await writeFile(path.join(root, "guide.md"), "`unfinished [real](missing.md) ``\n");
+    await assert.rejects(checkMarkdownLinks(root, ["guide.md"]), /Missing local link/);
+  });
+});
+
+test("keeps real references visible between escaped literal backticks", async () => {
+  const { checkMarkdownLinks } = await harness();
+  await fixture(async root => {
+    await writeFile(path.join(root, "guide.md"), "\\`[real][missing]\\`\n");
+    await assert.rejects(checkMarkdownLinks(root, ["guide.md"]), /Missing Markdown reference/);
+  });
+});
+
+for (const [boundary, lines] of [
+  ["paragraph", ["Literal ` here.", "", "[broken](missing.md)", "", "Use `code` here."]],
+  ["heading", ["Literal ` here.", "# Heading", "[broken](missing.md)", "Use `code` here."]],
+  ["list", ["Literal ` here.", "- [broken](missing.md)", "Use `code` here."]],
+]) {
+  test(`keeps broken links visible across ${boundary} boundaries with unmatched backticks`, async () => {
+    const { checkMarkdownLinks } = await harness();
+    await fixture(async root => {
+      for (const newline of ["\n", "\r\n", "\r"]) {
+        await writeFile(path.join(root, "guide.md"), lines.join(newline));
+        await assert.rejects(checkMarkdownLinks(root, ["guide.md"]), /Missing local link/);
+      }
+    });
+  });
+}
+
 test("executes the selected quickstart block and propagates its failure", async () => {
   const { runQuickstart } = await harness();
   assert.equal(typeof runQuickstart, "function", "The documentation harness must export runQuickstart");
@@ -56,7 +110,8 @@ test("requires executable Postman assertions and propagates collection runner fa
     const execute = async (command, args) => { invocation = { command, args }; };
     await runPostman(root, { file: "collection.json", variables: { baseUrl: "http://127.0.0.1:32345" } }, runtime(execute));
     assert.equal(invocation.args.includes("--bail"), true);
-    assert.equal(invocation.args.includes(path.join(root, "collection.json")), true);
+    assert.equal(invocation.args[0], "collection");
+    assert.equal(invocation.args.includes("--no-report-events"), true);
     await assert.rejects(runPostman(root, { file: "collection.json", variables: { baseUrl: "http://127.0.0.1:32345" } }, runtime(async () => { throw new Error("fixture assertion failed"); })), /fixture assertion failed/);
     collection.item[0].event = [];
     await writeFile(path.join(root, "collection.json"), JSON.stringify(collection));

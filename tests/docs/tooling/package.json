@@ -1,0 +1,9 @@
+{
+  "name": "contextvault-docs-postman-tooling",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated documentation test tooling; never a production dependency",
+  "dependencies": {
+    "postman-cli": "1.85.0"
+  }
+}

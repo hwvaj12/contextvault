@@ -1,84 +1,82 @@
 # Workspace documentation checks
 
-`npm run test:docs -- --self-test` runs deterministic harness fixtures.
-It does not prove real quickstarts, Postman behavior, or release readiness.
+The full gate starts a private Linux API and disposable scoped tenants.
+It executes the published TypeScript, Python, and PHP examples from separate consumer directories.
+Each consumer installs its SDK artifact and uses ordinary local files.
+Independent HTTP reads verify binary bytes, deletions, abort isolation, and the accepted workspace version.
 
-`npm run test:docs` requires `tests/docs/workspace-docs.json`.
-CV-26 supplies this allowlist after the public API and installed clients exist.
-Missing configuration fails the check.
-The example below documents the format; it does not certify these future files.
+1. Install root Node dependencies and the TypeScript SDK compiler dependencies.
+2. Select Node.js 22.12 or later for the test controller.
+3. Provide Python 3.9 or later, PHP with cURL, and Composer.
+4. Start Docker and pull `node:22-bookworm-slim` and `python:3.8-slim`.
+5. Run the deterministic harness self-tests.
 
-```json
-{
-  "requiredEnvironment": ["CV_DOCS_BASE_URL", "CV_DOCS_API_KEY"],
-  "markdown": ["README.md", "docs/quickstart/typescript.md"],
-  "quickstarts": [
-    {
-      "file": "docs/quickstart/typescript.md",
-      "block": "typescript-lifecycle",
-      "display": "node docs/examples/typescript-lifecycle.mjs",
-      "command": ["node", "${PROJECT_ROOT}/docs/examples/typescript-lifecycle.mjs"]
-    }
-  ],
-  "postman": [
-    {
-      "file": "docs/ContextVault-API.postman_collection.json",
-      "environment": {
-        "baseUrl": "CV_DOCS_BASE_URL",
-        "apiKey": "CV_DOCS_API_KEY"
-      }
-    }
-  ]
-}
+```sh
+npm run test:docs -- --self-test
 ```
 
-Quickstart fences use a unique `cv-check:<block>` marker after the language.
-Their exact contents must match the allowlisted `display` value.
-The harness executes the declared argv with `shell: false` in an isolated temporary directory.
-`${PROJECT_ROOT}` and `${WORK_DIR}` substitutions provide explicit file locations.
-Each quickstart has a 30-second timeout.
-Use an isolated server and disposable test credentials.
+6. Run the complete Git documentation gate.
 
-Markdown checks cover local inline links, reference links, files, and Markdown heading anchors.
-They ignore code fences and external URLs.
-They do not certify external URL availability.
+```sh
+npm run test:docs -- --backend git
+```
 
-Postman checks require a vetted Newman runtime with assertion failures, request errors, and timeouts preserved.
-No Newman dependency is bundled because the current release adds Critical and High dependency advisories.
-Without that runtime, full Postman verification fails explicitly.
-Harness fixtures inject an executor and runtime location; they do not execute Newman.
-Each request must inherit or declare a `pm.test` assertion.
-The harness accepts Postman collection schema v2.1.
-`baseUrl` must be explicit.
-Loopback URLs are allowed for isolated test servers.
-Other origins require `CV_DOCS_NONPRODUCTION_ORIGIN` to equal the exact test origin.
-Response scripts may fill path and query variables after earlier requests complete.
-Origin variables must resolve before execution.
-The harness disables redirects and writes environment values into a private temporary file.
-It removes that file after the check.
+Without arguments, the command selects Git and starts its own isolated fixture.
+S3 requires an explicit selected nonproduction target.
 
-Collection scripts are trusted repository test code.
-Static URL checks do not sandbox Newman scripts or their side effects.
-Credentials must never appear in collection files, displayed commands, or assertions.
+7. Start the LocalStack service and create its disposable bucket.
+8. Set `CV_TEST_S3_PROVIDER`, `CV_TEST_S3_BUCKET`, `CV_TEST_S3_REGION`, `CV_TEST_S3_PREFIX`, and `CV_TEST_S3_ENDPOINT`.
+9. Set `CV_TEST_S3_CONTAINER` when its container name differs from the configured fixture default.
+10. Run the complete LocalStack documentation gate.
 
-# Named future test gates
+```sh
+npm run test:docs -- --backend s3 --s3-provider localstack
+```
 
-Named test scripts use `scripts/run-workspace-tests.mjs`.
-Backend gates require `--backend git` or `--backend s3`.
-SDK gates require `--language typescript`, `python`, or `php`.
-Missing suites and missing runtime tools fail without running unrelated baseline tests.
+The prefix must match `contextvault-tests/<unique-run-id>/`.
+The controller verifies the selected mapped endpoint and dedicated backend network.
+LocalStack uses synthetic `test` credentials; client processes receive scoped API credentials.
+See [development](../../docs/DEVELOPMENT.md) for the other release prerequisites.
 
-Real S3 gates require `CV_TEST_S3_BUCKET`, `CV_TEST_S3_REGION`, and `CV_TEST_S3_PREFIX`.
-The prefix must use `contextvault-tests/<unique-run-id>/`.
-The AWS credential chain remains the adapter's responsibility.
-Configuration checks do not prove that S3 access succeeds.
+## Maintained checks
 
-`npm run test:e2e` explicitly runs the existing `.mjs` HTTP scripts.
-It requires `CV_TEST_API_URL` and `CV_TEST_API_KEY`.
-A non-loopback server also requires the matching `CV_TEST_NONPRODUCTION_ORIGIN`.
-This command does not start a server.
+`workspace-docs.json` lists every maintained Markdown target and three exact `cv-check` command blocks.
+The harness checks local links and anchors before running those displayed relative commands.
+Inline code spans open and close on one physical line.
+Multiline examples use fenced code blocks.
+The checker validates links between unmatched backticks on different lines.
+Setup copies each script into the consumer directory and installs its package outside the repository.
+Each example invocation has a 30-second limit; package setup has separate bounded timeouts.
+External URL availability remains outside the local link check.
 
-`npm test` excludes the separately runnable public lifecycle acceptance suite.
-`npm run test:acceptance -- --backend git` runs that suite without skipping missing product behavior.
-The final release runner remains a separate CV-27 deliverable.
-Its missing file fails the release command.
+The official Postman CLI is pinned in `tooling/package-lock.json`.
+Its image builds from four explicit inputs and a digest-addressed Node base.
+Installation scripts stay disabled, including its global agent-instruction hook.
+Build setup downloads packages; collection execution uses an owned internal network with the API.
+The runtime mounts one private working directory and receives no account profiles or canonical storage credentials.
+Its `--no-report-events` option disables report dispatch.
+Network-free runtime probes use their own loopback fixture.
+
+The collection runs real prerequest and response scripts through the official engine.
+The gate rejects nonzero exits, transport or script failures, skipped assertions, zero coverage, missing reports, and wall-timeout kills.
+Eight actual runtime probes verify those outcomes, including cases where the CLI itself exits successfully.
+Private environment and raw report files disappear after each run.
+The final sanitized `verification-<backend>.log` records counts, versions, artifact hashes, and boundary evidence.
+The npm audit covers the wrapper dependency tree; it does not inventory the embedded binary.
+
+## Component development
+
+`components.test.mts` exercises installed examples and the collection while narrative drafts remain separate.
+It uses temporary Markdown fixtures and therefore cannot certify published guidance.
+The normal `npm run test:docs` command always runs the published-guide gate and actual runtime probes.
+Missing tools, selected storage, documents, or required assertions fail that command.
+
+```sh
+node node_modules/vitest/vitest.mjs run tests/docs/components.test.mts --config tests/docs/vitest.config.mjs
+```
+
+## Other gates
+
+Named backend, SDK, MCP, migration, recovery, and release commands remain separate.
+Documentation checks establish the selected local Git and LocalStack behavior.
+Physical remote hardware, other operating systems, actual AWS, and hosted CI require their own evidence.

@@ -1,268 +1,736 @@
 {
   "info": {
-    "name": "ContextVault API",
-    "description": "Multi-tenant, versioned workspace layer for AI agents",
+    "name": "ContextVault workspace lifecycle",
+    "description": "Creates an isolated example workspace through authenticated v1 commands. Stop external writers before finalization. This collection retains its accepted example workspace for inspection.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "baseUrl",
-      "value": "http://localhost:3000"
+      "value": ""
     },
     {
       "key": "apiKey",
-      "value": "cv-test-api-key-123"
-    },
-    {
-      "key": "workspaceId",
       "value": ""
     },
     {
-      "key": "runId",
+      "key": "customerId",
       "value": ""
     }
   ],
-  "auth": {
-    "type": "apiKey",
-    "apiKey": [
-      {
-        "key": "value",
-        "value": "{{apiKey}}",
-        "type": "string"
-      },
-      {
-        "key": "key",
-        "value": "X-API-Key",
-        "type": "string"
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "exec": [
+          "for(const key of ['baseUrl','apiKey','customerId']){if(!pm.environment.get(key)){throw new Error('Explicit '+key+' is required');}}",
+          "pm.variables.set('commandKey',pm.variables.replaceIn('{{$guid}}'));"
+        ]
       }
-    ]
-  },
+    }
+  ],
   "item": [
     {
       "name": "Health",
       "request": {
         "method": "GET",
-        "url": "{{baseUrl}}/health",
-        "description": "Check API health"
-      }
-    },
-    {
-      "name": "Workspaces",
-      "item": [
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          }
+        ],
+        "url": "{{baseUrl}}/health"
+      },
+      "event": [
         {
-          "name": "Create Workspace",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/workspaces",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"customerId\": \"test-customer\",\n  \"name\": \"My Agent Workspace\"\n}"
-            },
-            "description": "Create a new workspace",
-            "event": [
-              {
-                "listen": "test",
-                "script": {
-                  "exec": [
-                    "var jsonData = pm.response.json();",
-                    "pm.collectionVariables.set('workspaceId', jsonData.id);"
-                  ]
-                }
-              }
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(200));",
+              "pm.test('healthy service',()=>pm.expect(pm.response.json().status).to.eql('healthy'));"
             ]
           }
-        },
-        {
-          "name": "List Workspaces",
-          "request": {
-            "method": "GET",
-            "url": {
-              "raw": "{{baseUrl}}/workspaces?customerId={{customerId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["workspaces"],
-              "query": [
-                {
-                  "key": "customerId",
-                  "value": "test-customer"
-                }
-              ]
-            },
-            "description": "List all workspaces"
-          }
-        },
-        {
-          "name": "Get Workspace",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/workspaces/{{workspaceId}}",
-            "description": "Get a workspace by ID"
-          }
-        },
-        {
-          "name": "Delete Workspace",
-          "request": {
-            "method": "DELETE",
-            "url": "{{baseUrl}}/workspaces/{{workspaceId}}",
-            "description": "Soft-delete a workspace"
-          }
         }
       ]
     },
     {
-      "name": "Sandbox",
-      "item": [
-        {
-          "name": "Checkout Sandbox",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/sandbox",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{}"
-            },
-            "description": "Create a sandbox (checkout workspace)"
+      "name": "List workspaces",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
           }
-        },
+        ],
+        "url": "{{baseUrl}}/v1/workspaces"
+      },
+      "event": [
         {
-          "name": "Get Sandbox Status",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/sandbox",
-            "description": "Get sandbox status"
-          }
-        },
-        {
-          "name": "Destroy Sandbox",
-          "request": {
-            "method": "DELETE",
-            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/sandbox",
-            "description": "Destroy sandbox without committing"
-          }
-        },
-        {
-          "name": "Commit Sandbox",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/sandbox/commit",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"message\": \"Agent session commit\",\n  \"author\": \"test-agent\",\n  \"agentId\": \"agent-001\",\n  \"taskId\": \"task-001\"\n}"
-            },
-            "description": "Commit sandbox changes"
-          }
-        }
-      ]
-    },
-    {
-      "name": "Runs",
-      "item": [
-        {
-          "name": "Create Run",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/runs",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"agentId\": \"test-agent\"\n}"
-            },
-            "event": [
-              {
-                "listen": "test",
-                "script": {
-                  "exec": [
-                    "var jsonData = pm.response.json();",
-                    "pm.collectionVariables.set('runId', jsonData.id);"
-                  ]
-                }
-              }
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(200));",
+              "pm.test('scoped workspace list',()=>pm.expect(pm.response.json().workspaces).to.be.an('array'));"
             ]
           }
-        },
-        {
-          "name": "Get Run",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/runs/{{runId}}",
-            "description": "Get run status"
+        }
+      ]
+    },
+    {
+      "name": "Create workspace",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{commandKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
           }
-        },
-        {
-          "name": "Finalize Run",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/runs/{{runId}}/finalize",
-            "description": "Finalize run (commit changes)"
+        ],
+        "url": "{{baseUrl}}/v1/workspaces",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"customerId\":\"{{customerId}}\",\"name\":\"Postman documentation lifecycle\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
           }
-        },
+        }
+      },
+      "event": [
         {
-          "name": "Abort Run",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/runs/{{runId}}/abort",
-            "description": "Abort a run"
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.expect(pm.response.code).to.be.oneOf([201,202]));",
+              "const value=pm.response.json();pm.environment.set('workspaceId',pm.response.code===201?value.id:value.workspaceId);pm.environment.set('creationPolls',0);",
+              "pm.test('durable workspace identity',()=>pm.expect(pm.environment.get('workspaceId')).to.be.a('string').and.not.empty);"
+            ]
           }
         }
       ]
     },
     {
-      "name": "Version Control",
-      "item": [
-        {
-          "name": "Pull (get files)",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/pull",
-            "description": "Pull latest committed files"
+      "name": "Wait for creation",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
           }
-        },
+        ],
+        "url": "{{baseUrl}}/v1/workspaces/{{workspaceId}}"
+      },
+      "event": [
         {
-          "name": "Get File",
-          "request": {
-            "method": "GET",
-            "url": {
-              "raw": "{{baseUrl}}/workspaces/{{workspaceId}}/pull?path=notes/test.md",
-              "host": ["{{baseUrl}}"],
-              "path": ["workspaces", "{{workspaceId}}", "pull"],
-              "query": [
-                {
-                  "key": "path",
-                  "value": "notes/test.md"
-                }
-              ]
-            },
-            "description": "Get a single file by path"
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.expect(pm.response.code).to.be.oneOf([200,404]));",
+              "const count=Number(pm.environment.get('creationPolls')||0)+1;pm.environment.set('creationPolls',count);pm.test('bounded creation wait',()=>pm.expect(count).to.be.at.most(100));",
+              "if(pm.response.code===404){pm.execution.setNextRequest('Wait for creation');setTimeout(()=>{},25);}else{pm.test('initial workspace version',()=>pm.expect(pm.response.json().version).to.eql(1));}"
+            ]
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "Open writer run",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{commandKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/workspaces/{{workspaceId}}/runs",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"mode\":\"read-write\",\"agentLabel\":\"postman-documentation\",\"task\":\"Publish a complete snapshot\",\"reason\":\"Verify the documented API\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
         {
-          "name": "History",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/history",
-            "description": "Get commit history"
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(201));",
+              "const value=pm.response.json();pm.environment.set('runId',value.id);pm.environment.set('runVersion',value.version);pm.environment.set('leaseVersion',value.leaseVersion);",
+              "pm.test('client-local protocol',()=>pm.expect(pm.response.json()).not.to.have.property('path'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read pinned manifest",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/runs/{{runId}}/workspace/manifest"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(200));",
+              "pm.test('empty initial snapshot',()=>pm.expect(pm.response.json()).to.eql({schemaVersion:1,entries:[]}));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Heartbeat",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{commandKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/runs/{{runId}}/heartbeat",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"expectedLeaseVersion\":{{leaseVersion}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(200));",
+              "const value=pm.response.json();pm.test('independent lease version',()=>{pm.expect(value.leaseVersion).to.eql(Number(pm.environment.get('leaseVersion'))+1);pm.expect(value.version).to.eql(Number(pm.environment.get('runVersion')));});pm.environment.set('leaseVersion',value.leaseVersion);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Begin submission",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{commandKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/runs/{{runId}}/submissions",
+        "body": {
+          "mode": "raw",
+          "raw": "{}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(201));",
+              "pm.environment.set('submissionId',pm.response.json().id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Upload exact bytes",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{commandKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "key": "X-Content-SHA256",
+            "value": "bb207ba10d0bfc5cc437e161b08908e0ee276cd0dab7944fda79501c3ed8358a"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/runs/{{runId}}/submissions/{{submissionId}}/files?path=docs%2Foutput.txt",
+        "body": {
+          "mode": "raw",
+          "raw": "ContextVault documentation\n",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(201));",
+              "const value=pm.response.json();pm.environment.set('receiptId',value.id);pm.test('verified upload receipt',()=>{pm.expect(value.sha256).to.eql('bb207ba10d0bfc5cc437e161b08908e0ee276cd0dab7944fda79501c3ed8358a');pm.expect(value.byteLength).to.eql(27);});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Seal submission",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{commandKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/runs/{{runId}}/submissions/{{submissionId}}/seal",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"manifest\":{\"schemaVersion\":1,\"entries\":[{\"path\":\"docs\",\"kind\":\"directory\"},{\"path\":\"docs/output.txt\",\"kind\":\"file\",\"byteLength\":27,\"sha256\":\"bb207ba10d0bfc5cc437e161b08908e0ee276cd0dab7944fda79501c3ed8358a\"},{\"path\":\"empty\",\"kind\":\"directory\"}]},\"receipts\":[{\"path\":\"docs/output.txt\",\"receiptId\":\"{{receiptId}}\"}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(200));",
+              "pm.test('immutable selection sealed',()=>pm.expect(pm.response.json().state).to.eql('sealed'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Finalize stopped writer",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{commandKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/runs/{{runId}}/finalize",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"expectedRunVersion\":{{runVersion}},\"submissionId\":\"{{submissionId}}\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(202));",
+              "pm.environment.set('operationId',pm.response.json().id);pm.environment.set('finalizePolls',0);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Wait for finalization",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/operations/{{operationId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(200));",
+              "const value=pm.response.json();pm.test('publication has no recorded failure',()=>pm.expect(value.state).to.be.oneOf(['pending','processing','succeeded']));",
+              "const count=Number(pm.environment.get('finalizePolls')||0)+1;pm.environment.set('finalizePolls',count);pm.test('bounded finalization wait',()=>pm.expect(count).to.be.at.most(100));",
+              "if(value.state!=='succeeded'){pm.execution.setNextRequest('Wait for finalization');setTimeout(()=>{},25);}else{pm.test('accepted finalization',()=>pm.expect(value.result.runState).to.eql('finalized'));}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read accepted workspace",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/workspaces/{{workspaceId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(200));",
+              "const value=pm.response.json();pm.environment.set('revisionId',value.currentRevisionId);pm.test('one accepted publication',()=>pm.expect(value.version).to.eql(2));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read accepted manifest",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/workspaces/{{workspaceId}}/revisions/{{revisionId}}/manifest"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(200));",
+              "pm.test('exact complete snapshot',()=>pm.expect(pm.response.json()).to.eql({\"schemaVersion\":1,\"entries\":[{\"path\":\"docs\",\"kind\":\"directory\"},{\"path\":\"docs/output.txt\",\"kind\":\"file\",\"byteLength\":27,\"sha256\":\"bb207ba10d0bfc5cc437e161b08908e0ee276cd0dab7944fda79501c3ed8358a\"},{\"path\":\"empty\",\"kind\":\"directory\"}]}));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read accepted file",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/workspaces/{{workspaceId}}/revisions/{{revisionId}}/files?path=docs%2Foutput.txt"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(200));",
+              "pm.test('exact stored bytes',()=>pm.expect(pm.response.text()).to.eql(\"ContextVault documentation\\n\"));",
+              "pm.test('verified read digest',()=>pm.expect(pm.response.headers.get('X-Content-SHA256')).to.eql('bb207ba10d0bfc5cc437e161b08908e0ee276cd0dab7944fda79501c3ed8358a'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Open abort run",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{commandKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/workspaces/{{workspaceId}}/runs",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"mode\":\"read-write\",\"agentLabel\":\"postman-documentation\",\"task\":\"Demonstrate abort isolation\",\"reason\":\"Verify the documented API\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(201));",
+              "const value=pm.response.json();pm.environment.set('abortRunId',value.id);pm.environment.set('abortRunVersion',value.version);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Begin discarded submission",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{commandKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/runs/{{abortRunId}}/submissions",
+        "body": {
+          "mode": "raw",
+          "raw": "{}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(201));",
+              "pm.environment.set('discardSubmissionId',pm.response.json().id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Upload discarded bytes",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{commandKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "key": "X-Content-SHA256",
+            "value": "1fcc4b37141c12bdbd26dde9b38274d3722510565931d89e3e43526c2ea68feb"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/runs/{{abortRunId}}/submissions/{{discardSubmissionId}}/files?path=discard.txt",
+        "body": {
+          "mode": "raw",
+          "raw": "discarded",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(201));",
+              "pm.test('staged bytes verified',()=>pm.expect(pm.response.json().sha256).to.eql('1fcc4b37141c12bdbd26dde9b38274d3722510565931d89e3e43526c2ea68feb'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Abort discarded run",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{commandKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/runs/{{abortRunId}}/abort",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"expectedRunVersion\":{{abortRunVersion}},\"reason\":\"Discard documentation attempt\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(200));",
+              "pm.test('explicit abort',()=>pm.expect(pm.response.json().state).to.eql('aborted'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Verify abort isolation",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/workspaces/{{workspaceId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(200));",
+              "pm.test('abort preserves authoritative head',()=>{const value=pm.response.json();pm.expect(value.version).to.eql(2);pm.expect(value.currentRevisionId).to.eql(pm.environment.get('revisionId'));});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read retained legacy metadata",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          }
+        ],
+        "url": "{{baseUrl}}/workspaces/{{workspaceId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status',()=>pm.response.to.have.status(200));",
+              "pm.test('compatibility resolves the same workspace',()=>pm.expect(pm.response.json().id).to.eql(pm.environment.get('workspaceId')));"
+            ]
           }
         }
       ]

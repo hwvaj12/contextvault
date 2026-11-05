@@ -1,105 +1,96 @@
-# Python Quickstart
+# Python client quickstart
 
-Get up and running with ContextVault in Python in under 5 minutes.
+The installed `contextvault` wheel requires Python 3.8 or later and `requests>=2.20,<3`.
+Local workspace materialization requires POSIX primitives, including `O_NOFOLLOW`, directory fsync, and `flock`.
 
 ## Install
 
-```bash
-pip install contextvault
+1. Create a private consumer virtual environment.
+
+```sh
+python3 -m venv .venv
 ```
 
-## Initialize the Client
+2. Install the repository-built wheel.
+
+```sh
+.venv/bin/python -m pip install /absolute/artifacts/contextvault-0.2.0-py3-none-any.whl
+```
+
+3. Activate that environment.
+
+```sh
+. .venv/bin/activate
+```
+
+4. Configure the environment described in the [common quickstart](clients.md).
+
+Installed code imports `contextvault`.
+The repository-local `src` compatibility shim is excluded from the wheel.
+Registry publication is separate from local installation.
+
+## Open, write, and finalize
 
 ```python
+import os
+from pathlib import Path
 from contextvault import Client
 
 cv = Client(
-    api_key="cv-test-api-key-123",
-    base_url="http://localhost:3000",  # optional, this is the default
+    api_key=os.environ["CV_API_KEY"],
+    base_url=os.environ["CV_API_URL"],
 )
-```
-
-## Create a Workspace
-
-```python
-workspace = cv.workspaces.create(
-    customer_id="customer-123",
-    name="agent-memory",
+handle = cv.create_workspace(
+    os.environ["CV_CUSTOMER_ID"],
+    "client-example",
+    agent_label="existing-agent",
+    task="Write the requested result",
+    reason="Nonproduction example",
 )
-
-print(workspace["id"])
+recovery_path = handle.private_state_path
+Path(handle.path, "result.bin").write_bytes(bytes([0, 255, 128]))
+# Stop every agent writer before this call.
+operation = handle.finalize(writers_stopped=True)
+handle.cleanup(writers_stopped=True)
+cv.close()
 ```
 
-## Checkout, Write, and Commit
+`handle.path` is an absolute path on the client host.
+Private state stays outside submitted content and excludes API credentials.
+A chosen `private_state_path` must not exist; its parent must already exist safely.
+The application should retain that identity in its external job record.
+
+`cv.open_workspace(workspace_id, **options)` opens an existing workspace.
+`mode="read-only"` selects a pinned reader without a submission.
+`handle.heartbeat()` provides explicit lease renewal.
+
+## Recovery and cleanup
+
+1. Stop every competing controller for the retained session.
+2. Stop every agent writer using its local workspace.
+3. Resume the retained identity with current credentials.
 
 ```python
-# 1. Checkout a sandbox
-sandbox = cv.workspaces.checkout(workspace["id"])
-print(sandbox["path"])  # writable directory path
-
-# 2. Your agent writes files to sandbox["path"]
-# (use open(), pathlib, or any file-writing method)
-
-# 3. Commit the changes
-commit = cv.workspaces.commit(
-    workspace_id=workspace["id"],
-    message="Save agent session data",
-    author="my-agent",
+recovery_client = Client(
+    api_key=os.environ["CV_API_KEY"],
+    base_url=os.environ["CV_API_URL"],
 )
-
-print(commit["commitId"])
-
-# 4. Cleanup
-cv.workspaces.destroy(workspace["id"])
+recovered = recovery_client.resume_workspace(saved_private_state_path)
+operation = recovered.reconcile()
+recovery_client.close()
 ```
 
-## Read Files
+A fresh process supplies current credentials and the original server origin.
+Reconciliation uses the original request, key, and captured bytes.
+It does not automatically retry mutations with a fresh identity.
 
-```python
-# Get all files from latest commit
-files = cv.workspaces.pull(workspace["id"])
-for f in files:
-    print(f["path"], f["content"])
+`checkpoint` publishes one run and opens the next over the same local path.
+An incomplete reopen retains `published-needs-reopen` progress and the accepted publication receipt.
+A generic exception or access denial does not authorize abort or deletion.
 
-# Get a single file
-file = cv.workspaces.get_file(workspace["id"], "profile/summary.md")
-print(file)
-```
+Abort applies to a known active run.
+Cleanup requires a known terminal outcome and caller-stopped writers.
+Closing the client only closes HTTP connections.
 
-## View History
-
-```python
-history = cv.workspaces.history(workspace["id"])
-for entry in history:
-    print(entry["commitId"])
-```
-
-## Error Handling
-
-```python
-from contextvault.exceptions import (
-    NotFoundError,
-    AuthError,
-    ValidationError,
-    NetworkError,
-)
-
-try:
-    ws = cv.workspaces.get("nonexistent")
-except NotFoundError:
-    print("Workspace not found")
-except AuthError:
-    print("Invalid API key")
-except ValidationError as e:
-    print(f"Bad request: {e}")
-except NetworkError as e:
-    print(f"Connection failed: {e}")
-```
-
-The Python SDK automatically retries failed requests (up to 3 times) with exponential backoff on connection errors and timeouts.
-
-## Next Steps
-
-- [Full Workspaces API Reference](../api/workspaces.md)
-- [Basic Examples](../examples/basic/python.md)
-- [TypeScript Quickstart](typescript.md) | [PHP Quickstart](php.md)
+Run the maintained [installed example](clients.md#run-the-installed-client-examples) for executable lifecycle checks.
+See the [SDK reference](../../sdk/python/README.md#local-workspace-lifecycle) for durable provisioning and client-specific abandonment rules.

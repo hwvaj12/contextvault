@@ -1,106 +1,111 @@
-# PHP Quickstart
+# PHP client quickstart
 
-Get up and running with ContextVault in PHP in under 5 minutes.
+The PHP SDK requires PHP 8.0 or later, `ext-curl`, `ext-json`, and its Composer dependencies.
+Declared Unicode polyfills support installations without `intl` or `mbstring`.
+Local workspaces use POSIX filesystem behavior verified by the installed-package tests.
 
-## Install
+## Install a local Composer artifact
 
-```bash
-composer require contextvault/contextvault-php
+Use a repository-built archive containing the SDK's `composer.json` and `src` directory.
+The following consumer metadata selects local artifact version `1.0.0` for dependency resolution.
+It does not claim a published registry release.
+
+1. Save this package definition as the consumer's `composer.json`.
+
+```json
+{
+  "name": "example/contextvault-consumer",
+  "require": { "contextvault/contextvault-php": "1.0.0" },
+  "repositories": [
+    {
+      "type": "package",
+      "package": {
+        "name": "contextvault/contextvault-php",
+        "version": "1.0.0",
+        "type": "library",
+        "dist": {
+          "type": "tar",
+          "url": "file:///absolute/artifacts/contextvault-php.tar.gz"
+        },
+        "require": {
+          "php": ">=8.0",
+          "ext-curl": "*",
+          "ext-json": "*",
+          "guzzlehttp/guzzle": "^7.0",
+          "symfony/polyfill-intl-normalizer": "^1.31",
+          "symfony/polyfill-mbstring": "^1.31"
+        },
+        "autoload": { "psr-4": { "ContextVault\\": "src/" } }
+      }
+    }
+  ]
+}
 ```
 
-## Initialize the Client
+2. Install the local artifact and declared runtime dependencies.
+
+```sh
+composer install --no-dev --no-scripts --no-plugins --no-interaction
+```
+
+3. Configure the environment described in the [common quickstart](clients.md).
+
+The executable example loads the consumer's `vendor/autoload.php`.
+It does not import the repository source directory directly.
+
+## Open, write, and finalize
 
 ```php
 <?php
+require getcwd() . '/vendor/autoload.php';
 
 use ContextVault\Client;
 
-$cv = new Client(
-    apiKey: 'cv-test-api-key-123',
-    baseUrl: 'http://localhost:3000', // optional, this is the default
-    maxRetries: 3,                    // optional, default is 3
+$client = new Client(getenv('CV_API_KEY'), getenv('CV_API_URL'));
+$session = $client->createWorkspace(
+    getenv('CV_CUSTOMER_ID'),
+    'client-example',
+    '/absolute/existing/private-parent',
+    [
+        'agentLabel' => 'existing-agent',
+        'task' => 'Write the requested result',
+        'reason' => 'Nonproduction example',
+    ]
 );
+$recoveryPath = $session->recoveryPath();
+file_put_contents($session->path() . '/result.bin', "\0\xff\x80");
+// Stop every agent writer before this call.
+$operation = $session->finalize(true);
+$session->cleanup(true);
 ```
 
-## Create a Workspace
+The local parent must already exist.
+The SDK creates private workspace and state directories beneath that client-side parent.
+For an existing workspace, use `openWorkspace` with the same parent and run options.
+`mode` can select a read-only run.
+
+## Recovery and coordination
 
 ```php
-$workspace = $cv->workspaces()->create('customer-123', 'agent-memory');
-
-echo $workspace['id'];
+$session = $client->resumeWorkspace($savedRecoveryPath);
+$operation = $session->reconcile(true);
 ```
 
-## Checkout, Write, and Commit
+`resumeWorkspace` loads the journal without HTTP dispatch or file mutation.
+`reconcile(true)` requires caller-stopped writers and preserves the original command and capture.
+A lost response or later authorization denial does not prove that publication failed.
 
-```php
-// 1. Checkout a sandbox
-$sandbox = $cv->workspaces()->checkout($workspace['id']);
-echo $sandbox['path']; // writable directory path
+The application schedules synchronous `heartbeat()` calls while the agent works.
+With the default five-minute server lease, renew about once per minute.
+An expired run cannot be revived.
 
-// 2. Your agent writes files to $sandbox['path']
-// (use file_put_contents, or any file-writing method)
+Checkpoint publishes and opens the next run over the same local path.
+An incomplete reopen preserves its accepted checkpoint and original reopen command.
+Use the package-specific abandonment API only when its recorded rejection evidence permits it.
 
-// 3. Commit the changes
-$commit = $cv->workspaces()->commit(
-    $workspace['id'],
-    'Save agent session data',
-    'my-agent'
-);
+Abort discards a known active run.
+Cleanup has an independent result and cannot undo accepted publication.
+Generic exceptions never authorize automatic abort or file deletion.
 
-echo $commit['commitId'];
-
-// 4. Cleanup
-$cv->workspaces()->destroy($workspace['id']);
-```
-
-## Read Files
-
-```php
-// Get all files from latest commit
-$files = $cv->workspaces()->pull($workspace['id']);
-foreach ($files as $file) {
-    echo $file['path'] . ': ' . $file['content'] . "\n";
-}
-
-// Get a single file
-$file = $cv->workspaces()->getFile($workspace['id'], 'profile/summary.md');
-echo $file['content'];
-```
-
-## View History
-
-```php
-$history = $cv->workspaces()->history($workspace['id']);
-foreach ($history as $entry) {
-    echo $entry['commitId'] . "\n";
-}
-```
-
-## Error Handling
-
-```php
-use ContextVault\Exception\NotFoundError;
-use ContextVault\Exception\AuthError;
-use ContextVault\Exception\ValidationError;
-use ContextVault\Exception\NetworkError;
-
-try {
-    $ws = $cv->workspaces()->get('nonexistent');
-} catch (NotFoundError $e) {
-    echo "Workspace not found\n";
-} catch (AuthError $e) {
-    echo "Invalid API key\n";
-} catch (ValidationError $e) {
-    echo "Bad request: " . $e->getMessage() . "\n";
-} catch (NetworkError $e) {
-    echo "Connection failed: " . $e->getMessage() . "\n";
-}
-```
-
-The PHP SDK uses Guzzle for HTTP and automatically retries failed requests (up to 3 times) with exponential backoff.
-
-## Next Steps
-
-- [Full Workspaces API Reference](../api/workspaces.md)
-- [Basic Examples](../examples/basic/php.md)
-- [TypeScript Quickstart](typescript.md) | [Python Quickstart](python.md)
+Run the maintained [installed example](clients.md#run-the-installed-client-examples) for executable lifecycle checks.
+See the [SDK reference](../../sdk/php/README.md#recovery-and-checkpoints) for error types and detailed recovery rules.

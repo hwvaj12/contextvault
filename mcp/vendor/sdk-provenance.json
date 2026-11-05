@@ -10,7 +10,7 @@
   "node": ">=18.0.0",
   "compiler": "5.9.3",
   "archive": "contextvault-sdk-0.1.0.tgz",
-  "sha256": "fa9040f6e48d074465b16a4117450ae410400f18fdf2a2858655106d3ec40c2f",
+  "sha256": "901449a7d137968046a9b73615101b12299e09f91cc4c0d0f0e03b0462c916bd",
   "sourceHashes": {
     "src/apikeys.ts": "e79ab6676cbef0a75fc0f599117fabb0cebce1d55ec22967c54d2acd1506877b",
     "src/bundles.ts": "4c2f41c441504b8290bf0645e1998a2dd626b2badd6d290e472017c87dfef07c",
@@ -27,6 +27,6 @@
     "package.json": "657501693fcf4dcaad839aa1fae9ff2561d5308f41fc32a6e9cee6d2e6c5c342",
     "package-lock.json": "59018bbb0a97ec2869b0df30355b3f8dcd36a3ff549bec37165f9e257700146d",
     "tsconfig.json": "9f8f8670d94661be44dc70132af6235dd282100ec7627af498079f90b166b848",
-    "README.md": "fb3dfd6ba98fcf5d72526fffeb8a15fb0b577f2b578b51a105418f58b39d5ad0"
+    "README.md": "eec1acc2f306c7525e3ff957d9513dac8450cd7d32bf0eeeb0bce8fb006b1f1f"
   }
 }

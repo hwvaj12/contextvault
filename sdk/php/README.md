@@ -3,9 +3,10 @@
 PHP 8.0+ client for authenticated workspace runs and client-local files. Requires `ext-curl`, `ext-json`, and Composer dependencies.
 Guzzle uses cURL for bounded resource uploads. Declared Unicode polyfills support installations without `intl` or `mbstring`.
 
-```sh
-composer require contextvault/contextvault-php
-```
+Install the reviewed local Composer package with its declared dependencies.
+The [client quickstart](../../docs/quickstart/clients.md) describes the supported local installation procedure.
+The package's [Composer metadata](composer.json) defines its required extensions and autoload configuration.
+Registry publication is outside this implementation milestone.
 
 ## Local workspace lifecycle
 

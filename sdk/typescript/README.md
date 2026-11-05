@@ -5,8 +5,12 @@ Official TypeScript SDK for ContextVault.
 ## Installation
 
 ```bash
-npm install @contextvault/sdk
+npm install --ignore-scripts /absolute/path/contextvault-sdk-0.1.0.tgz
 ```
+
+Use the reviewed local package archive from the matching ContextVault checkout.
+Registry publication is outside this implementation milestone.
+The [client quickstart](../../docs/quickstart/clients.md) describes the local build and installation procedure.
 
 Requires Node.js 18+ (uses native `fetch`). The package includes compiled CommonJS files and TypeScript declarations.
 No server source, storage SDK, storage credentials, or server filesystem access is required.

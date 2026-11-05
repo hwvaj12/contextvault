@@ -1,111 +1,71 @@
-# TypeScript Quickstart
+# TypeScript client quickstart
 
-Get up and running with ContextVault in TypeScript in under 5 minutes.
+The `@contextvault/sdk` package requires Node.js 18 or later.
+It uses authenticated HTTP and creates a new workspace directory on the client host.
 
 ## Install
 
-```bash
-npm install @contextvault/sdk
+1. Build or obtain `contextvault-sdk-0.1.0.tgz` from the repository package.
+2. Install that archive in a separate consumer project.
+
+```sh
+npm install --ignore-scripts /absolute/artifacts/contextvault-sdk-0.1.0.tgz
 ```
 
-## Initialize the Client
+3. Configure the API origin, scoped credential, and customer through your environment.
+
+The [common quickstart](clients.md) provides the exact environment names and runnable example.
+Registry publication is not required by this installation procedure.
+
+## Open, write, and finalize
 
 ```typescript
-import { ContextVaultClient } from '@contextvault/sdk';
+import { ContextVaultClient } from "@contextvault/sdk";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 const cv = new ContextVaultClient({
-  apiKey: 'cv-test-api-key-123',
-  baseUrl: 'http://localhost:3000', // optional, this is the default
-  maxRetries: 3,                    // optional, default is 3
+  baseUrl: process.env.CV_API_URL!,
+  apiKey: process.env.CV_API_KEY!,
 });
-```
-
-## Create a Workspace
-
-```typescript
-const workspace = await cv.workspaces.create({
-  customerId: 'customer-123',
-  name: 'agent-memory',
+const session = await cv.openWorkspace({
+  create: { customerId: process.env.CV_CUSTOMER_ID!, name: "client-example" },
+  mode: "read-write",
+  agentLabel: "existing-agent",
+  task: "Write the requested result",
+  reason: "Nonproduction example",
 });
-
-console.log(workspace.id); // workspace ID
+const recoveryPath = session.privateStatePath;
+await writeFile(join(session.path, "result.bin"), Buffer.from([0, 255, 128]));
+// Stop every agent writer before this call.
+const operation = await session.finalize({ writersStopped: true });
+await session.cleanup({ writersStopped: true });
 ```
 
-## Checkout, Write, and Commit
+`session.path` belongs to the client host.
+`privateStatePath` identifies recovery state outside submitted content.
+An application should save that identity before launching agent work.
+A supplied `stateDirectory` selects a new private session directory under an existing safe parent.
+
+For an existing workspace, replace `create` with `workspaceId`.
+For a pinned reader, select `mode:"read-only"`.
+`session.heartbeat()` renews an active run lease.
+The application schedules renewals and owns agent shutdown.
+
+## Recover an uncertain command
 
 ```typescript
-// 1. Checkout a sandbox
-const sandbox = await cv.workspaces.checkout(workspace.id);
-console.log(sandbox.path); // writable directory path
-
-// 2. Your agent writes files to sandbox.path
-// (use fs, or any file-writing method)
-
-// 3. Commit the changes
-const commit = await cv.workspaces.commit(workspace.id, {
-  message: 'Save agent session data',
-  author: 'my-agent',
-  agentId: 'agent-001',
-  taskId: 'task-abc',
-  tags: ['session', 'memory'],
-});
-
-console.log(commit.commitId);
-
-// 4. Cleanup
-await cv.workspaces.destroy(workspace.id);
+const recovered = await cv.resumeWorkspace(savedPrivateStatePath);
+await recovered.reconcile({ writersStopped: true });
 ```
 
-## Read Files
+Resumption uses current credentials and the same server origin.
+It preserves the original request, idempotency key, and immutable capture.
+A later authorization denial does not prove that the original publication failed.
 
-```typescript
-// Get all files from latest commit
-const result = await cv.workspaces.pull(workspace.id);
-for (const file of result.files) {
-  console.log(file.path, file.content);
-}
+`checkpoint` publishes and opens the next run over the same local directory.
+An incomplete reopen preserves `published-needs-reopen` progress.
+`abort` discards a known active run; cleanup removes local files only after a known terminal outcome.
 
-// Get a single file
-const file = await cv.workspaces.getFile(workspace.id, 'profile/summary.md');
-console.log(file.content);
-```
-
-## View History
-
-```typescript
-const history = await cv.workspaces.history(workspace.id);
-for (const entry of history.commits) {
-  console.log(entry.commitId, entry.metadata);
-}
-```
-
-## Error Handling
-
-```typescript
-import {
-  NotFoundError,
-  AuthError,
-  ValidationError,
-  NetworkError,
-} from '@contextvault/sdk';
-
-try {
-  const ws = await cv.workspaces.get('nonexistent');
-} catch (err) {
-  if (err instanceof NotFoundError) {
-    console.log('Workspace not found');
-  } else if (err instanceof AuthError) {
-    console.log('Invalid API key');
-  } else if (err instanceof ValidationError) {
-    console.log('Bad request:', err.message);
-  } else if (err instanceof NetworkError) {
-    console.log('Connection failed:', err.message);
-  }
-}
-```
-
-## Next Steps
-
-- [Full Workspaces API Reference](../api/workspaces.md)
-- [Basic Examples](../examples/basic/typescript.md)
-- [Python Quickstart](python.md) | [PHP Quickstart](php.md)
+Run the maintained [installed example](clients.md#run-the-installed-client-examples) for executable lifecycle checks.
+See the [SDK reference](../../sdk/typescript/README.md#open-a-durable-local-workspace) for exact options and recovery APIs.

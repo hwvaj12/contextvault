@@ -1,356 +1,136 @@
-# ContextVault — Architecture
+# Architecture
 
-> **Durable, Git-backed workspace memory for AI agents with ephemeral execution sandboxes.**
+ContextVault coordinates authoritative workspace changes for independently executed agents.
+The service accepts immutable snapshots through one publication protocol.
+Clients materialize those snapshots beside the agents that use them.
 
-## Overview
+## Responsibility boundaries
 
-ContextVault solves the problem of stateless AI agents. Every session starts from scratch, losing context, artifacts, and work history.
-
-ContextVault provides:
-- **Durable workspace memory** — Each workspace is a Git repository that persists forever
-- **Ephemeral sandboxes** — Agents materialize workspaces into temporary directories
-- **Version history** — Every change is a Git commit. Full audit trail, diff, rollback
-- **Concurrency control** — Multiple agents can work safely with conflict detection
-- **Multi-tenant** — Customer-scoped workspaces with API key isolation
-
-## Core Design Principles
-
-### 1. Durable repo state != ephemeral execution state
-
-Three distinct concepts that must never be conflated:
-
-| Concept | Description | Durability |
-|---------|-------------|------------|
-| **Canonical workspace repo** | Source of truth, Git repo | Permanent |
-| **Ephemeral sandbox** | Temp working tree for one run | Destroyed after run |
-| **Agent context** | What's in the model's context window | Ephemeral |
-
-### 2. Git is the durable state engine
-
-Git is used as the source of truth because it provides:
-- Version history
-- Diffs
-- Rollback
-- Branching
-- Content-addressable storage
-- Battle-tested concurrency semantics
-
-### 3. Agents operate on files, not Git internals
-
-Agents should interact with normal filesystem trees:
-- read/write/create/delete files
-- Agents should NOT understand branch management, rebases, or repository plumbing
-
-### 4. Sandboxes must be disposable
-
-Sandboxes exist only for the duration of one run. After finalization:
-- Sandbox is destroyed
-- Changes are committed to canonical repo
-- Next run starts fresh
-
-### 5. Concurrency must be explicit
-
-Multiple agents can touch the same workspace. The system must:
-- Record base commit at run start
-- Detect conflicts at finalize time
-- Never silently overwrite concurrent changes
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         ContextVault                             │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │                    Control Plane                            │ │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  │ │
-│  │  │Workspace │  │   Run    │  │   Lock   │  │  Audit   │  │ │
-│  │  │ Service  │  │ Service  │  │ Service  │  │  Event   │  │ │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘  │ │
-│  └─────────────────────────────────────────────────────────────┘ │
-│                              │                                   │
-│  ┌───────────────────────────┼───────────────────────────────┐ │
-│  │                    Commit Gateway                            │ │
-│  │  • Change detection  • Branch management  • Merge policy   │ │
-│  └───────────────────────────┼───────────────────────────────┘ │
-│                              │                                   │
-│  ┌───────────────────────────┼───────────────────────────────┐ │
-│  │              Canonical Repo Store                            │ │
-│  │         (Bare Git repos per workspace)                       │ │
-│  │         data/workspaces/{workspaceId}.git                   │ │
-│  └─────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ Git clone/fetch/push
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Ephemeral Sandbox                             │
-│  /tmp/contextvault/runs/{run_id}/workspace/                     │
-│                                                                  │
-│  • Materialized from canonical repo at base commit              │
-│  • Agent reads/writes files normally                            │
-│  • Destroyed after run finalization                              │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    Agent[Existing agent process] --> Files[Client-local files]
+    Files <--> Client[Installed SDK or CLI]
+    MCP[MCP stdio tools] --> Client
+    Client --> HTTP[Authenticated HTTP API]
+    HTTP --> Application[Workspace application services]
+    Application --> Policy[AccessPolicy]
+    Application --> Catalog[ControlStore]
+    Application --> Revisions[RevisionStore]
+    Application --> Uploads[SubmissionStore]
+    Policy --> SQLite[SQLite catalog adapter]
+    Catalog --> SQLite
+    Revisions --> Git[Git revision adapter]
+    Revisions --> S3[S3 revision adapter]
+    Uploads --> Local[Local submission adapter]
+    Uploads --> S3Uploads[S3 submission adapter]
 ```
 
----
+The agent host owns execution, writer coordination, and isolation.
+The client owns local files, private journals, immutable captures, and explicit cleanup.
+The service owns authorization, run state, accepted revisions, audit, and expiry.
 
-## Data Model
+AgentCore is not required by the implemented protocol.
+A future filesystem adapter must preserve ContextVault's publication boundary.
+A direct writable canonical bucket mount would bypass that boundary.
 
-### Workspace
+## Ports and adapters
 
-```typescript
-interface Workspace {
-  id: string;              // ws_01HXXXXXXXX
-  customerId: string;      // "meta-profile"
-  name: string;            // "LeBron James"
-  repoLocation: string;    // Path to bare repo
-  defaultBranch: string;   // "main"
-  currentHead: string;     // Latest commit hash
-  status: 'active' | 'suspended' | 'deleted';
-  storageClass: string;    // "standard" | "archive"
-  createdAt: string;
-  updatedAt: string;
-  lastAccessedAt: string;
-}
-```
+| Port | Contract | Current adapter |
+|---|---|---|
+| `ControlStore` | Atomic authority, run, operation, receipt, publication, and collection coordination | `SqliteControlStore` |
+| `AccessPolicy` | Evaluate current identity, grants, customer scope, and revocation epochs | `CatalogAccessPolicy` |
+| `RevisionStore` | Prepare immutable content; read exact internal references; collect fenced orphans | `GitRevisionStore`, `S3RevisionStore` |
+| `SubmissionStore` | Store immutable attempts; register receipts; seal exact selections | `LocalSubmissionStore`, `S3SubmissionStore` |
+| `WorkspaceMaterializer` | Allocate, hydrate, capture, journal, and clean client-local files | Installed SDK materializers |
 
-### Run
+Contracts live in [src/ports](../src/ports/index.ts).
+Domain types and transitions live in [src/domain](../src/domain/index.ts).
+[Runtime composition](../src/config/runtime.ts) selects concrete storage adapters.
+Application code receives ports instead of choosing storage from HTTP input.
 
-One agent job operating against one workspace at a specific base commit.
+## Authoritative state
 
-```typescript
-interface Run {
-  id: string;              // run_01HXXXXXXXX
-  workspaceId: string;
-  agentId: string;         // "meta-profile-agent"
-  baseCommit: string;      // Commit used to materialize sandbox
-  finalCommit: string | null;
-  status: RunStatus;
-  sandboxPath: string | null;
-  startedAt: string;
-  completedAt: string | null;
-  failureReason: string | null;
-  executionSummary: string | null;
-  mergeStatus: 'pending' | 'merged' | 'conflicted' | 'failed';
-}
+The catalog stores each workspace's accepted revision, storage binding, binding generation, version, and status.
+It also stores actors, credentials, grants, permission epochs, runs, submissions, operations, cleanup, audit, and delivery state.
 
-type RunStatus = 
-  | 'created'      // Run record created
-  | 'provisioning' // Sandbox being created
-  | 'ready'        // Sandbox ready, agent can start
-  | 'running'      // Agent actively working
-  | 'finalizing'   // Detecting changes, creating commit
-  | 'merged'       // Successfully committed to canonical
-  | 'conflicted'   // Merge conflict detected
-  | 'failed'       // Execution failed
-  | 'aborted'      // Manually aborted
-  | 'cleaned_up';  // Sandbox destroyed
-```
+A revision adapter can prepare durable bytes without publishing them.
+An object, Git ref, directory, or candidate listing never proves acceptance.
+Readers select accepted content through catalog-scoped references.
+Public revision IDs remain opaque on both backends.
 
-### Lock
+Changing `CV_STORAGE_BACKEND` changes the default profile for new bindings.
+Existing workspaces keep their recorded binding.
+The [migration service](quickstart/operations.md#move-an-existing-workspace-between-adapters) verifies copies before an atomic binding switch.
 
-```typescript
-interface Lock {
-  id: string;
-  workspaceId: string;
-  lockType: 'exclusive' | 'shared';
-  ownerRunId: string;
-  acquiredAt: string;
-  expiresAt: string;
-}
-```
+## Runs and submissions
 
-### Audit Event
+A run pins an accepted base revision and records `agentLabel`, `task`, and `reason`.
+The run also records its authenticated actor and credential context.
+Read-only runs complete without a submission or content publication.
 
-```typescript
-interface AuditEvent {
-  id: string;
-  workspaceId: string;
-  runId: string | null;
-  actorType: 'agent' | 'user' | 'system';
-  actorId: string;
-  eventType: string;
-  payload: Record<string, unknown>;
-  createdAt: string;
-}
-```
+A read-write client captures a complete snapshot after its writers stop.
+Each uploaded file attempt receives its own immutable identity.
+A receipt becomes selectable only after durable upload completion.
+Sealing atomically chooses exact registered receipts and the complete manifest.
+Late attempts cannot replace sealed contents.
 
----
+Manifest validation preserves regular-file bytes and explicit directories.
+Omitted paths represent deletion.
+The client and service independently validate hashes, lengths, limits, and portable names.
 
-## Run Lifecycle
+## Publication
 
-```
-┌──────────┐
-│ created  │ ← Run record created
-└────┬─────┘
-     ▼
-┌────────────┐
-│ provisioning│ ← Sandbox being materialized
-└────┬───────┘
-     ▼
-┌──────────┐
-│  ready   │ ← Sandbox ready
-└────┬─────┘
-     ▼
-┌──────────┐
-│ running  │ ← Agent working in sandbox
-└────┬─────┘
-     ▼
-┌─────────────┐
-│ finalizing  │ ← Detecting changes, committing
-└──────┬──────┘
-       │
-       ├──────────────────┬──────────────────┐
-       ▼                  ▼                  ▼
-┌──────────┐       ┌────────────┐     ┌──────────┐
-│ merged   │       │ conflicted │     │  failed  │
-└────┬─────┘       └─────┬──────┘     └────┬─────┘
-     │                   │                  │
-     └───────────────────┴──────────────────┘
-                       │
-                       ▼
-               ┌──────────────┐
-               │ cleaned_up   │ ← Sandbox destroyed
-               └──────────────┘
-```
+1. Persist the command identity and exact sealed source.
+2. Claim a fenced processing operation.
+3. Prepare and verify immutable candidate content.
+4. Recheck current authority, versions, binding, and accepted base inside the catalog transaction.
+5. Accept the revision and terminal run outcome atomically.
+6. Record durable audit and outbox work in that transaction.
 
----
+A conflicting accepted head produces a recorded conflict outcome.
+ContextVault does not automatically merge competing snapshots.
+A successful no-change or read-only finalization can leave current content unchanged.
 
-## Concurrency Model
+Abort applies to a known active run and publishes no submitted edits.
+A finalizing run requires operation reconciliation rather than a competing abort.
+Cleanup has its own state machine and cannot undo accepted publication.
 
-### How It Works
+## Versions and recovery
 
-1. **Run starts** → System records:
-   - `baseCommit` — the commit sandbox was created from
-   - `workspaceHead` — the HEAD of canonical repo at start
+| Identity or version | Purpose |
+|---|---|
+| Workspace version | Optimistic current-head and administration checks |
+| Run version | Lifecycle transitions |
+| Lease version | Heartbeat renewal |
+| Submission version | Upload and seal state |
+| Operation ID and version | Durable command outcome and processing progress |
+| Processing fence | Prevent stale processors from accepting work |
+| Binding generation | Prevent stale work from targeting a replaced store |
 
-2. **Run finalizes** → System checks:
-   - Has canonical HEAD changed since run started?
-   - If no → fast-forward or normal merge
-   - If yes but clean → merge commit
-   - If conflict → mark `conflicted`, preserve for resolution
+The default run lease and processing claim each last five minutes.
+Applications normally renew an active run about once per minute.
+Processing renewal is separate from client heartbeat.
+An expired run lease cannot be revived by a stale heartbeat.
+An expired processing claim permits fenced recovery of finalization.
 
-3. **Conflict resolution** (future):
-   - Human or agent reviews
-   - Decides: accept ours/theirs/rebase
+Clients persist commands before dispatch.
+A restart supplies current credentials and resumes the retained private journal.
+Reconciliation reuses the original request, idempotency key, and captured bytes.
+Changing local files after uncertainty does not change that original submission.
 
-### Lock Types
+## Maintenance and operations
 
-| Mode | Behavior | Use Case |
-|------|----------|----------|
-| **Exclusive** | One mutable run per workspace at a time | Safer, simpler |
-| **Optimistic** | Parallel runs, detect divergence at merge | Higher throughput |
+Maintenance recovers registered operations, expires eligible active runs, delivers outbox events, and collects eligible unpublished content.
+Collection requires current catalog permission, a collection fence, and proof that relevant writers stopped.
+Expiry alone does not prove writer death.
+Accepted history remains retained under the initial orphan-collection policy.
 
-**v1 default:** Exclusive locking (simpler, less risk)
+Migration drains all active runs, including read-only runs, and protects retained source pins.
+It verifies history, immutable backups, target manifests, and target bytes before cutover.
+An interrupted migration resumes through its recorded identity and renewed fence.
 
----
+The catalog remains a durable local SQLite dependency even when content uses S3.
+The current implementation does not establish a distributed catalog or automatic disaster recovery.
+Operators own deployment topology, backups, key management, and restoration drills.
 
-## Default Workspace Layout
-
-**ContextVault uses BLANK workspaces.** No forced structure. No template files.
-
-When a workspace is created, it's an empty Git repository. AI agents decide what files and directories to create based on their needs.
-
-This is intentional — different agents have different memory needs. Forcing a structure would be a leaky abstraction.
-
-If you need a structured workspace, seed it yourself after creation.
-
----
-
-## API Endpoints
-
-### Workspaces
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/workspaces` | Create workspace (seeds layout) |
-| GET | `/workspaces` | List workspaces (filter by customer) |
-| GET | `/workspaces/:id` | Get workspace metadata |
-| DELETE | `/workspaces/:id` | Soft-delete workspace |
-
-### Runs
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/workspaces/:id/runs` | Create and start a run |
-| GET | `/runs/:id` | Get run status |
-| POST | `/runs/:id/finalize` | Finalize run (commit changes) |
-| POST | `/runs/:id/abort` | Abort run |
-
-### Sandboxes
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/workspaces/:id/sandbox` | Create sandbox (checkout) |
-| GET | `/workspaces/:id/sandbox` | Get sandbox status |
-| DELETE | `/workspaces/:id/sandbox` | Destroy sandbox |
-
-### Version Control
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/workspaces/:id/push` | Push files (git add + commit) |
-| GET | `/workspaces/:id/pull` | Pull latest or specific version |
-| GET | `/workspaces/:id/history` | Commit history |
-| GET | `/workspaces/:id/diff` | Compare versions |
-| POST | `/workspaces/:id/rollback` | Rollback to version |
-
----
-
-## Storage Layout
-
-### Current (Local Filesystem)
-
-```
-data/
-├── workspace-meta/           # JSON metadata
-│   └── {id}.json
-├── workspaces/              # Bare Git repos
-│   └── {id}.git/
-└── sandboxes/               # Ephemeral sandboxes
-    └── {id}/               # git clone targets
-```
-
-### Future (S3)
-
-```
-s3://{bucket}/{customerId}/workspaces/{workspaceId}.git/
-```
-
----
-
-## Commit Message Format
-
-```text
-contextvault: workspace={id} run={id} agent={id}
-
-Summary:
-- updated profile/summary.md
-- added games/2024_001.json
-
----
-{"workspaceId":"ws_01HXXX","runId":"run_01HXXX","agentId":"meta-profile","files":["profile/summary.md","games/2024_001.json"],"sizeBytes":2048}
-```
-
----
-
-## Security
-
-- **Isolation** — Each sandbox is a separate directory
-- **Path safety** — Validation prevents traversal outside sandbox
-- **Access control** — API key per customer, IAM-style policies
-- **No repo corruption** — Transactions ensure atomic commits
-
----
-
-## Environment Variables
-
-```bash
-CONTEXTVAULT_DATA_DIR=./data
-CONTEXTVAULT_API_PORT=3000
-CONTEXTVAULT_API_KEY=cv-test-api-key-123
-CONTEXTVAULT_LOCK_MODE=exclusive  # or "optimistic"
-```
-
----
-
-_Last updated: 2026-03-29
+See [storage configuration](STORAGE_LAYER.md), [security](SECURITY_MODEL.md), and [operations](quickstart/operations.md).

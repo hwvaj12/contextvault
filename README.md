@@ -1,215 +1,103 @@
 # ContextVault
 
-**Durable Git-backed workspace memory for AI agents.**
+ContextVault gives existing agents versioned workspaces through an authenticated HTTP service.
+Agents use ordinary files beside their own processes.
+ContextVault controls access, accepted revisions, finalize, abort, and recovery.
 
-Every AI agent session starts from scratch. ContextVault gives agents persistent memory — versioned, diffable, and rollback-capable — without bloating context windows.
+Git and S3 store immutable revision contents behind the same ports.
+A transactional SQLite catalog holds the authoritative current revision.
+Changing a storage adapter preserves the client protocol.
 
-## The Problem
+## Start here
 
-AI agents are stateless. They can't remember what happened in previous sessions. Prompt context is expensive and limited.
+1. Read the [service setup](docs/DEVELOPMENT.md#start-an-isolated-service).
+2. Install a client using the [local artifact quickstart](docs/quickstart/clients.md).
+3. Choose an [agent environment](docs/quickstart/hosts.md).
+4. Follow the [operations guide](docs/quickstart/operations.md) before migrating existing data.
 
-**ContextVault gives your agents permanent memory:**
+The service requires durable private catalog and content storage.
+S3 stores revision bytes; it does not replace the catalog.
+Application workers, containers, local CLIs, and remote agents keep their existing execution environments.
+AgentCore and S3 Files mounts are possible future adapters.
 
-1. **Give agents memory that lasts** — Every session builds on the last, not from scratch
-2. **Isolated workspace per run** — Agents work in a clean sandbox, no cross-contamination
-3. **Full version history** — Every change is a Git commit. Inspect, diff, or rollback anytime
-4. **Commit when you're done** — Or abort and discard. No state left behind
-5. **Zero context window bloat** — Agents pull only what they need from persistent storage
+## Workspace lifecycle
 
-Memory that persists. Context that travels. Git that scales.
+1. Open a scoped run against an accepted revision.
+2. Give your existing agent the client-local workspace path.
+3. Renew the lease while the agent works.
+4. Stop every writer before capturing the workspace.
+5. Finalize the complete snapshot, or abort the active run.
+6. Reconcile an uncertain outcome using the retained command identity.
+7. Clean local files after a known terminal outcome.
 
-## Quick Start
+A snapshot contains regular files and explicit directories.
+Omitted paths mean deletion.
+ContextVault verifies bytes and hashes before publication.
+A stale run cannot overwrite a newer accepted revision.
 
-```bash
-# Install dependencies
-npm install
+Publication and cleanup have separate outcomes.
+A lost response can leave publication uncertain even when the server accepted it.
+Private client journals retain the original request, key, capture, and known operation ID.
+Current credentials remain necessary for reconciliation.
 
-# Copy and configure environment
-cp .env.example .env
+## Clients and environments
 
-# Start the API server
-npm run dev
+| Component | Declared minimum | Interface |
+|---|---|---|
+| TypeScript SDK | Node.js 18 | Installed package and client-local workspace sessions |
+| Python SDK | Python 3.8 | Installed wheel; POSIX local materialization |
+| PHP SDK | PHP 8.0 | Composer dependencies, `ext-curl`, and `ext-json` |
+| CLI | Node.js 18 | JSON commands and durable private session state |
+| MCP | Node.js 20 | Stdio tools backed by the authenticated TypeScript client |
+| Service and test controller | Verified on Node.js 22 | Fastify HTTP API and native SQLite |
 
-# In another terminal, start the MCP server
-cd mcp && npm install && npm run dev
-```
+Use the repository's local package artifacts.
+Registry publication is separate from these installation instructions.
+The [client guide](docs/SDK_PLAN.md) describes package versions and recovery behavior.
 
-## Configuration
-
-All configuration is via environment variables. Copy `.env.example` to `.env` for local development.
-
-### Core Settings
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | HTTP server port |
-| `CONTEXTVAULT_API_KEY` | `cv-test-api-key-123` | Master API key for admin access (override in production) |
-| `CONTEXTVAULT_DATA_DIR` | `./data` | Directory for workspaces, sandboxes, and secrets |
-
-### Secrets Configuration (Phase 13)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CONTEXTVAULT_SECRETS_BACKEND` | `local` | Secrets backend: `local`, `doppler`, `aws`, `gcp` |
-| `CONTEXTVAULT_SECRETS_PATH` | `./data/secrets` | Path for local secrets storage (when backend=`local`) |
-
-**Local secrets storage** saves tenant TMKs to `data/secrets/tenant-keys.json`.
-
-### Signing Keys (Phase 12)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CONTEXTVAULT_SIGNING_PRIVATE_KEY` | _(none)_ | Ed25519 private key for signing workspace bundles (base64-encoded) |
-| `CONTEXTVAULT_SIGNING_PUBLIC_KEY` | _(none)_ | Ed25519 public key for verifying bundles (base64-encoded) |
-| `CONTEXTVAULT_SIGNING_KEY_ID` | _(none)_ | Key identifier for signature manifests (e.g., `v1`) |
-
-**For local development**, generate a key pair:
-```bash
-# Generate Ed25519 key pair
-openssl genpkey -algorithm ED25519 -out private_key.pem
-openssl pkey -in private_key.pem -pubout -out public_key.pem
-
-# Convert to base64
-cat private_key.pem | base64 | tr -d '\n'
-cat public_key.pem | base64 | tr -d '\n'
-```
-
-### Tenant Master Key (Future - Phase 13+)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CONTEXTVAULT_TENANT_KEY` | _(none)_ | Master key for SQLCipher tenant encryption (base64-encoded 256-bit) |
-
-### Complete `.env.example`
-
-```bash
-# Core
-PORT=3000
-CONTEXTVAULT_API_KEY=cv-test-api-key-123
-CONTEXTVAULT_DATA_DIR=./data
-
-# Secrets (Phase 13)
-CONTEXTVAULT_SECRETS_BACKEND=local
-CONTEXTVAULT_SECRETS_PATH=./data/secrets
-
-# Signing Keys (Phase 12)
-CONTEXTVAULT_SIGNING_PRIVATE_KEY=
-CONTEXTVAULT_SIGNING_PUBLIC_KEY=
-CONTEXTVAULT_SIGNING_KEY_ID=v1
-
-# Encryption (Future)
-CONTEXTVAULT_TENANT_KEY=
-```
-
-## Use Cases
-
-**Persistent customer context** — Store dynamically loadable customer profiles, project state, and user preferences. When an agent picks up a ticket or resumes a conversation, it pulls the full context — past decisions, preferences, history — and continues where it left off.
-
-**Replayable agent runs** — Each agent run is its own workspace with a full Git history. Inspect what happened in a specific run. Resume an interrupted task from the exact checkpoint. Roll back to a previous run if something went wrong. Audit every decision across time.
-
-## API Example
-
-```bash
-# Create workspace
-curl -X POST http://localhost:3000/workspaces \
-  -H "X-API-Key: your-key" \
-  -d '{"customerId":"my-customer","name":"agent-memory"}'
-
-# Start a run (creates sandbox)
-curl -X POST http://localhost:3000/workspaces/{id}/runs \
-  -H "X-API-Key: your-key"
-
-# Agent works in sandbox at data/sandboxes/{workspace_id}/...
-
-# Finalize (commit changes)
-curl -X POST http://localhost:3000/runs/{run_id}/finalize \
-  -H "X-API-Key: your-key"
-
-# Sandbox auto-destroyed, workspace has new commit
-```
-
-## SDKs
-
-```bash
-# TypeScript
-npm install @contextvault/sdk
-
-# Python
-pip install contextvault
-
-# PHP
-composer require contextvault/contextvault-php
-```
+Container and remote-boundary checks use isolated Docker filesystems and networks.
+Native application workers retain their host user's permissions.
+Untrusted agents need isolation supplied by their host.
+Physical remote hardware, Windows, AWS IAM, and hosted CI require separate verification.
 
 ## Architecture
 
-The system has two layers:
+| Responsibility | Owner |
+|---|---|
+| Identity, grants, revocation, accepted head, and binding | Transactional catalog and access policy |
+| Run, submission, publication, abort, and recovery | Application services |
+| Immutable revision bytes | Git or S3 revision adapter |
+| Uploaded immutable file attempts | Local or S3 submission adapter |
+| Temporary files beside an agent | Installed client materializer |
+| Agent execution and process isolation | Existing application or agent host |
 
-**Control Plane** — Coordinates workspace operations
-- Workspace Service: manages workspace lifecycle
-- Run Service: manages run lifecycle from created → merged/conflicted/failed
-- Lock Service: exclusive/shared locking with conflict detection
-- Audit Event: logs all significant operations
+See [architecture](docs/ARCHITECTURE.md), [storage](docs/STORAGE_LAYER.md), and [security](docs/SECURITY_MODEL.md).
 
-**Storage Layer** — Commit Gateway handles Git operations
-- Creates run branches for isolated agent work
-- Detects file changes (add/modify/delete)
-- Creates structured commits with metadata
-- Merges to canonical workspace
+## HTTP and compatibility
 
+The `/v1` API exposes backend-neutral runs, submissions, operations, accepted revisions, and administration.
+Responses use opaque revision IDs and omit private storage locations.
+The interactive API description is available at `/docs`.
+
+Retained unversioned routes preserve selected compatibility shapes.
+Legacy push replaces the complete snapshot.
+Legacy sandbox sessions remain explicitly colocated with the server.
+Git wire reads project accepted Git history; canonical Git push is disabled.
+
+See the [HTTP reference](docs/REST_API.md) and [consumer migration guide](docs/api/compatibility.md).
+
+## Verification
+
+```sh
+npm test
+npm run build
+npm run test:docs -- --self-test
+npm run test:docs -- --backend git
+npm run test:docs -- --backend s3 --s3-provider localstack
+npm run verify:workspace-release -- --s3-provider localstack --require-all-hosts --require-all-sdks
 ```
-Sandboxed Agent ←→ Run Service ←→ Lock Service
-                            ↓
-                     Commit Gateway
-                            ↓
-              ┌──────────────────────────┐
-              │   Canonical Repo Store   │
-              │   (Bare Git repos)       │
-              └──────────────────────────┘
-```
 
-## Status
-
-**v0.2** — ✅ All phases complete!
-
-| Component | Status | Details |
-|----------|--------|---------|
-| Core Engine | ✅ | Run lifecycle, lock service, commit gateway, SQLite DB |
-| TypeScript SDK | ✅ | Full API coverage, 65 E2E tests passing |
-| Python SDK | ✅ | Full API coverage |
-| PHP SDK | ✅ | Full API coverage |
-| MCP Server | ✅ | Tools for agents |
-| REST API | ✅ | Fastify + Swagger docs at /docs |
-| E2E Tests | ✅ | 65/65 tests passing |
-| Multi-tenant | ✅ | API key scoping, customer isolation |
-| Webhooks | ✅ | Event notifications with HMAC signatures |
-| Diff | ✅ | Structured file diffs with hunks |
-| Workspace Clone | ✅ | Clone workspace to new customer |
-| Bulk Delete | ✅ | Delete multiple workspaces at once |
-
-## What's New in v0.2
-
-- **Multi-tenant isolation** — Customer-scoped API keys with full isolation
-- **Webhook notifications** — Get notified when workspaces are created, commits happen, or runs complete
-- **Structured diff** — Get detailed file changes with line-level hunks
-- **Workspace clone** — Copy a workspace to a new customer
-- **Bulk delete** — Remove multiple workspaces in one call
-- **Environment config** — `.env` file support for local development
-
-## Documentation
-
-- [Architecture](docs/ARCHITECTURE.md) — System design
-- [REST API Reference](docs/api/workspaces.md) — API endpoints
-- [Quickstart: TypeScript](docs/quickstart/typescript.md)
-- [Quickstart: Python](docs/quickstart/python.md)
-- [Quickstart: PHP](docs/quickstart/php.md)
-- [LangChain Integration](docs/examples/langchain/typescript.md)
-- [Postman Collection](docs/ContextVault-API.postman_collection.json)
-
-## License
-
-MIT License — see [LICENSE](LICENSE) file.
-
----
-
-**ContextVault: Memory that persists. Context that travels. Git that scales.**
+The S3 commands require an explicitly selected nonproduction target.
+The [development guide](docs/DEVELOPMENT.md#verification) describes setup, separate suites, and evidence limits.
+Missing required tools, services, or suites prevent release closure.
+Component tests do not establish complete release readiness.

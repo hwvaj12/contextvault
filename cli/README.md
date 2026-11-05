@@ -5,9 +5,11 @@ Agents remain independently launched. Git and S3 use the same client commands.
 
 Requirements: Node18 or later, a running ContextVault API, and a scoped API credential.
 Install `@contextvault/cli` with the matching `@contextvault/sdk` package. Local artifacts can be installed together:
+The commands below run from the consumer project directory.
 
 ```sh
-npm install ./contextvault-sdk-0.1.0.tgz ./contextvault-cli-0.1.0.tgz
+npm install --ignore-scripts ./contextvault-sdk-0.1.0.tgz ./contextvault-cli-0.1.0.tgz
+export PATH="$PWD/node_modules/.bin:$PATH"
 export CV_API_URL=http://127.0.0.1:3000
 export CV_API_KEY
 mkdir -m 700 /tmp/my-contextvault-sessions
