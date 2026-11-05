@@ -109,3 +109,12 @@ Existing language SDK gates internally test both backends; run each language onc
 CI must state its actual controller requirements and cannot claim an unperformed hosted run.
 CV-28 retains final security, simplification, fresh whole-changeset review, and independent release closure.
 The business discussion identifies open-source infrastructure as a recommendation, rather than an approved licensing or publication change.
+
+## Confirmed release defects
+
+Actual public webhook verification found deletion cleanup without its status-operation owner.
+CV-34 fixes that ownership while retaining accepted history and unknown-owner refusal.
+Independent probes found MCP controller interruptions before complete markers or first journals.
+CV-35 fixes explicit stopped-controller recovery and preserves authorization and uncertain journals.
+These bounded product repairs are prerequisites for CV-27.
+Other CV-27 writers keep their existing nonoverlapping scopes and recorded bases.
