@@ -55,6 +55,9 @@
     "vitest": "4.1.12"
   },
   "overrides": {
-    "@fastify/static": "10.1.3"
+    "@fastify/static": {
+      ".": "10.1.3",
+      "glob": "14.0.3"
+    }
   }
 }
