@@ -97,14 +97,14 @@ The runner requires compatibility and recovery checks on both backends.
 
 ## CI controller boundary
 
-The automatic CI workflow runs on GitHub-hosted Ubuntu for pushes and pull requests.
+The **CI** workflow runs on GitHub-hosted Ubuntu for pushes and pull requests.
 It validates workflow semantics with pinned actionlint, builds the server and packages, and runs the default Git tests.
-This automatic gate does not run the full LocalStack and Docker release matrix.
+That workflow does not include the full LocalStack and Docker release matrix.
 
-The manual **Workspace contract release** workflow uses GitHub-hosted `ubuntu-24.04`.
+The separate **Workspace contract release** workflow runs automatically on pushes to `main` using GitHub-hosted `ubuntu-24.04`.
 It selects Node22.12 and checks Docker Engine, Python, PHP with cURL and JSON, and Composer before installation.
 Each run gets a disposable VM; no dedicated runner registration or macOS host is required.
-Run the workflow through GitHub Actions or the CLI:
+Manual runs remain available through GitHub Actions or the CLI:
 
 ```sh
 gh workflow run workspace-contract.yml --ref main

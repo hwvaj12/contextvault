@@ -5,7 +5,8 @@ Status: passed on GitHub-hosted Ubuntu24.04 x64.
 [Full release run](https://github.com/hwvaj12/contextvault/actions/runs/41982371448).
 [Automatic CI](https://github.com/hwvaj12/contextvault/actions/runs/41982367978): 484 tests passed across 90 files.
 
-The manual **Workspace contract release** workflow uses a disposable GitHub-hosted Linux VM.
+The verified run used manual dispatch on a disposable GitHub-hosted Linux VM.
+The **Workspace contract release** workflow now also starts automatically on pushes to `main`.
 No dedicated macOS or self-hosted runner is required.
 
 ```sh

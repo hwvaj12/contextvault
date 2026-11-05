@@ -1,6 +1,9 @@
 name: Workspace contract release
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -12,7 +15,7 @@ concurrency:
 
 jobs:
   release:
-    # Each manual run gets a disposable GitHub-hosted Linux VM and local Docker Engine.
+    # Each run gets a disposable GitHub-hosted Linux VM and local Docker Engine.
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
