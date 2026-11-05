@@ -222,7 +222,7 @@ def capture_workspace(root, private_root, configured=None, *, on_owned=None):
                 digest, length = hashlib.sha256(), 0
                 destination = os.path.join(target, str(index))
                 descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-                with open_regular(os.path.join(root, *name.split("/"))) as source, os.fdopen(descriptor, "wb") as output:
+                with os.fdopen(descriptor, "wb") as output, open_regular(os.path.join(root, *name.split("/"))) as source:
                     if stamp(os.fstat(source.fileno())) != original:
                         raise ConflictError("Source changed before capture", code="CAPTURE_CHANGED")
                     while True:

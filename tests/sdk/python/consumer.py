@@ -234,6 +234,29 @@ def failures():
     shutil.rmtree(str(outside))
 
 
+def unreadable_source_capture():
+    # Exercise actual permission denial even when the installed container starts as root.
+    if os.geteuid() == 0:
+        os.setgid(65534)
+        os.setuid(65534)
+    with tempfile.TemporaryDirectory(prefix="cv-unreadable-") as directory:
+        root, private = Path(directory, "workspace"), Path(directory, "private")
+        root.mkdir(mode=0o700)
+        private.mkdir(mode=0o700)
+        source = root / "unreadable.bin"
+        source.write_bytes(b"preserve source bytes")
+        source.chmod(0)
+        try:
+            baseline = len(os.listdir("/proc/self/fd"))
+            for _ in range(3):
+                expect(PermissionError, lambda: capture_workspace(str(root), str(private)))
+                assert len(os.listdir("/proc/self/fd")) == baseline, "failed capture leaked an open descriptor"
+                assert list(private.iterdir()) == [], "failed capture retained private bytes"
+        finally:
+            source.chmod(0o600)
+        assert source.read_bytes() == b"preserve source bytes"
+
+
 def filesystem():
     fixture = json.loads(Path("/proof/canonical.json").read_text())
     assert canonical_manifest_bytes(fixture["input"]).decode() == fixture["canonical"]

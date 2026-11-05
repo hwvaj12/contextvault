@@ -1,6 +1,10 @@
 import pytest
 
 
+def test_unreadable_source_capture_closes_descriptors_and_removes_private_bytes(consumer):
+    consumer("unreadable_source_capture")
+
+
 def test_duplicate_and_concurrent_checkout_preserves_ownership(consumer):
     consumer("duplicate_checkout")
 
