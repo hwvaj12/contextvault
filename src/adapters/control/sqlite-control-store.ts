@@ -649,8 +649,11 @@ export class SqliteControlStore implements ControlStore {
             this.write("workspace", workspace.id, input.scope, workspace);
             const result = this.saveCommand(operation, workspace);
             this.events(input.events, operation);
-            if (workspace.status === "deleted")
-                this.write("cleanup", `workspace:${workspace.id}:${workspace.version}`, input.scope, { id: `workspace:${workspace.id}:${workspace.version}`, scope: input.scope, runId: null, state: "pending", version: 1, attempts: 0, claim: null, nextAttemptAt: input.now, lastError: null }, true);
+            if (workspace.status === "deleted") {
+                const cleanupId = `workspace:${workspace.id}:${workspace.version}`;
+                this.write("cleanup", cleanupId, input.scope, { id: cleanupId, scope: input.scope, runId: null, state: "pending", version: 1, attempts: 0, claim: null, nextAttemptAt: input.now, lastError: null }, true);
+                this.write("cleanup-owner", cleanupId, input.scope, { operationId: operation.id }, true);
+            }
             return result;
         });
     }
