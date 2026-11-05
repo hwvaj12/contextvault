@@ -107,12 +107,16 @@ describe("Full Lifecycle Integration", () => {
 
     // Create a temp directory to act as workspace repo
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), "cv-test-"));
+    vi.stubEnv("HOME", testDir);
+    vi.stubEnv("XDG_CONFIG_HOME", path.join(testDir, "xdg"));
     const repoDir = path.join(testDir, "workspace");
     await fs.mkdir(repoDir, { recursive: true });
 
     // Init a git repo with an initial commit
     const git = simpleGit(repoDir);
-    await git.init();
+    await git.raw(["init", "--initial-branch=main"]);
+    await git.addConfig("user.name", "ContextVault fixture");
+    await git.addConfig("user.email", "fixture@example.invalid");
     await git.addConfig("receive.denyCurrentBranch", "updateInstead");
     await fs.writeFile(path.join(repoDir, "README.md"), "# Test Workspace\n");
     await git.add("-A");
@@ -128,6 +132,7 @@ describe("Full Lifecycle Integration", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     mockDb.close();
     await fs.rm(testDir, { recursive: true, force: true });
   });
