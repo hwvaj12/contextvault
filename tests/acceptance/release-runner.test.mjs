@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, lstat } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -152,7 +154,20 @@ test('plans every backend gate and each internally dual-backend SDK gate exactly
     for(const language of ['typescript','python','php'])assert.equal(gates.filter(g=>g.language===language).length,1);
     for(const backend of ['git','s3'])assert.ok(gates.find(g=>g.id==='acceptance-'+backend).requiredTitles.includes('delivers signed workspace creation and deletion only to the current customer'));
     for(const gate of gates){assert.equal(gate.env.CV_TEST_S3_PREFIX,env.CV_TEST_S3_PREFIX);assert.equal(gate.env.AWS_ACCESS_KEY_ID,'test');assert.equal(gate.env.AWS_PROFILE,undefined);assert.equal(gate.env.AWS_SESSION_TOKEN,undefined);assert.equal(gate.env.CV_DATA_DIR,undefined);assert.equal(gate.env.CV_STORAGE_BACKEND,undefined);}
+    await writeFile(path.join(directory,'cache_probe.py'),'value = 1\n');
+    // Apple's Python defaults to an external cache. Select Linux's in-source default explicitly.
+    await promisify(execFile)('python3',['-X','pycache_prefix=','-c','import cache_probe'],{cwd:directory,env:gates.find(gate=>gate.id==='sdk-python').env,timeout:10000});
+    await assert.rejects(lstat(path.join(directory,'__pycache__')), {code:'ENOENT'}, 'Python verification must not add bytecode to release source');
   });
+});
+
+test('identifies added, removed, content, and mode changes without exposing source contents',async()=>{
+  const {diffSourceEntries}=await api();
+  assert.equal(typeof diffSourceEntries,'function');
+  const item=(path,sha256='a',mode='644')=>({path,sha256,mode});
+  assert.deepEqual(diffSourceEntries([item('removed'),item('bytes'),item('mode'),item('same')],[item('added'),item('bytes','b'),item('mode','a','755'),item('same')]),[
+    {path:'added',change:'added'},{path:'bytes',change:'modified'},{path:'mode',change:'modified'},{path:'removed',change:'removed'},
+  ]);
 });
 
 test('requires actual production Node20 S3 behavior without Git inside the selected prefix',async()=>{

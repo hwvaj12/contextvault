@@ -176,6 +176,8 @@ function releaseEnvironment(environment) {
     'CV_TEST_S3_PROVIDER','CV_TEST_S3_CONTAINER','CV_TEST_S3_ENDPOINT','CV_TEST_S3_CONTAINER_ENDPOINT','CV_TEST_DOCKER_NETWORK','CV_TEST_S3_BUCKET','CV_TEST_S3_REGION','CV_TEST_S3_PREFIX',
     'CV_TEST_PYTHON_BINARY','CV_TEST_PHP_BINARY','CV_TEST_COMPOSER_BINARY','CV_REQUIRE_REAL_S3']) if(environment[name]!==undefined)env[name]=environment[name];
   env.CV_TEST_SERVER_NODE=process.execPath;
+  // Pytest imports maintained test modules; keep interpreter caches outside the source contract.
+  env.PYTHONDONTWRITEBYTECODE='1';
   return env;
 }
 
@@ -267,11 +269,19 @@ export async function docsEvidence(root,backend,started,prefix) {
   return {...value,...(backend==='s3'?{childPrefix:prefix+'http-'+value.api.id+'/'}:{})};
 }
 
+export function diffSourceEntries(before,after) {
+  const previous=new Map(before.map(item=>[item.path,item])),next=new Map(after.map(item=>[item.path,item]));
+  return [...new Set([...previous.keys(),...next.keys()])].sort().flatMap(file=>{
+    const left=previous.get(file),right=next.get(file);
+    return !left?[{path:file,change:'added'}]:!right?[{path:file,change:'removed'}]:isDeepStrictEqual(left,right)?[]:[{path:file,change:'modified'}];
+  });
+}
+
 async function sourceSnapshot(root,env) {
   const head=(await execute('/usr/bin/git',['rev-parse','HEAD'],{cwd:root,env,timeout:5000})).stdout.trim();
   const files=(await execute('/usr/bin/git',['ls-files','-c','-o','--exclude-standard','-z'],{cwd:root,env,timeout:5000,maxBuffer:4*1024*1024})).stdout.split('\0').filter(file=>file&&!file.startsWith('.team-lead/')&&!file.startsWith('docs/items/')&&!file.startsWith('docs/runs/')&&file!=='docs/status.md').sort();const entries=[];
   for(const file of files) {const info=await lstat(path.join(root,file));if(!info.isFile()||info.isSymbolicLink()) throw Error('Release source requires regular files');entries.push({path:file,mode:(info.mode&0o777).toString(8),sha256:hash(await readFile(path.join(root,file)))});}
-  return {head,sha256:hash(JSON.stringify(entries)),files:entries.length};
+  return {identity:{head,sha256:hash(JSON.stringify(entries)),files:entries.length},entries};
 }
 
 async function main() {
@@ -282,7 +292,15 @@ async function main() {
   try {
     const gates=await createReleasePlan({root:rootDirectory,directory,options,env});
     validateController();
-    report.source=await sourceSnapshot(rootDirectory,env);
+    const source=await sourceSnapshot(rootDirectory,env);report.source=source.identity;
+    const verifySource=async()=>{
+      const after=await sourceSnapshot(rootDirectory,env);
+      if(!isDeepStrictEqual(source,after)) {
+        const changes=diffSourceEntries(source.entries,after.entries);
+        report.sourceAfter=after.identity;report.sourceChanges={total:changes.length,paths:changes.slice(0,100)};
+        throw Error('Tracked or untracked release source changed during verification');
+      }
+    };
     const target=await noGitTarget(env);Object.assign(gates.find(gate=>gate.id==='no-git-s3').env,target);Object.assign(report.target,{container:target.CV_TEST_S3_CONTAINER,containerEndpoint:target.CV_TEST_S3_CONTAINER_ENDPOINT,network:target.CV_TEST_DOCKER_NETWORK});
     report.requiredGates=gates.map(gate=>gate.id);
     report.controller.docker=(await execute('docker',['version','--format','{{.Server.Version}}'],{env,timeout:10000})).stdout.trim();
@@ -300,9 +318,10 @@ async function main() {
         result.evidence=value;
       }
       report.gates.push(result);await writeFile(path.join(directory,'summary.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});
+      await verifySource();
       console.log('Passed release gate: '+gate.id+' ('+(result.tests??'build')+')');
     }
-    const after=await sourceSnapshot(rootDirectory,env);if(!isDeepStrictEqual(report.source,after)) throw Error('Tracked or untracked release source changed during verification');
+    await verifySource();
     delete report.activeGate;report.status='passed';report.completedAt=new Date().toISOString();
   } catch(error) {report.status='failed';report.failure='Verification stopped; inspect private diagnostics.';throw Error('Workspace release failed; private evidence: '+directory,{cause:error});}
   finally {await writeFile(path.join(directory,'summary.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});const destination=path.join(rootDirectory,'tests/acceptance/release-evidence.log');await writeFile(destination,JSON.stringify({...report,privateDiagnostics:directory},null,2)+'\n',{mode:0o600});await chmod(destination,0o600);}
