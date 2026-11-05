@@ -160,9 +160,15 @@ After a controller crash:
 
 1. Stop every controller for the affected handle.
 2. Call `recover_workspace_controller` with `controllersStopped:true`.
-3. Stop every agent writer for that workspace.
-4. Call `reconcile_workspace` with `writersStopped:true` and the original handle.
-5. Inspect the authoritative outcome before continuing or cleaning local files.
+3. If recovery returns `initializationIncomplete:true`, retry the original checkout with its original `requestId`.
+4. Otherwise, stop every agent writer for that workspace.
+5. For initialized workspaces, call `reconcile_workspace` with `writersStopped:true` and the original handle.
+6. Inspect the authoritative outcome before continuing or cleaning local files.
+
+If recovery returns `initializationIncomplete:true`, retry the original request with its original `requestId`.
+For checkout recovery before its first journal, supply both `workspaceHandle` and the existing `workspaceId`.
+An acquisition error includes the opaque handle needed for recovery.
+Retain any existing SDK state when its MCP journal is unavailable.
 
 These assertions are owner preconditions, not containment against hostile processes sharing the same user identity.
 Current authorization still gates recovery and retained file reads.
@@ -187,6 +193,7 @@ Reusing an ID with different input fails.
 Mutations do not retry automatically.
 An uncertain administration result includes `commandHandle` for explicit reconciliation.
 A crashed administration controller requires `recover_command_controller` with `controllersStopped:true` before reconciliation.
+If that recovery returns `initializationIncomplete:true`, retry the original administration request with its original `requestId`.
 
 Direct requests are limited to 512 KiB and small snapshot responses to 2 MiB.
 Use workspace file chunks for larger contents.

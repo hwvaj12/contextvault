@@ -26,6 +26,11 @@ export class Sessions {
   private state(id: string) { return this.path('sessions', id) + '/state.json'; }
   private record(id: string) { return this.path('controls', id + '.json'); }
   private lock(id: string) { return this.path('locks', id + '.json'); }
+  private async missingSessionDirectory(id: string) {
+    await safeDirectory(this.path('sessions'));
+    try { await lstat(this.path('sessions', id)); return false; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return true; }
+  }
   initialize() { return this.ready; }
   async select(input: SessionSelection): Promise<string> {
     await this.ready;
@@ -52,19 +57,20 @@ export class Sessions {
       let record = await optionalJson<Record>(this.record(id));
       if (record && JSON.stringify(record.request) !== JSON.stringify(request)) fail('IDEMPOTENCY_KEY_REUSED', 'This requestId belongs to another exact checkout');
       let session: LocalWorkspaceSession;
-      try {
-        if (record) {
-          session = await this.client.resumeWorkspace(this.state(id)); await this.client.workspaces.get(record.request.workspaceId);
-          if (record.blocked) fail('RECONCILIATION_REQUIRED', 'Reconcile the original workspace handle before continuing');
-          await session.status();
-        } else {
-          record = { schemaVersion: 1, id, request, blocked: true, cleaned: false }; await saveJson(this.record(id), record);
-          session = await this.client.openWorkspace({ ...request, stateDirectory: this.path('sessions', id) });
-          record.blocked = false; await saveJson(this.record(id), record);
-        }
-        return this.view(session, record);
-      } catch (error) { if (error instanceof Error) Object.assign(error, { workspaceHandle: id }); throw error; }
-    });
+      const initializeSaved = record?.schemaVersion === 1 && record.id === id && record.blocked === true && record.cleaned === false && await this.missingSessionDirectory(id);
+      if (record && !initializeSaved) {
+        session = await this.client.resumeWorkspace(this.state(id)); await this.client.workspaces.get(record.request.workspaceId);
+        if (record.blocked) fail('RECONCILIATION_REQUIRED', 'Reconcile the original workspace handle before continuing');
+        await session.status();
+      } else {
+        if (!record) { record = { schemaVersion: 1, id, request, blocked: true, cleaned: false }; await saveJson(this.record(id), record); }
+        else await this.client.workspaces.get(record.request.workspaceId);
+        // The SDK creates its directory before saving any command or dispatching HTTP.
+        session = await this.client.openWorkspace({ ...request, stateDirectory: this.path('sessions', id) });
+        record.blocked = false; await saveJson(this.record(id), record);
+      }
+      return this.view(session, record);
+    }).catch(error => { if (error instanceof Error) Object.assign(error, { workspaceHandle: id }); throw error; });
   }
   async withSession(input: SessionSelection, action: (session: LocalWorkspaceSession, record: Record) => Promise<unknown>, mutate = false, reconcile = false) {
     const id = await this.select(input);
@@ -97,7 +103,34 @@ export class Sessions {
       return this.view(session, record);
     }, name !== 'status', name === 'reconcile');
   }
-  async recover(input: SessionSelection) { const id = await this.select(input); const record = await readJson<Record>(this.record(id)); await this.client.workspaces.get(record.request.workspaceId); await recoverController(this.lock(id), id); return { workspaceHandle: id, controllerRecovered: true }; }
+  async recover(input: SessionSelection) {
+    const id = await this.select(input); let record: Record | undefined; let initializationIncomplete = false;
+    try { record = await readJson<Record>(this.record(id)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    if (record !== undefined) {
+      if (!record || record.schemaVersion !== 1 || record.id !== id || typeof record.request?.workspaceId !== 'string') fail('INVALID_REQUEST', 'MCP handle metadata is invalid');
+      if (input.workspaceId && input.workspaceId !== record.request.workspaceId) fail('INVALID_REQUEST', 'Workspace identifier differs from this handle');
+      await this.client.workspaces.get(record.request.workspaceId);
+      initializationIncomplete = await this.missingSessionDirectory(id);
+      if (initializationIncomplete) {
+        if (record.blocked !== true || record.cleaned !== false) fail('RECONCILIATION_REQUIRED', 'Retain a journal whose initialized SDK data is unavailable');
+      } else {
+        await safeDirectory(this.path('sessions', id));
+        try { await lstat(this.state(id)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; fail('RECONCILIATION_REQUIRED', 'Retain the SDK directory whose state is unavailable'); }
+        // Recovery never removes a marker protecting an unreadable or unsafe SDK journal.
+        await this.client.resumeWorkspace(this.state(id));
+      }
+    } else {
+      if (!input.workspaceId) fail('INVALID_REQUEST', 'Provide workspaceId to recover initialization before its journal');
+      await this.client.workspaces.get(input.workspaceId);
+      // MCP control is durable before SDK initialization or HTTP. Existing SDK data makes absence ambiguous.
+      if (!await this.missingSessionDirectory(id)) fail('RECONCILIATION_REQUIRED', 'Retain SDK data whose MCP journal is unavailable');
+      initializationIncomplete = true;
+    }
+    await recoverController(this.lock(id), id);
+    return { workspaceHandle: id, controllerRecovered: true, ...(initializationIncomplete ? { initializationIncomplete: true } : {}) };
+  }
   private withContent(input: SessionSelection, action: (session: LocalWorkspaceSession, record: Record) => Promise<unknown>) {
     return this.withSession(input, async (session, record) => {
       // Run metadata remains readable for inactive workspaces. Content requires its own current workspace:read authority.

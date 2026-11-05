@@ -66,7 +66,7 @@ export class Administration {
       if (command && (command.schemaVersion !== 1 || command.id !== id || command.inputDigest !== inputDigest)) fail('IDEMPOTENCY_KEY_REUSED', 'This requestId belongs to another exact administration command');
       if (!command) { command = { schemaVersion: 1, id, inputDigest, request: await prepare(), key: randomUUID(), operationId: null }; await saveJson(this.path(id), command); }
       return this.dispatch(command);
-    });
+    }).catch(error => { if (error instanceof Error) Object.assign(error, { commandHandle: id }); throw error; });
   }
   async reconcile(id: string) {
     await this.ready;
@@ -79,7 +79,11 @@ export class Administration {
   }
   async recover(id: string) {
     await this.ready; await this.request('GET', '/v1/workspaces?limit=1');
-    const command = await readJson<Command>(this.path(id)); if (command.schemaVersion !== 1 || command.id !== id) fail('INVALID_REQUEST', 'Command ownership is invalid');
-    await recoverController(this.lock(id), id); return { commandHandle: id, controllerRecovered: true };
+    let command: Command | undefined;
+    try { command = await readJson<Command>(this.path(id)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    if (command !== undefined && (!command || command.schemaVersion !== 1 || command.id !== id)) fail('INVALID_REQUEST', 'Command ownership is invalid');
+    // Every administration request is journaled before dispatch. Recovery never discards a journal or retries HTTP.
+    await recoverController(this.lock(id), id); return { commandHandle: id, controllerRecovered: true, ...(command === undefined ? { initializationIncomplete: true } : {}) };
   }
 }

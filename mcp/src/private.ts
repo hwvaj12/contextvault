@@ -20,13 +20,14 @@ export async function regular(path: string) {
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) fail('UNSAFE_PATH', 'A private regular file is required');
   return stat;
 }
-export async function readJson<T>(path: string): Promise<T> {
+async function readPrivateText(path: string): Promise<string> {
   await safeDirectory(dirname(path)); const stat = await regular(path);
   if (stat.size > 1024 * 1024 || (stat.mode & 0o077) !== 0) fail('UNSAFE_PATH', 'Private metadata exceeds its limit or permissions');
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try { const opened = await handle.stat(); if (opened.ino !== stat.ino || opened.dev !== stat.dev || opened.nlink !== 1) fail('UNSAFE_PATH', 'Private metadata changed'); return JSON.parse(await handle.readFile('utf8')) as T; }
+  try { const opened = await handle.stat(); if (opened.ino !== stat.ino || opened.dev !== stat.dev || opened.nlink !== 1) fail('UNSAFE_PATH', 'Private metadata changed'); return await handle.readFile('utf8'); }
   finally { await handle.close(); }
 }
+export async function readJson<T>(path: string): Promise<T> { return JSON.parse(await readPrivateText(path)) as T; }
 export async function optionalJson<T>(path: string): Promise<T | null> {
   try { return await readJson<T>(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
 }
@@ -48,8 +49,21 @@ export async function controller<T>(path: string, id: string, action: () => Prom
   finally { const owner = await readJson<{ id: string; token: string }>(path); if (owner.id !== id || owner.token !== token) fail('CONTROLLER_CHANGED', 'Controller ownership changed'); await unlink(path); }
 }
 export async function recoverController(path: string, id: string) {
-  const owner = await optionalJson<{ schemaVersion: number; id: string; token: string }>(path);
-  if (!owner) return;
-  if (owner.schemaVersion !== 1 || owner.id !== id || typeof owner.token !== 'string') fail('CONTROLLER_CHANGED', 'Controller ownership differs from this handle');
+  let text: string;
+  try { text = await readPrivateText(path); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+  let owner: { schemaVersion?: number; id?: string; token?: string } | null;
+  try { owner = JSON.parse(text); }
+  catch (error) {
+    // A stopped writer can leave a prefix of the exact marker emitted by controller().
+    const prefix = `{"schemaVersion":1,"id":${JSON.stringify(id)},"token":"`;
+    const tail = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"}';
+    const suffix = text.slice(prefix.length);
+    const tokenPrefix = text.startsWith(prefix) && suffix.length < tail.length && [...suffix].every((value, index) =>
+      tail[index] === 'x' ? /^[0-9a-f]$/.test(value) : tail[index] === 'y' ? /^[89ab]$/.test(value) : value === tail[index]);
+    if (!(error instanceof SyntaxError) || !(prefix.startsWith(text) || tokenPrefix)) fail('CONTROLLER_CHANGED', 'Controller ownership differs from this handle');
+    await unlink(path); return;
+  }
+  if (!owner || Array.isArray(owner) || owner.schemaVersion !== 1 || owner.id !== id || typeof owner.token !== 'string') fail('CONTROLLER_CHANGED', 'Controller ownership differs from this handle');
   await unlink(path);
 }
