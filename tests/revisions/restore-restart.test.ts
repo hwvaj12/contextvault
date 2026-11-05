@@ -9,9 +9,10 @@ const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean) { for (let i = 0; i < 1500; i++) { if (check()) return; await pause(10); } throw new Error('Restore process fixture timed out'); }
 it('recovers the exact typed restore source after real SIGKILL following durable candidate preparation', async () => {
   const source = resolve(import.meta.dirname, '../..'); const directory = await mkdtemp(join(await realpath(tmpdir()), 'cv-restore-restart-')); const storage = storageEnvironment();
+  const clock = new Date();
   const children: { child: ChildProcess; events: any[]; exited: Promise<void>; done: boolean }[] = [];
   const launch = async (mode: string) => {
-    const child = fork(join(source, 'tests/revisions/restore-process.cjs'), [], { cwd: directory, execArgv: ['-r', join(source, 'node_modules/ts-node/register/transpile-only')], stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: { PATH: process.env.PATH, ...storage, CV_SOURCE_ROOT: source, CV_RESTORE_MODE: mode, CV_DATA_DIR: join(directory, 'private'), CONTEXTVAULT_API_KEY: 'restore-process-master', CV_PROCESSING_TTL_MS: '200', CV_MAINTENANCE_INTERVAL_MS: '50', TS_NODE_PROJECT: join(source, 'tsconfig.json'), V8_COMPILE_CACHE_CACHE_DIR: join(directory, 'compile-cache') } });
+    const child = fork(join(source, 'tests/revisions/restore-process.cjs'), [], { cwd: directory, execArgv: ['-r', join(source, 'node_modules/ts-node/register/transpile-only')], stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: { PATH: process.env.PATH, ...storage, CV_SOURCE_ROOT: source, CV_RESTORE_MODE: mode, CV_RESTORE_CLOCK: new Date(clock.getTime() + (mode === 'recover' ? 60000 : 0)).toISOString(), CV_DATA_DIR: join(directory, 'private'), CONTEXTVAULT_API_KEY: 'restore-process-master', CV_PROCESSING_TTL_MS: '5000', CV_MAINTENANCE_INTERVAL_MS: '50', TS_NODE_PROJECT: join(source, 'tsconfig.json'), V8_COMPILE_CACHE_CACHE_DIR: join(directory, 'compile-cache') } });
     const item = { child, events: [] as any[], exited: Promise.resolve(), done: false }; child.on('message', value => item.events.push(value)); item.exited = new Promise<void>(resolve => child.once('exit', () => { item.done = true; resolve(); })); children.push(item);
     await until(() => item.done || item.events.some(e => e.kind === 'ready')); if (item.done) throw new Error(JSON.stringify(item.events)); return { item, baseUrl: item.events.find(e => e.kind === 'ready').baseUrl };
   };
@@ -25,6 +26,7 @@ it('recovers the exact typed restore source after real SIGKILL following durable
     await until(() => first.item.events.some(e => e.kind === 'prepared')); const frozen = first.item.events.find(e => e.kind === 'prepared').operation;
     expect(frozen.intent.request.body).toEqual(body); expect(frozen.intent.source.revision.id).toBe(previous); expect(frozen.intent.candidateIdentity.parentRevisionId).toBe(head); expect(frozen.candidate).toBe(null);
     await stop(first.item, true); const restarted = await launch('recover'); c.baseUrl = restarted.baseUrl;
+    expect(Date.parse(frozen.claim.expiresAt)).toBeLessThan(Date.parse(restarted.item.events.find(e => e.kind === 'ready').clock));
     const result = await operation(c, claimed.body); expect(result.state).toBe('succeeded'); expect(result.kind).toBe('restore'); expect(result.result.revisionId).not.toBe(previous);
     await until(() => restarted.item.events.some(e => e.kind === 'accepted')); expect(restarted.item.events.find(e => e.kind === 'accepted').fence).toBeGreaterThan(1);
     const manifest = await call(c, `/v1/workspaces/${w.id}/revisions/${result.result.revisionId}/manifest`); expect(manifest.body.entries.map((e: any) => e.path)).toEqual(['binary.bin', 'empty']);
